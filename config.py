@@ -32,11 +32,19 @@ _BASE: dict = {
 
 # --- Model-specific configurations ---
 LLM_CONFIG_DEV: dict = {
-    "config_list": [{**_BASE, "model": "gpt-5-nano"}],
+    "config_list": [{
+        **_BASE,
+        "model": "gpt-5-nano",
+        "price": [0.00005, 0.0004],  # $0.05/$0.40 per 1M tokens
+    }],
 }
 
 LLM_CONFIG_FINAL: dict = {
-    "config_list": [{**_BASE, "model": "gpt-5-mini"}],
+    "config_list": [{
+        **_BASE,
+        "model": "gpt-5-mini",
+        "price": [0.00025, 0.002],  # $0.25/$2.00 per 1M tokens
+    }],
 }
 
 # --- Active configuration (selected via EDA_MODE environment variable) ---

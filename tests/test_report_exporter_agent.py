@@ -58,8 +58,9 @@ class TestCreateReportExporterAgent:
         assert report_agent.name == "ReportExporterAgent"
 
     def test_system_message(self, report_agent):
-        assert "render_pdf()" in report_agent.system_message
+        assert "render_pdf" in report_agent.system_message
         assert "render_ipynb()" in report_agent.system_message
+        assert 'output_dir="outputs/"' in report_agent.system_message
 
     def test_system_message_exact(self, report_agent):
         assert report_agent.system_message == REPORT_EXPORTER_SYSTEM_MESSAGE

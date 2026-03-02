@@ -389,7 +389,7 @@ def render_pdf(
     ],
     output_dir: Annotated[
         str,
-        "Output directory path for the PDF report (e.g., 'outputs')",
+        "Output directory path — must be exactly 'outputs/' (report.pdf is created inside it)",
     ],
 ) -> str:
     """
@@ -428,7 +428,7 @@ def render_ipynb(
     ],
     output_dir: Annotated[
         str,
-        "Output directory path for the IPYNB report (e.g., 'outputs')",
+        "Output directory path — must be exactly 'outputs/' (report.ipynb is created inside it)",
     ],
 ) -> str:
     """

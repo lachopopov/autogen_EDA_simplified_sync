@@ -21,9 +21,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-
-from autogen import gather_usage_summary
 
 from config import OUTPUTS_DIR, PLOTS_DIR
 
@@ -71,6 +70,77 @@ def ensure_output_dirs() -> None:
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("Output dirs ready: %s, %s", OUTPUTS_DIR, PLOTS_DIR)
+
+
+# ---------------------------------------------------------------------------
+# Cost Summary Formatter
+# ---------------------------------------------------------------------------
+
+
+def _format_cost_summary(agents_list: list, usage_dict: dict) -> str:
+    """
+    Build a human-readable cost summary with per-agent breakdown.
+
+    Uses ``agent.get_total_usage()`` for per-agent rows and the aggregate
+    ``usage_dict`` (from ``gather_usage_summary``) for grand totals.
+
+    Only agents with usage > 0 are included.
+    """
+    lines: list[str] = []
+    lines.append("EDA Pipeline — Cost Summary")
+    lines.append("=" * 40)
+    lines.append(f"Date: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    lines.append("")
+
+    # --- Per-Agent Breakdown ---
+    lines.append("Per-Agent Breakdown")
+    lines.append("-" * 40)
+
+    max_name = max((len(a.name) for a in agents_list), default=20)
+    col_fmt = f"{{:<{max_name}}}  {{:<28}}  ${{:<10.4f}}  {{:>7,}} prompt / {{:>7,}} completion"
+
+    for agent in agents_list:
+        usage = agent.get_total_usage()
+        if usage is None:
+            continue
+        for model, stats in usage.items():
+            if model == "total_cost":
+                continue
+            cost = stats.get("cost", 0.0)
+            prompt = stats.get("prompt_tokens", 0)
+            completion = stats.get("completion_tokens", 0)
+            if cost == 0 and prompt == 0 and completion == 0:
+                continue
+            lines.append(col_fmt.format(
+                agent.name, model, cost, prompt, completion,
+            ))
+
+    lines.append("")
+
+    # --- Grand Totals ---
+    totals = usage_dict.get("usage_including_cached_inference", {})
+    lines.append("Grand Totals")
+    lines.append("-" * 40)
+
+    grand_total = 0.0
+    for model, stats in totals.items():
+        if model == "total_cost":
+            grand_total = stats if isinstance(stats, (int, float)) else 0.0
+            continue
+        cost = stats.get("cost", 0.0)
+        prompt = stats.get("prompt_tokens", 0)
+        completion = stats.get("completion_tokens", 0)
+        total_tok = stats.get("total_tokens", prompt + completion)
+        lines.append(
+            f"  {model:<28}  ${cost:<10.4f}  {prompt:>7,} prompt / "
+            f"{completion:>7,} completion ({total_tok:>7,} total)"
+        )
+
+    lines.append(f"  {'':28}  ----------")
+    lines.append(f"  {'Pipeline total:':<28}  ${grand_total:<10.4f}")
+    lines.append("")
+
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -126,18 +196,25 @@ def run_pipeline(file_path: Path) -> None:
 
     try:
         user_proxy.initiate_chat(manager, message=initial_message)
-        
-        # Step 2: Gather cost data after pipeline completes
-        usage_dict = gather_usage_summary(agents_list)
-        logger.info("Cost tracking: gathered usage summary from %d agents", len(agents_list))
-        
-        # Store cost data in artifact for access by report renderer
-        from tools._pipeline_state import save_artifact
-        save_artifact("cost_report.json", usage_dict)
-        logger.debug("Saved cost report to artifact store")
-        
     finally:
         clear_session()
+
+    # --- Cost tracking (Option C: standalone file, post-pipeline) ---
+    # gather_usage_summary is the canonical AG2 cost API (grand totals).
+    # agent.get_total_usage() gives per-agent breakdowns.
+    # Imported lazily to preserve fast --help / parse-only startup.
+    from autogen import gather_usage_summary  # noqa: E402
+
+    usage_dict = gather_usage_summary(agents_list)
+    logger.info(
+        "Cost tracking: gathered usage summary from %d agents",
+        len(agents_list),
+    )
+
+    cost_text = _format_cost_summary(agents_list, usage_dict)
+    cost_path = OUTPUTS_DIR / "cost_summary.txt"
+    cost_path.write_text(cost_text, encoding="utf-8")
+    logger.info("Cost summary written to %s", cost_path)
 
     logger.info("EDA pipeline completed.")
 

@@ -188,7 +188,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.OUTPUTS_DIR", out)
         monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {})
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
         run_pipeline(csv_file)
 
@@ -201,7 +201,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
         proxy = MagicMock()
         manager = MagicMock()
-        mock_build.return_value = (MagicMock(), manager, proxy, {}, {})
+        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
 
         run_pipeline(csv_file)
 
@@ -214,7 +214,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
         proxy = MagicMock()
         manager = MagicMock()
-        mock_build.return_value = (MagicMock(), manager, proxy, {}, {})
+        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
 
         run_pipeline(csv_file)
 
@@ -227,7 +227,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.OUTPUTS_DIR", out)
         monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {})
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
         run_pipeline(csv_file)
 
@@ -241,7 +241,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.OUTPUTS_DIR", out)
         monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {})
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
         run_pipeline(csv_file)
 
@@ -256,7 +256,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.OUTPUTS_DIR", out)
         monkeypatch.setattr("main.PLOTS_DIR", plots)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {})
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
         run_pipeline(csv_file)
 
@@ -269,7 +269,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.OUTPUTS_DIR", out)
         monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {})
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
         run_pipeline(csv_file)
 
@@ -339,7 +339,7 @@ class TestIntegration:
         monkeypatch.setattr("main.OUTPUTS_DIR", out)
         monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {})
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
         # Should not raise
         main([str(csv_file)])
@@ -351,7 +351,7 @@ class TestIntegration:
         monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
         proxy = MagicMock()
         manager = MagicMock()
-        mock_build.return_value = (MagicMock(), manager, proxy, {}, {})
+        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
 
         main([str(csv_file)])
 
@@ -359,3 +359,189 @@ class TestIntegration:
             manager,
             message=proxy.initiate_chat.call_args[1]["message"],
         )
+
+
+# ===================================================================
+# TestCostTracking — cost_summary.txt output (Option C)
+# ===================================================================
+
+
+class TestCostTracking:
+    """Tests for post-pipeline cost_summary.txt generation."""
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_cost_summary_file_created(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
+    ):
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_gather.return_value = {"usage_including_cached_inference": {}}
+
+        run_pipeline(csv_file)
+
+        cost_file = out / "cost_summary.txt"
+        assert cost_file.exists()
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_cost_summary_is_human_readable(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
+    ):
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_gather.return_value = {
+            "usage_including_cached_inference": {
+                "total_cost": 0.04,
+                "gpt-5-nano": {"cost": 0.04, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
+            },
+            "usage_excluding_cached_inference": {
+                "total_cost": 0.04,
+                "gpt-5-nano": {"cost": 0.04, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
+            },
+        }
+
+        run_pipeline(csv_file)
+
+        cost_file = out / "cost_summary.txt"
+        content = cost_file.read_text(encoding="utf-8")
+        assert "EDA Pipeline" in content
+        assert "Per-Agent Breakdown" in content
+        assert "Grand Totals" in content
+        assert "Pipeline total:" in content
+        assert "$0.04" in content
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_per_agent_breakdown_included(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
+    ):
+        """Per-agent rows appear when agents have usage."""
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+
+        agent_a = MagicMock()
+        agent_a.name = "DataPrepAgent"
+        agent_a.get_total_usage.return_value = {
+            "gpt-5-nano": {"cost": 0.001, "prompt_tokens": 500, "completion_tokens": 100},
+        }
+        agent_b = MagicMock()
+        agent_b.name = "FindingsGeneratorAgent"
+        agent_b.get_total_usage.return_value = {
+            "gpt-5-mini": {"cost": 0.03, "prompt_tokens": 5000, "completion_tokens": 2000},
+        }
+
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent_a, agent_b])
+        mock_gather.return_value = {
+            "usage_including_cached_inference": {"total_cost": 0.031},
+        }
+
+        run_pipeline(csv_file)
+
+        content = (out / "cost_summary.txt").read_text(encoding="utf-8")
+        assert "DataPrepAgent" in content
+        assert "FindingsGeneratorAgent" in content
+        assert "gpt-5-nano" in content
+        assert "gpt-5-mini" in content
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_gather_called_with_agents_list(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
+    ):
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        agents_list = [MagicMock(), MagicMock()]
+        # Set names and usage for the formatter
+        agents_list[0].name = "AgentA"
+        agents_list[0].get_total_usage.return_value = None
+        agents_list[1].name = "AgentB"
+        agents_list[1].get_total_usage.return_value = None
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, agents_list)
+        mock_gather.return_value = {}
+
+        run_pipeline(csv_file)
+
+        mock_gather.assert_called_once_with(agents_list)
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_cost_summary_written_after_pipeline(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
+    ):
+        """Cost file created even when gather_usage_summary returns empty dict."""
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_gather.return_value = {}
+
+        run_pipeline(csv_file)
+
+        cost_file = out / "cost_summary.txt"
+        assert cost_file.exists()
+        assert cost_file.stat().st_size > 0
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_cost_summary_not_in_artifact_store(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
+    ):
+        """Cost data is written directly to outputs/, not the artifact store."""
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_gather.return_value = {"total_cost": 0.04}
+
+        run_pipeline(csv_file)
+
+        # File should be directly in outputs, not in .pipeline_state
+        assert (out / "cost_summary.txt").exists()
+        assert not (out / ".pipeline_state").exists() or not list(
+            (out / ".pipeline_state").rglob("cost_*")
+        )
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_zero_usage_agents_excluded(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
+    ):
+        """Agents with no LLM usage (get_total_usage returns None) are excluded."""
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+
+        agent_with_usage = MagicMock()
+        agent_with_usage.name = "EDAAnalysisAgent"
+        agent_with_usage.get_total_usage.return_value = {
+            "gpt-5-nano": {"cost": 0.002, "prompt_tokens": 1000, "completion_tokens": 300},
+        }
+        agent_no_usage = MagicMock()
+        agent_no_usage.name = "SkippedAgent"
+        agent_no_usage.get_total_usage.return_value = None
+
+        mock_build.return_value = (
+            MagicMock(), MagicMock(), proxy, {}, {},
+            [agent_with_usage, agent_no_usage],
+        )
+        mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0.002}}
+
+        run_pipeline(csv_file)
+
+        content = (out / "cost_summary.txt").read_text(encoding="utf-8")
+        assert "EDAAnalysisAgent" in content
+        assert "SkippedAgent" not in content

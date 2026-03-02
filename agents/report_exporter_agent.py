@@ -32,8 +32,8 @@ from tools.report_tools import render_ipynb, render_pdf
 # § 5.1: "ReportExporterAgent MUST emit TERMINATE after export"
 REPORT_EXPORTER_SYSTEM_MESSAGE = """\
 Generate the final EDA report files.
-Use render_pdf() to produce outputs/report.pdf from the findings reference.
-Use render_ipynb() if IPYNB_EXPORT=true in environment.
+Use render_pdf(findings_json=..., output_dir="outputs/") — always pass output_dir="outputs/" exactly.
+Use render_ipynb() if IPYNB_EXPORT=true in environment, with output_dir="outputs/" as well.
 When a tool returns a confirmation message with "Reference: STATE_REF:...", the tool has SUCCEEDED.
 Do NOT re-call the same tool. Do NOT copy large JSON.
 Ground your answers only on data returned by your tools. If you do not have the facts, state "No info available at this stage." Do NOT invent or fabricate any statistics, numbers, or findings.

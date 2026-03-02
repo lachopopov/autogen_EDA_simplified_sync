@@ -34,6 +34,21 @@ class TestLLMConfigDev:
         assert isinstance(key, str)
         assert len(key) > 0
 
+    def test_dev_has_price_field(self):
+        import config
+
+        price = config.LLM_CONFIG_DEV["config_list"][0]["price"]
+        assert isinstance(price, list)
+        assert len(price) == 2
+
+    def test_dev_price_values(self):
+        import config
+
+        price = config.LLM_CONFIG_DEV["config_list"][0]["price"]
+        # gpt-5-nano: $0.05/1M prompt, $0.40/1M completion → per 1K
+        assert price[0] == 0.00005
+        assert price[1] == 0.0004
+
 
 class TestLLMConfigFinal:
     """Final mode uses gpt-5-mini."""
@@ -56,6 +71,21 @@ class TestLLMConfigFinal:
 
         seed = config.LLM_CONFIG_FINAL["config_list"][0]["cache_seed"]
         assert seed is None
+
+    def test_final_has_price_field(self):
+        import config
+
+        price = config.LLM_CONFIG_FINAL["config_list"][0]["price"]
+        assert isinstance(price, list)
+        assert len(price) == 2
+
+    def test_final_price_values(self):
+        import config
+
+        price = config.LLM_CONFIG_FINAL["config_list"][0]["price"]
+        # gpt-5-mini: $0.25/1M prompt, $2.00/1M completion → per 1K
+        assert price[0] == 0.00025
+        assert price[1] == 0.002
 
 
 class TestEDAModeSwitch:
