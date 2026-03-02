@@ -26,9 +26,9 @@ from orchestrator import (
 
 @pytest.fixture()
 def group_chat_components():
-    """Build the full GroupChat and return all components (5-tuple)."""
-    groupchat, manager, user_proxy, agents_dict, executors_dict = build_group_chat()
-    return groupchat, manager, user_proxy, agents_dict, executors_dict
+    """Build the full GroupChat and return all components (6-tuple)."""
+    groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list = build_group_chat()
+    return groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list
 
 
 @pytest.fixture()
@@ -425,22 +425,23 @@ class TestStateFlowCriticLoop:
 class TestBuildGroupChat:
     """Test the full GroupChat assembly."""
 
-    def test_returns_5_tuple(self, group_chat_components):
-        groupchat, manager, user_proxy, agents_dict, executors_dict = group_chat_components
+    def test_returns_6_tuple(self, group_chat_components):
+        groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list = group_chat_components
         assert isinstance(groupchat, GroupChat)
         assert isinstance(manager, GroupChatManager)
         assert isinstance(user_proxy, UserProxyAgent)
         assert isinstance(agents_dict, dict)
         assert isinstance(executors_dict, dict)
+        assert isinstance(agents_list, list)
 
     def test_agent_count(self, group_chat_components):
         """13 agents in GroupChat: 1 user_proxy + 6 AssistantAgents + 6 executors."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         assert len(groupchat.agents) == 13
 
     def test_agent_names(self, group_chat_components):
         """All expected agent and executor names are present."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         names = {a.name for a in groupchat.agents}
         expected = {
             "user_proxy",
@@ -455,45 +456,45 @@ class TestBuildGroupChat:
 
     def test_agents_dict_has_six_entries(self, group_chat_components):
         """agents_dict has 6 AssistantAgents (excludes user_proxy and executors)."""
-        _, _, _, agents_dict, _ = group_chat_components
+        _, _, _, agents_dict, _, _ = group_chat_components
         assert len(agents_dict) == 6
 
     def test_executors_dict_has_six_entries(self, group_chat_components):
         """executors_dict has 6 executor UserProxyAgents."""
-        _, _, _, _, executors_dict = group_chat_components
+        _, _, _, _, executors_dict, _ = group_chat_components
         assert len(executors_dict) == 6
 
     def test_all_agents_are_assistant_agents(self, group_chat_components):
         """All pipeline agents are AssistantAgent instances."""
-        _, _, _, agents_dict, _ = group_chat_components
+        _, _, _, agents_dict, _, _ = group_chat_components
         for name, agent in agents_dict.items():
             assert isinstance(agent, AssistantAgent), f"{name} is not AssistantAgent"
 
     def test_all_executors_are_user_proxy_agents(self, group_chat_components):
         """All executors are UserProxyAgent instances."""
-        _, _, _, _, executors_dict = group_chat_components
+        _, _, _, _, executors_dict, _ = group_chat_components
         for name, executor in executors_dict.items():
             assert isinstance(executor, UserProxyAgent), f"{name} is not UserProxyAgent"
 
     def test_max_round(self, group_chat_components):
         """GroupChat max_round matches the MAX_ROUNDS used at build time."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         from orchestrator import MAX_ROUNDS as ORCHESTRATOR_MAX_ROUNDS
         assert groupchat.max_round == ORCHESTRATOR_MAX_ROUNDS
 
     def test_max_round_positive(self, group_chat_components):
         """MAX_ROUNDS is a positive integer (Layer 2 guard)."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         assert groupchat.max_round > 0
 
     def test_speaker_selection_is_callable(self, group_chat_components):
         """speaker_selection_method is a callable (our router function)."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         assert callable(groupchat.speaker_selection_method)
 
     def test_manager_name(self, group_chat_components):
         """GroupChatManager has the expected name."""
-        _, manager, _, _, _ = group_chat_components
+        _, manager, _, _, _, _ = group_chat_components
         assert manager.name == "chat_manager"
 
 
@@ -506,12 +507,12 @@ class TestToolRegistration:
 
     def test_user_proxy_has_no_tools(self, group_chat_components):
         """user_proxy (initiator) should have no tools registered."""
-        _, _, user_proxy, _, _ = group_chat_components
+        _, _, user_proxy, _, _, _ = group_chat_components
         assert len(user_proxy._function_map) == 0
 
     def test_total_tool_count_across_executors(self, group_chat_components):
         """15 total tools distributed across 6 executors."""
-        _, _, _, _, executors_dict = group_chat_components
+        _, _, _, _, executors_dict, _ = group_chat_components
         total = sum(len(e._function_map) for e in executors_dict.values())
         assert total == 15
 
@@ -525,7 +526,7 @@ class TestToolRegistration:
     ])
     def test_executor_has_correct_tools(self, group_chat_components,
                                          executor_name, expected_tools):
-        _, _, _, _, executors_dict = group_chat_components
+        _, _, _, _, executors_dict, _ = group_chat_components
         executor = executors_dict[executor_name]
         registered = set(executor._function_map.keys())
         assert registered == expected_tools, (
@@ -534,7 +535,7 @@ class TestToolRegistration:
 
     def test_each_tool_is_callable(self, group_chat_components):
         """Every registered tool on every executor is a callable."""
-        _, _, _, _, executors_dict = group_chat_components
+        _, _, _, _, executors_dict, _ = group_chat_components
         for exec_name, executor in executors_dict.items():
             for tool_name, fn in executor._function_map.items():
                 assert callable(fn), f"{exec_name}/{tool_name} is not callable"
@@ -552,32 +553,32 @@ class TestAgentLLMConfig:
         return {t["function"]["name"] for t in tools}
 
     def test_data_prep_has_3_tools(self, group_chat_components):
-        _, _, _, agents, _ = group_chat_components
+        _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["DataPrepAgent"])
         assert names == {"load_data", "validate_schema", "infer_dtypes"}
 
     def test_eda_analysis_has_3_tools(self, group_chat_components):
-        _, _, _, agents, _ = group_chat_components
+        _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["EDAAnalysisAgent"])
         assert names == {"describe_stats", "missing_analysis", "correlation_matrix"}
 
     def test_visualization_has_3_tools(self, group_chat_components):
-        _, _, _, agents, _ = group_chat_components
+        _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["VisualizationAgent"])
         assert names == {"plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap"}
 
     def test_critic_has_1_tool(self, group_chat_components):
-        _, _, _, agents, _ = group_chat_components
+        _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["CriticAgent"])
         assert names == {"run_critic_rules"}
 
     def test_findings_has_3_tools(self, group_chat_components):
-        _, _, _, agents, _ = group_chat_components
+        _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["FindingsGeneratorAgent"])
         assert names == {"assemble_findings", "prepare_interpretation_context", "save_interpretations"}
 
     def test_report_has_2_tools(self, group_chat_components):
-        _, _, _, agents, _ = group_chat_components
+        _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["ReportExporterAgent"])
         assert names == {"render_pdf", "render_ipynb"}
 
@@ -591,13 +592,13 @@ class TestThreeLayerTerminationGuard:
 
     def test_layer1_keyword_on_user_proxy(self, group_chat_components):
         """Layer 1: user_proxy checks for TERMINATE keyword."""
-        _, _, user_proxy, _, _ = group_chat_components
+        _, _, user_proxy, _, _, _ = group_chat_components
         assert user_proxy._is_termination_msg({"content": "TERMINATE"}) is True
         assert user_proxy._is_termination_msg({"content": "ok"}) is False
 
     def test_layer1_keyword_on_executors(self, group_chat_components):
         """Layer 1: all executors also check for TERMINATE keyword."""
-        _, _, _, _, executors_dict = group_chat_components
+        _, _, _, _, executors_dict, _ = group_chat_components
         for name, executor in executors_dict.items():
             assert executor._is_termination_msg({"content": "TERMINATE"}) is True, (
                 f"{name} should detect TERMINATE"
@@ -606,12 +607,12 @@ class TestThreeLayerTerminationGuard:
 
     def test_layer2_max_round(self, group_chat_components):
         """Layer 2: GroupChat max_round is set (positive integer ceiling)."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         assert groupchat.max_round > 0
 
     def test_layer3_critic_force_exit(self, group_chat_components):
         """Layer 3: router forces to ReportExporter when iteration >= 2."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         mock_gc = type("GC", (), {
             "messages": [
                 {"name": "CriticAgent", "content": "REVISION_NEEDED"},
@@ -624,7 +625,7 @@ class TestThreeLayerTerminationGuard:
 
     def test_only_report_exporter_has_terminate(self, group_chat_components):
         """Only ReportExporterAgent's system_message contains 'TERMINATE' instruction."""
-        _, _, _, agents, _ = group_chat_components
+        _, _, _, agents, _, _ = group_chat_components
         for name, agent in agents.items():
             if name == "ReportExporterAgent":
                 assert "TERMINATE" in agent.system_message
@@ -634,7 +635,7 @@ class TestThreeLayerTerminationGuard:
 
     def test_all_assistant_agents_have_max_auto_reply_5(self, group_chat_components):
         """All AssistantAgents have max_consecutive_auto_reply=5."""
-        _, _, _, agents, _ = group_chat_components
+        _, _, _, agents, _, _ = group_chat_components
         for name, agent in agents.items():
             assert agent._max_consecutive_auto_reply == 5, (
                 f"{name} max_consecutive_auto_reply != 5"
@@ -659,7 +660,7 @@ class TestChainedRegistrationInvariant:
 
     def test_all_tools_in_both_sides(self, group_chat_components):
         """Each agent's LLM tools also appear in its executor's function_map."""
-        _, _, _, agents, executors = group_chat_components
+        _, _, _, agents, executors, _ = group_chat_components
 
         for agent_name, executor_name in self.AGENT_EXECUTOR_PAIRS.items():
             agent = agents[agent_name]
@@ -677,7 +678,7 @@ class TestChainedRegistrationInvariant:
 
     def test_no_extra_tools_in_executors(self, group_chat_components):
         """Executors have no extra tools beyond what their agent declares."""
-        _, _, _, agents, executors = group_chat_components
+        _, _, _, agents, executors, _ = group_chat_components
 
         for agent_name, executor_name in self.AGENT_EXECUTOR_PAIRS.items():
             agent = agents[agent_name]
@@ -704,7 +705,7 @@ class TestRouterEndToEnd:
         """Simulate the linear pipeline (text only, no tool calls):
         user_proxy → DataPrep → EDA → Viz → Critic → Findings → Report → None.
         """
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         router = groupchat.speaker_selection_method
 
         speakers = {name: type("S", (), {"name": name})() for name in [
@@ -740,7 +741,7 @@ class TestRouterEndToEnd:
 
     def test_tool_call_round_trip_sequence(self, group_chat_components):
         """Simulate DataPrepAgent tool_call → DataPrepExecutor → DataPrepAgent → advance."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         router = groupchat.speaker_selection_method
 
         # Step 1: DataPrepAgent sends tool_call → DataPrepExecutor
@@ -779,7 +780,7 @@ class TestRouterEndToEnd:
 
     def test_one_revision_loop_sequence(self, group_chat_components):
         """Simulate a pipeline with one critic revision loop."""
-        groupchat, _, _, _, _ = group_chat_components
+        groupchat, _, _, _, _, _ = group_chat_components
         router = groupchat.speaker_selection_method
 
         speakers = {name: type("S", (), {"name": name})() for name in [

@@ -23,6 +23,8 @@ import logging
 import sys
 from pathlib import Path
 
+from autogen import gather_usage_summary
+
 from config import OUTPUTS_DIR, PLOTS_DIR
 
 logger = logging.getLogger(__name__)
@@ -111,7 +113,7 @@ def run_pipeline(file_path: Path) -> None:
     # Lazy import to avoid heavy AG2 imports on --help / parse-only usage
     from orchestrator import build_group_chat
 
-    _groupchat, manager, user_proxy, _agents, _executors = build_group_chat()
+    _groupchat, manager, user_proxy, _agents, _executors, agents_list = build_group_chat()
 
     # Kick off the pipeline — user_proxy submits the file path as the
     # initial message, which DataPrepAgent will receive.
@@ -124,6 +126,16 @@ def run_pipeline(file_path: Path) -> None:
 
     try:
         user_proxy.initiate_chat(manager, message=initial_message)
+        
+        # Step 2: Gather cost data after pipeline completes
+        usage_dict = gather_usage_summary(agents_list)
+        logger.info("Cost tracking: gathered usage summary from %d agents", len(agents_list))
+        
+        # Store cost data in artifact for access by report renderer
+        from tools._pipeline_state import save_artifact
+        save_artifact("cost_report.json", usage_dict)
+        logger.debug("Saved cost report to artifact store")
+        
     finally:
         clear_session()
 
