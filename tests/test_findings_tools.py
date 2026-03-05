@@ -19,6 +19,7 @@ from tools.findings_tools import (
     _build_quality_section,
     _build_recommendations_section,
     _build_statistical_analysis_section,
+    _build_target_section,
     _build_visualizations_section,
     _collect_unresolved,
     assemble_findings,
@@ -757,3 +758,292 @@ class TestAssembleFindingsEdgeCases:
         findings = Findings.model_validate_json(result)
         stat_section = next(s for s in findings.sections if s["title"] == "Statistical Analysis")
         assert len(stat_section.get("plot_paths", [])) == 20
+
+
+# ---------------------------------------------------------------------------
+# _build_target_section()
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTargetSection:
+    """Test the _build_target_section helper."""
+
+    def test_classification_section(self):
+        data = {
+            "column": "species",
+            "problem_type": "classification",
+            "n_classes": 3,
+            "imbalance_ratio": 1.0,
+            "class_distribution": {
+                "setosa": {"count": 50, "pct": 33.3},
+                "versicolor": {"count": 50, "pct": 33.3},
+                "virginica": {"count": 50, "pct": 33.3},
+            },
+            "per_class_feature_stats": {
+                "setosa": {"sepal_length": {"mean": 5.0, "std": 0.3}},
+            },
+        }
+        section = _build_target_section(data)
+        assert section["title"] == "Target Variable Analysis"
+        assert "species" in section["content"]
+        assert "classification" in section["content"]
+        assert "well-balanced" in section["content"]
+
+    def test_classification_imbalanced(self):
+        data = {
+            "column": "fraud",
+            "problem_type": "classification",
+            "n_classes": 2,
+            "imbalance_ratio": 15.0,
+            "class_distribution": {
+                "0": {"count": 950, "pct": 95.0},
+                "1": {"count": 50, "pct": 5.0},
+            },
+        }
+        section = _build_target_section(data)
+        assert "Significant class imbalance" in section["content"]
+        assert "SMOTE" in section["content"]
+
+    def test_classification_moderate_imbalance(self):
+        data = {
+            "column": "label",
+            "problem_type": "classification",
+            "n_classes": 2,
+            "imbalance_ratio": 2.5,
+            "class_distribution": {
+                "a": {"count": 71, "pct": 71.0},
+                "b": {"count": 29, "pct": 29.0},
+            },
+        }
+        section = _build_target_section(data)
+        assert "Moderate" in section["content"]
+        assert "Stratified" in section["content"]
+
+    def test_regression_section(self):
+        data = {
+            "column": "price",
+            "problem_type": "regression",
+            "target_stats": {
+                "mean": 50000.0,
+                "median": 45000.0,
+                "std": 15000.0,
+                "skewness": 1.5,
+            },
+            "top_correlated_features": [
+                {"feature": "size", "correlation": 0.85},
+                {"feature": "rooms", "correlation": 0.72},
+            ],
+        }
+        section = _build_target_section(data)
+        assert "regression" in section["content"]
+        assert "price" in section["content"]
+        assert "size" in section["content"]
+
+    def test_unsupervised_section(self):
+        data = {"problem_type": "unsupervised"}
+        section = _build_target_section(data)
+        assert section["title"] == "Target Variable Analysis"
+        assert "unsupervised" in section["content"].lower()
+
+    def test_no_column_section(self):
+        data = {"problem_type": "classification", "column": ""}
+        section = _build_target_section(data)
+        assert "unsupervised" in section["content"].lower()
+
+
+# ---------------------------------------------------------------------------
+# assemble_findings — target_info fallback (no active session)
+# ---------------------------------------------------------------------------
+
+
+class TestAssembleFindingsTargetFallback:
+    """Test that assemble_findings() falls back to target_info when
+    target_analysis is not available in artifact store."""
+
+    def test_fallback_from_target_info(
+        self, eda_results_basic, critic_approved, tmp_path, monkeypatch,
+    ):
+        """When target_analysis is missing but target_info exists,
+        the Target Variable Analysis section should still appear."""
+        from tools._pipeline_state import (
+            init_session, clear_session, save_state, load_state,
+        )
+
+        monkeypatch.setattr(
+            "tools._pipeline_state._BASE_STATE_DIR", tmp_path / ".state",
+        )
+        init_session()
+        try:
+            # Save artifacts that assemble_findings composes from
+            save_state("describe_stats", json.dumps(eda_results_basic.describe))
+            save_state("missing_analysis", eda_results_basic.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda_results_basic.correlation))
+            save_state("critic_report", critic_approved.model_dump_json())
+
+            # Save target_info (always saved by main.py pre-pipeline)
+            # but do NOT save target_analysis (simulating LLM skipping it)
+            target_info = {
+                "column": "species",
+                "problem_type": "classification",
+                "n_classes": 3,
+                "class_counts": {"setosa": 50, "versicolor": 50, "virginica": 50},
+                "imbalance_ratio": 1.0,
+                "detection_method": "name_heuristic",
+                "has_datetime_index": False,
+            }
+            save_state("target_info", json.dumps(target_info))
+
+            assemble_findings(
+                eda_results_json="STATE_REF:describe_stats",
+                critic_report_json="STATE_REF:critic_report",
+                plot_paths_json=json.dumps([]),
+            )
+            # Load findings from artifact store (active session returns ref)
+            findings = Findings.model_validate_json(load_state("findings"))
+            titles = [s["title"] for s in findings.sections]
+            assert "Target Variable Analysis" in titles
+
+            target_sec = next(
+                s for s in findings.sections
+                if s["title"] == "Target Variable Analysis"
+            )
+            assert "species" in target_sec["content"]
+            assert "classification" in target_sec["content"]
+            assert "well-balanced" in target_sec["content"]
+        finally:
+            clear_session()
+
+    def test_no_target_info_no_section(
+        self, eda_results_basic, critic_approved, tmp_path, monkeypatch,
+    ):
+        """When neither target_analysis nor target_info exists,
+        the Target Variable Analysis section should NOT appear."""
+        from tools._pipeline_state import (
+            init_session, clear_session, save_state, load_state,
+        )
+
+        monkeypatch.setattr(
+            "tools._pipeline_state._BASE_STATE_DIR", tmp_path / ".state",
+        )
+        init_session()
+        try:
+            save_state("describe_stats", json.dumps(eda_results_basic.describe))
+            save_state("missing_analysis", eda_results_basic.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda_results_basic.correlation))
+            save_state("critic_report", critic_approved.model_dump_json())
+
+            assemble_findings(
+                eda_results_json="STATE_REF:describe_stats",
+                critic_report_json="STATE_REF:critic_report",
+                plot_paths_json=json.dumps([]),
+            )
+            findings = Findings.model_validate_json(load_state("findings"))
+            titles = [s["title"] for s in findings.sections]
+            assert "Target Variable Analysis" not in titles
+        finally:
+            clear_session()
+
+    def test_target_analysis_preferred_over_fallback(
+        self, eda_results_basic, critic_approved, tmp_path, monkeypatch,
+    ):
+        """When both target_analysis and target_info exist,
+        target_analysis (richer data) is used."""
+        from tools._pipeline_state import (
+            init_session, clear_session, save_state, load_state,
+        )
+
+        monkeypatch.setattr(
+            "tools._pipeline_state._BASE_STATE_DIR", tmp_path / ".state",
+        )
+        init_session()
+        try:
+            save_state("describe_stats", json.dumps(eda_results_basic.describe))
+            save_state("missing_analysis", eda_results_basic.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda_results_basic.correlation))
+            save_state("critic_report", critic_approved.model_dump_json())
+
+            # Save BOTH target_info and target_analysis
+            save_state("target_info", json.dumps({
+                "column": "species",
+                "problem_type": "classification",
+                "n_classes": 3,
+                "class_counts": {"setosa": 50, "versicolor": 50, "virginica": 50},
+                "imbalance_ratio": 1.0,
+                "detection_method": "name_heuristic",
+                "has_datetime_index": False,
+            }))
+            save_state("target_analysis", json.dumps({
+                "column": "species",
+                "problem_type": "classification",
+                "n_classes": 3,
+                "imbalance_ratio": 1.0,
+                "class_distribution": {
+                    "setosa": {"count": 50, "pct": 33.3},
+                    "versicolor": {"count": 50, "pct": 33.3},
+                    "virginica": {"count": 50, "pct": 33.3},
+                },
+                "per_class_feature_stats": {
+                    "setosa": {"sepal_length": {"mean": 5.0, "std": 0.3}},
+                },
+            }))
+
+            assemble_findings(
+                eda_results_json="STATE_REF:describe_stats",
+                critic_report_json="STATE_REF:critic_report",
+                plot_paths_json=json.dumps([]),
+            )
+            findings = Findings.model_validate_json(load_state("findings"))
+            target_sec = next(
+                s for s in findings.sections
+                if s["title"] == "Target Variable Analysis"
+            )
+            # per_class_feature_stats only comes from target_analysis, not fallback
+            assert "sepal_length" in target_sec["content"]
+        finally:
+            clear_session()
+
+    def test_fallback_pairs_class_distribution_plot(
+        self, eda_results_basic, critic_approved, tmp_path, monkeypatch,
+    ):
+        """Fallback target section pairs class_distribution.png plot."""
+        from tools._pipeline_state import (
+            init_session, clear_session, save_state, load_state,
+        )
+
+        monkeypatch.setattr(
+            "tools._pipeline_state._BASE_STATE_DIR", tmp_path / ".state",
+        )
+        init_session()
+        try:
+            save_state("describe_stats", json.dumps(eda_results_basic.describe))
+            save_state("missing_analysis", eda_results_basic.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda_results_basic.correlation))
+            save_state("critic_report", critic_approved.model_dump_json())
+            save_state("target_info", json.dumps({
+                "column": "species",
+                "problem_type": "classification",
+                "n_classes": 3,
+                "class_counts": {"setosa": 50, "versicolor": 50, "virginica": 50},
+                "imbalance_ratio": 1.0,
+                "detection_method": "name_heuristic",
+                "has_datetime_index": False,
+            }))
+            # Save class_distribution plot artifact
+            save_state(
+                "plot_class_distribution",
+                json.dumps(["outputs/plots/class_distribution.png"]),
+            )
+
+            assemble_findings(
+                eda_results_json="STATE_REF:describe_stats",
+                critic_report_json="STATE_REF:critic_report",
+                plot_paths_json="STATE_REF:plot_class_distribution",
+            )
+            findings = Findings.model_validate_json(load_state("findings"))
+            target_sec = next(
+                s for s in findings.sections
+                if s["title"] == "Target Variable Analysis"
+            )
+            assert "class_distribution.png" in str(target_sec.get("plot_paths", []))
+        finally:
+            clear_session()

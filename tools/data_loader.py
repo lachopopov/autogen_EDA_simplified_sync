@@ -8,6 +8,9 @@ Public AG2-facing functions:
   - validate_schema(data_json: str) -> str
   - infer_dtypes(data_json: str) -> str
 
+Standalone (pre-pipeline) function:
+  - detect_target(data_json: str) -> str   (heuristic target detection)
+
 OOP layer (invisible to AG2):
   - DataLoader (ABC) → CSVLoader, ParquetLoader, ExcelLoader
 
@@ -29,7 +32,7 @@ from typing import Annotated
 
 import pandas as pd
 
-from eda_state import DataProfile
+from eda_state import DataProfile, TargetInfo
 
 logger = logging.getLogger(__name__)
 
@@ -199,3 +202,148 @@ def infer_dtypes(
             f"Reference: {STATE_REF_PREFIX}dtypes_json"
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Target variable detection (pre-pipeline, called from main.py)
+# ---------------------------------------------------------------------------
+
+# General-purpose keywords — NOT dataset-specific.
+# Ordered by specificity: exact matches first, then prefix/contains.
+_EXACT_KEYWORDS: list[str] = [
+    "target", "label", "y", "class", "price", "churn",
+]
+
+_CONTAINS_KEYWORDS: list[str] = [
+    "target", "label", "class", "outcome",
+    "diagnosis", "default", "churn", "response",
+]
+
+_PREFIX_KEYWORDS: list[str] = ["is_", "has_"]
+
+
+def _has_datetime_column(df: pd.DataFrame) -> bool:
+    """Return True if any column has datetime dtype or is parseable as dates."""
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            return True
+    # Heuristic: try object columns with 'date', 'time', 'timestamp' in name
+    for col in df.select_dtypes(include="object").columns:
+        col_lower = str(col).lower()
+        if any(kw in col_lower for kw in ("date", "time", "timestamp")):
+            try:
+                pd.to_datetime(df[col].head(5), infer_datetime_format=True)
+                return True
+            except (ValueError, TypeError):
+                pass
+    return False
+
+
+def _classify_target(df: pd.DataFrame, col: str) -> TargetInfo:
+    """Build a TargetInfo from a confirmed target column."""
+    series = df[col]
+    nunique = series.nunique()
+    has_dt = _has_datetime_column(df)
+
+    if pd.api.types.is_numeric_dtype(series) and nunique > 10:
+        # Numerical continuous → regression
+        return TargetInfo(
+            column=col,
+            problem_type="regression",
+            n_classes=0,
+            class_counts={},
+            imbalance_ratio=1.0,
+            has_datetime_index=has_dt,
+        )
+
+    # Categorical or low-cardinality numerical → classification
+    counts = series.value_counts().to_dict()
+    # Convert keys to strings for JSON serialisation
+    counts = {str(k): int(v) for k, v in counts.items()}
+    count_values = list(counts.values())
+    ratio = max(count_values) / max(min(count_values), 1)
+
+    return TargetInfo(
+        column=col,
+        problem_type="classification",
+        n_classes=nunique,
+        class_counts=counts,
+        imbalance_ratio=round(ratio, 2),
+        has_datetime_index=has_dt,
+    )
+
+
+def detect_target(data_json: str) -> str:
+    """
+    Heuristic target variable detection.  Called pre-pipeline from main.py.
+
+    Detection strategy (in priority order):
+      1. Exact column-name match against general keyword list
+      2. Column name contains a general keyword
+      3. Column name starts with a known prefix (is_, has_)
+      4. Fallback: last column with nunique < 10
+
+    If no candidate is found, returns TargetInfo with
+    problem_type="unsupervised".
+
+    This is NOT an AG2 tool — it runs before the pipeline starts.
+    The result is confirmed interactively, then injected into the
+    artifact store for downstream agents.
+
+    Args:
+        data_json: JSON string (records orientation) of the DataFrame.
+
+    Returns:
+        JSON string of a TargetInfo model.
+    """
+    df = pd.DataFrame(json.loads(data_json))
+    columns_lower = {str(c).lower(): str(c) for c in df.columns}
+    has_dt = _has_datetime_column(df)
+
+    # --- Step 1: Exact keyword match ---
+    for keyword in _EXACT_KEYWORDS:
+        if keyword in columns_lower:
+            col = columns_lower[keyword]
+            info = _classify_target(df, col)
+            info.detection_method = "name_heuristic"
+            logger.info("Target detected (exact match): '%s'", col)
+            return info.model_dump_json()
+
+    # --- Step 2: Contains keyword match ---
+    for keyword in _CONTAINS_KEYWORDS:
+        for col_lower, col_orig in columns_lower.items():
+            if keyword in col_lower and col_lower != keyword:
+                info = _classify_target(df, col_orig)
+                info.detection_method = "name_heuristic"
+                logger.info("Target detected (contains '%s'): '%s'", keyword, col_orig)
+                return info.model_dump_json()
+
+    # --- Step 3: Prefix match (is_, has_) ---
+    for prefix in _PREFIX_KEYWORDS:
+        for col_lower, col_orig in columns_lower.items():
+            if col_lower.startswith(prefix):
+                info = _classify_target(df, col_orig)
+                info.detection_method = "name_heuristic"
+                logger.info("Target detected (prefix '%s'): '%s'", prefix, col_orig)
+                return info.model_dump_json()
+
+    # --- Step 4: Fallback — last column with nunique < 10 ---
+    low_card = [
+        str(c) for c in df.columns if df[c].nunique() < 10
+    ]
+    if low_card:
+        col = low_card[-1]  # last low-cardinality column
+        info = _classify_target(df, col)
+        info.detection_method = "position_heuristic"
+        logger.info("Target detected (low-cardinality fallback): '%s'", col)
+        return info.model_dump_json()
+
+    # --- No candidate found ---
+    info = TargetInfo(
+        column=None,
+        problem_type="unsupervised",
+        detection_method="none",
+        has_datetime_index=has_dt,
+    )
+    logger.info("No target candidate detected — unsupervised")
+    return info.model_dump_json()

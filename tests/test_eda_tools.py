@@ -11,8 +11,8 @@ import json
 import pandas as pd
 import pytest
 
-from eda_state import EDAResults, MissingInfo
-from tools.eda_tools import correlation_matrix, describe_stats, missing_analysis
+from eda_state import EDAResults, MissingInfo, TargetInfo
+from tools.eda_tools import correlation_matrix, describe_stats, missing_analysis, target_analysis
 
 
 # ---------------------------------------------------------------------------
@@ -355,3 +355,108 @@ class TestEndToEnd:
         assert len(eda.describe) == 3
         assert eda.missing.total_pct == 20.0
         assert "age" in eda.correlation
+
+
+# ---------------------------------------------------------------------------
+# target_analysis()
+# ---------------------------------------------------------------------------
+
+
+class TestTargetAnalysis:
+    """Test target_analysis() for classification, regression, unsupervised."""
+
+    @pytest.fixture()
+    def classification_df_json(self):
+        df = pd.DataFrame({
+            "feat_a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "feat_b": [10, 20, 30, 40, 50, 60],
+            "species": ["setosa", "setosa", "versicolor", "versicolor", "virginica", "virginica"],
+        })
+        return df.to_json(orient="records")
+
+    @pytest.fixture()
+    def regression_df_json(self):
+        df = pd.DataFrame({
+            "size": list(range(50)),
+            "rooms": [x % 5 + 1 for x in range(50)],
+            "price": [x * 1000.0 for x in range(50)],
+        })
+        return df.to_json(orient="records")
+
+    @pytest.fixture()
+    def classification_target_info_json(self):
+        ti = TargetInfo(
+            column="species",
+            problem_type="classification",
+            n_classes=3,
+            class_counts={"setosa": 2, "versicolor": 2, "virginica": 2},
+            imbalance_ratio=1.0,
+            detection_method="name_heuristic",
+        )
+        return ti.model_dump_json()
+
+    @pytest.fixture()
+    def regression_target_info_json(self):
+        ti = TargetInfo(
+            column="price",
+            problem_type="regression",
+            n_classes=0,
+            detection_method="name_heuristic",
+        )
+        return ti.model_dump_json()
+
+    @pytest.fixture()
+    def unsupervised_target_info_json(self):
+        ti = TargetInfo(
+            column=None,
+            problem_type="unsupervised",
+            detection_method="none",
+        )
+        return ti.model_dump_json()
+
+    def test_classification_returns_valid_json(self, classification_df_json, classification_target_info_json):
+        result = json.loads(target_analysis(classification_df_json, classification_target_info_json))
+        assert result["problem_type"] == "classification"
+        assert result["column"] == "species"
+
+    def test_classification_class_distribution(self, classification_df_json, classification_target_info_json):
+        result = json.loads(target_analysis(classification_df_json, classification_target_info_json))
+        dist = result["class_distribution"]
+        assert len(dist) == 3
+        for cls_val in dist.values():
+            assert "count" in cls_val
+            assert "pct" in cls_val
+
+    def test_classification_per_class_stats(self, classification_df_json, classification_target_info_json):
+        result = json.loads(target_analysis(classification_df_json, classification_target_info_json))
+        assert "per_class_feature_stats" in result
+        per_class = result["per_class_feature_stats"]
+        assert "setosa" in per_class
+        assert "feat_a" in per_class["setosa"]
+        assert "mean" in per_class["setosa"]["feat_a"]
+
+    def test_regression_returns_valid_json(self, regression_df_json, regression_target_info_json):
+        result = json.loads(target_analysis(regression_df_json, regression_target_info_json))
+        assert result["problem_type"] == "regression"
+        assert result["column"] == "price"
+
+    def test_regression_target_stats(self, regression_df_json, regression_target_info_json):
+        result = json.loads(target_analysis(regression_df_json, regression_target_info_json))
+        stats = result["target_stats"]
+        for key in ("mean", "median", "std", "skewness", "kurtosis", "min", "max"):
+            assert key in stats
+
+    def test_regression_correlations(self, regression_df_json, regression_target_info_json):
+        result = json.loads(target_analysis(regression_df_json, regression_target_info_json))
+        assert "feature_target_correlations" in result
+        assert "top_correlated_features" in result
+        assert len(result["top_correlated_features"]) <= 3
+
+    def test_unsupervised_returns_empty(self, classification_df_json, unsupervised_target_info_json):
+        result = json.loads(target_analysis(classification_df_json, unsupervised_target_info_json))
+        assert result["problem_type"] == "unsupervised"
+
+    def test_missing_column_treated_as_unsupervised(self, classification_df_json):
+        ti = TargetInfo(column="nonexistent", problem_type="classification")
+        result = json.loads(target_analysis(classification_df_json, ti.model_dump_json()))
+        assert result["problem_type"] == "unsupervised"

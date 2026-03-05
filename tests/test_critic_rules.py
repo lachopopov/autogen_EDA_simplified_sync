@@ -19,6 +19,7 @@ from eda_state import CriticReport
 from tools.critic_rules import (
     DEFAULT_RULES,
     AllUniqueColumnRule,
+    ClassImbalanceRule,
     CriticRule,
     DatasetMissingnessRule,
     DuplicateRowsRule,
@@ -537,8 +538,8 @@ class TestDefaultRules:
     """Test the DEFAULT_RULES list."""
 
     def test_count(self):
-        """All 10 V1 rules are registered."""
-        assert len(DEFAULT_RULES) == 10
+        """All 11 V1 rules are registered."""
+        assert len(DEFAULT_RULES) == 11
 
     def test_all_critic_rule_instances(self):
         """Every item in DEFAULT_RULES is a CriticRule instance."""
@@ -668,3 +669,120 @@ class TestRunCriticRules:
         report = CriticReport.model_validate_json(result)
         assert report.status in ("APPROVED", "REVISION_NEEDED")
         # Should not raise TypeError: unhashable type: 'dict'
+
+
+# ---------------------------------------------------------------------------
+# ClassImbalanceRule
+# ---------------------------------------------------------------------------
+
+
+class TestClassImbalanceRule:
+    """Test ClassImbalanceRule with mocked artifact store."""
+
+    def _mock_pipeline(self, monkeypatch, target_info_json):
+        """Wire up mocked pipeline state returning the given TargetInfo JSON."""
+        monkeypatch.setattr(
+            "tools.critic_rules.ClassImbalanceRule.check",
+            ClassImbalanceRule.check,  # keep real method
+        )
+        # Patch inside the check() method's lazy import
+        import tools._pipeline_state as ps
+        monkeypatch.setattr(ps, "is_active", lambda: True)
+        monkeypatch.setattr(ps, "load_state", lambda key: target_info_json if key == "target_info" else None)
+
+    def test_high_severity_extreme_imbalance(self, monkeypatch, clean_df):
+        from eda_state import TargetInfo
+        ti = TargetInfo(
+            column="cat",
+            problem_type="classification",
+            imbalance_ratio=15.0,
+            detection_method="name_heuristic",
+        )
+        self._mock_pipeline(monkeypatch, ti.model_dump_json())
+        rule = ClassImbalanceRule()
+        flags = rule.check(clean_df, {})
+        high = [f for f in flags if f.severity == "HIGH"]
+        assert len(high) == 1
+        assert "15.0:1" in high[0].message
+
+    def test_medium_severity_moderate_imbalance(self, monkeypatch, clean_df):
+        from eda_state import TargetInfo
+        ti = TargetInfo(
+            column="cat",
+            problem_type="classification",
+            imbalance_ratio=5.0,
+            detection_method="name_heuristic",
+        )
+        self._mock_pipeline(monkeypatch, ti.model_dump_json())
+        rule = ClassImbalanceRule()
+        flags = rule.check(clean_df, {})
+        med = [f for f in flags if f.severity == "MEDIUM"]
+        assert len(med) == 1
+
+    def test_no_flag_balanced(self, monkeypatch, clean_df):
+        from eda_state import TargetInfo
+        ti = TargetInfo(
+            column="cat",
+            problem_type="classification",
+            imbalance_ratio=1.5,
+            detection_method="name_heuristic",
+        )
+        self._mock_pipeline(monkeypatch, ti.model_dump_json())
+        rule = ClassImbalanceRule()
+        flags = rule.check(clean_df, {})
+        class_flags = [f for f in flags if f.severity in ("HIGH", "MEDIUM")]
+        assert len(class_flags) == 0
+
+    def test_position_heuristic_low_warning(self, monkeypatch, clean_df):
+        from eda_state import TargetInfo
+        ti = TargetInfo(
+            column="cat",
+            problem_type="classification",
+            imbalance_ratio=1.0,
+            detection_method="position_heuristic",
+        )
+        self._mock_pipeline(monkeypatch, ti.model_dump_json())
+        rule = ClassImbalanceRule()
+        flags = rule.check(clean_df, {})
+        low = [f for f in flags if f.severity == "LOW"]
+        assert len(low) == 1
+        assert "position heuristic" in low[0].message
+
+    def test_regression_skew_medium(self, monkeypatch):
+        from eda_state import TargetInfo
+        # Create a heavily skewed numerical column
+        df = pd.DataFrame({
+            "target_price": [1] * 90 + [1000] * 10,
+            "feat": list(range(100)),
+        })
+        ti = TargetInfo(
+            column="target_price",
+            problem_type="regression",
+            detection_method="name_heuristic",
+        )
+        self._mock_pipeline(monkeypatch, ti.model_dump_json())
+        rule = ClassImbalanceRule()
+        flags = rule.check(df, {})
+        skew_flags = [f for f in flags if "skewed" in f.message]
+        assert len(skew_flags) == 1
+        assert skew_flags[0].severity == "MEDIUM"
+
+    def test_no_pipeline_returns_empty(self, clean_df):
+        """Without active pipeline, should return empty list."""
+        rule = ClassImbalanceRule()
+        # No monkeypatch — pipeline is_active() returns False by default
+        flags = rule.check(clean_df, {})
+        assert flags == []
+
+    def test_no_target_info_returns_empty(self, monkeypatch, clean_df):
+        import tools._pipeline_state as ps
+        monkeypatch.setattr(ps, "is_active", lambda: True)
+        monkeypatch.setattr(ps, "load_state", lambda key: None)
+        rule = ClassImbalanceRule()
+        flags = rule.check(clean_df, {})
+        assert flags == []
+
+    def test_in_default_rules(self):
+        """ClassImbalanceRule must be in DEFAULT_RULES."""
+        class_names = [type(r).__name__ for r in DEFAULT_RULES]
+        assert "ClassImbalanceRule" in class_names

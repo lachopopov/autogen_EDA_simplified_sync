@@ -107,10 +107,10 @@ class TestCreateVisualizationAgent:
 class TestToolRegistration:
     """Test that tools are properly wired to agent + proxy."""
 
-    def test_three_tools_on_agent(self, wired_pair):
+    def test_four_tools_on_agent(self, wired_pair):
         agent, _ = wired_pair
         tools = agent.llm_config.get("tools", [])
-        assert len(tools) == 3
+        assert len(tools) == 4
 
     def test_tool_names(self, wired_pair):
         agent, _ = wired_pair
@@ -119,6 +119,7 @@ class TestToolRegistration:
             "plot_histograms",
             "plot_correlation_heatmap",
             "plot_missing_heatmap",
+            "plot_class_distribution",
         }
 
     def test_tool_descriptions(self, wired_pair):
@@ -132,6 +133,7 @@ class TestToolRegistration:
         assert "plot_histograms" in proxy._function_map
         assert "plot_correlation_heatmap" in proxy._function_map
         assert "plot_missing_heatmap" in proxy._function_map
+        assert "plot_class_distribution" in proxy._function_map
 
     def test_plot_histograms_schema(self, wired_pair):
         agent, _ = wired_pair

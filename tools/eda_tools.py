@@ -27,7 +27,7 @@ from typing import Annotated
 
 import pandas as pd
 
-from eda_state import EDAResults, MissingInfo
+from eda_state import EDAResults, MissingInfo, TargetInfo
 
 logger = logging.getLogger(__name__)
 
@@ -174,5 +174,138 @@ def correlation_matrix(
         return (
             f"Correlation matrix computed for {len(corr_dict)} numerical columns. "
             f"Reference: {STATE_REF_PREFIX}correlation_matrix"
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Target variable analysis
+# ---------------------------------------------------------------------------
+
+def target_analysis(
+    data_json: Annotated[str, "JSON string (records orientation) from load_data()"],
+    target_info_json: Annotated[str, "JSON string of TargetInfo from detect_target()"],
+) -> str:
+    """
+    AG2 tool entry point.
+    Analyse the target variable in the context of the full dataset.
+
+    For classification:
+      - Class value counts + percentages
+      - Imbalance ratio
+      - Per-class feature stats (mean, std for each numerical column, grouped by target)
+    For regression:
+      - Target distribution stats (mean, median, std, skewness, kurtosis)
+      - Feature-target Pearson correlations
+      - Top 3 most correlated features
+
+    If target_info has no target column (unsupervised), returns an empty dict.
+
+    Returns:
+        JSON string with target analysis results.
+    """
+    import numpy as np
+
+    # Artifact store: resolve inputs
+    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    if is_active():
+        data_json = resolve(data_json, "data_json")
+        target_info_json = resolve(target_info_json, "target_info")
+
+    df = pd.DataFrame(json.loads(data_json))
+    target_info = TargetInfo.model_validate_json(target_info_json)
+
+    if target_info.column is None or target_info.column not in df.columns:
+        result = json.dumps({"problem_type": "unsupervised"})
+        if is_active():
+            save_state("target_analysis", result)
+            return (
+                f"No target column — skipping target analysis. "
+                f"Reference: {STATE_REF_PREFIX}target_analysis"
+            )
+        return result
+
+    col = target_info.column
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    # Exclude the target itself from feature columns if it's numerical
+    feature_num = [c for c in num_cols if c != col]
+
+    analysis: dict = {
+        "column": col,
+        "problem_type": target_info.problem_type,
+    }
+
+    if target_info.problem_type == "classification":
+        # Class counts + percentages
+        counts = df[col].value_counts()
+        total = len(df)
+        class_detail = {}
+        for cls_val, cnt in counts.items():
+            class_detail[str(cls_val)] = {
+                "count": int(cnt),
+                "pct": round(cnt / total * 100, 2),
+            }
+        analysis["class_distribution"] = class_detail
+        analysis["n_classes"] = target_info.n_classes
+        analysis["imbalance_ratio"] = target_info.imbalance_ratio
+
+        # Per-class feature stats (group-by target)
+        if feature_num:
+            per_class_stats: dict = {}
+            grouped = df.groupby(col)
+            for cls_val, group_df in grouped:
+                cls_stats: dict = {}
+                for feat in feature_num:
+                    series = group_df[feat].dropna()
+                    cls_stats[feat] = {
+                        "mean": round(float(series.mean()), 4),
+                        "std": round(float(series.std()), 4),
+                    }
+                per_class_stats[str(cls_val)] = cls_stats
+            analysis["per_class_feature_stats"] = per_class_stats
+
+    elif target_info.problem_type == "regression":
+        target_series = df[col].dropna()
+        analysis["target_stats"] = {
+            "mean": round(float(target_series.mean()), 4),
+            "median": round(float(target_series.median()), 4),
+            "std": round(float(target_series.std()), 4),
+            "skewness": round(float(target_series.skew()), 4),
+            "kurtosis": round(float(target_series.kurtosis()), 4),
+            "min": round(float(target_series.min()), 4),
+            "max": round(float(target_series.max()), 4),
+        }
+
+        # Feature-target correlations
+        if feature_num:
+            corrs = {}
+            for feat in feature_num:
+                valid = df[[feat, col]].dropna()
+                if len(valid) > 1:
+                    r = float(np.corrcoef(valid[feat], valid[col])[0, 1])
+                    corrs[feat] = round(r, 4) if not np.isnan(r) else 0.0
+            analysis["feature_target_correlations"] = corrs
+
+            # Top 3 most correlated
+            if corrs:
+                sorted_corrs = sorted(
+                    corrs.items(), key=lambda x: abs(x[1]), reverse=True,
+                )
+                analysis["top_correlated_features"] = [
+                    {"feature": f, "correlation": r}
+                    for f, r in sorted_corrs[:3]
+                ]
+
+    logger.info(
+        "Target analysis complete: column='%s', type=%s",
+        col, target_info.problem_type,
+    )
+    result = json.dumps(analysis)
+
+    if is_active():
+        save_state("target_analysis", result)
+        return (
+            f"Target analysis complete for '{col}' ({target_info.problem_type}). "
+            f"Reference: {STATE_REF_PREFIX}target_analysis"
         )
     return result

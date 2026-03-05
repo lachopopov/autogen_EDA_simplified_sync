@@ -51,7 +51,8 @@ STEP 1: Call prepare_interpretation_context() to receive the complete fact sheet
 
 STEP 2: Based on the fact sheet, generate expert commentary for EVERY section and
   EVERY plot. For each section (overview, missing_values, correlation,
-  statistical_analysis, quality_assessment) provide THREE perspectives:
+  statistical_analysis, target_variable_analysis, quality_assessment)
+  provide THREE perspectives:
     - "statistical": distribution shape, significance, test implications
     - "ds_ml": feature engineering, model selection, preprocessing needs
     - "business": operational meaning, risk indicators, actionability

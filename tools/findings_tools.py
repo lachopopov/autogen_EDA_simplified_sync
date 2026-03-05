@@ -111,6 +111,82 @@ def _build_correlation_section(eda: EDAResults) -> dict[str, Any]:
     return {"title": "Correlation Analysis", "content": content}
 
 
+def _build_target_section(target_analysis_data: dict) -> dict[str, Any]:
+    """Build the Target Variable Analysis report section."""
+    ptype = target_analysis_data.get("problem_type", "unsupervised")
+    col = target_analysis_data.get("column", "")
+
+    if ptype == "unsupervised" or not col:
+        return {
+            "title": "Target Variable Analysis",
+            "content": "No target variable identified — unsupervised analysis.",
+        }
+
+    paragraphs: list[str] = []
+
+    if ptype == "classification":
+        n_cls = target_analysis_data.get("n_classes", 0)
+        ratio = target_analysis_data.get("imbalance_ratio", 1.0)
+        dist = target_analysis_data.get("class_distribution", {})
+
+        dist_parts = [f"{k}: {v['count']} ({v['pct']:.1f}%)" for k, v in dist.items()]
+        paragraphs.append(
+            f"Target variable '{col}' is a classification target with "
+            f"{n_cls} classes."
+        )
+        if dist_parts:
+            paragraphs.append(f"Class distribution: {', '.join(dist_parts)}.")
+
+        if ratio <= 1.5:
+            paragraphs.append(
+                f"Classes are well-balanced (imbalance ratio: {ratio:.1f}:1)."
+            )
+        elif ratio <= 3:
+            paragraphs.append(
+                f"Moderate class imbalance detected (ratio: {ratio:.1f}:1). "
+                f"Stratified splitting recommended."
+            )
+        else:
+            paragraphs.append(
+                f"Significant class imbalance detected (ratio: {ratio:.1f}:1). "
+                f"Consider SMOTE, class weights, or undersampling."
+            )
+
+        # Per-class feature stats
+        per_class = target_analysis_data.get("per_class_feature_stats", {})
+        if per_class:
+            paragraphs.append("Per-class feature statistics (mean ± std):")
+            for cls_val, feat_stats in per_class.items():
+                parts = [
+                    f"{f}: {s['mean']:.2f}±{s['std']:.2f}"
+                    for f, s in list(feat_stats.items())[:5]
+                ]
+                paragraphs.append(f"  {cls_val}: {', '.join(parts)}")
+
+    elif ptype == "regression":
+        stats = target_analysis_data.get("target_stats", {})
+        paragraphs.append(
+            f"Target variable '{col}' is a regression target."
+        )
+        if stats:
+            paragraphs.append(
+                f"Distribution: mean={stats.get('mean', 0):.2f}, "
+                f"median={stats.get('median', 0):.2f}, "
+                f"std={stats.get('std', 0):.2f}, "
+                f"skewness={stats.get('skewness', 0):.2f}."
+            )
+
+        top_feats = target_analysis_data.get("top_correlated_features", [])
+        if top_feats:
+            parts = [f"{f['feature']} (r={f['correlation']:.3f})" for f in top_feats]
+            paragraphs.append(f"Top correlated features: {', '.join(parts)}.")
+
+    return {
+        "title": "Target Variable Analysis",
+        "content": " ".join(paragraphs),
+    }
+
+
 def _build_statistical_analysis_section(eda: EDAResults) -> dict[str, Any]:
     """Build an interpretive statistical analysis section.
 
@@ -693,6 +769,8 @@ def prepare_interpretation_context() -> str:
     corr_raw = load_state("correlation_matrix")
     critic_raw = load_state("critic_report")
     data_raw = load_state("data_json")
+    target_info_raw = load_state("target_info")
+    target_analysis_raw = load_state("target_analysis")
 
     if desc_raw is None:
         raise PipelineStateError(
@@ -706,7 +784,10 @@ def prepare_interpretation_context() -> str:
 
     # Load plot paths (compose from individual artifacts)
     plot_paths: list[str] = []
-    for key in ("plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap"):
+    for key in (
+        "plot_histograms", "plot_correlation_heatmap",
+        "plot_missing_heatmap", "plot_class_distribution",
+    ):
         raw = load_state(key)
         if raw:
             plot_paths.extend(json.loads(raw))
@@ -749,6 +830,22 @@ def prepare_interpretation_context() -> str:
             "\nHISTOGRAM BIN DATA: raw data not available in artifact store."
         )
 
+    # Target variable analysis
+    if target_analysis_raw:
+        target_analysis_data = json.loads(target_analysis_raw)
+        target_section = _build_target_section(target_analysis_data)
+        sections.append("\nTARGET VARIABLE ANALYSIS:")
+        sections.append(f"  {target_section['content']}")
+    elif target_info_raw:
+        ti = json.loads(target_info_raw)
+        if ti.get("column"):
+            sections.append(
+                f"\nTARGET VARIABLE ANALYSIS:\n"
+                f"  Target column '{ti['column']}' identified "
+                f"(type: {ti.get('problem_type', 'unknown')}) "
+                f"but detailed analysis not yet available."
+            )
+
     # Critic flags
     sections.append("\nQUALITY FLAGS:")
     sections.append(_build_critic_block(critic))
@@ -780,6 +877,7 @@ def save_interpretations(
         str,
         "JSON string matching the Interpretations schema. "
         "Keys: overview, missing_values, correlation, statistical_analysis, "
+        "target_variable_analysis, "
         "quality_assessment (each with 'statistical', 'ds_ml', 'business' sub-keys), "
         "plot_commentaries (list of {plot_file, statistical, ds_ml, business}), "
         "conclusions (string), recommendations_and_business_implications (string).",
@@ -816,6 +914,7 @@ def save_interpretations(
             interp.missing_values,
             interp.correlation,
             interp.statistical_analysis,
+            interp.target_variable_analysis,
             interp.quality_assessment,
         )
         if field is not None
@@ -921,6 +1020,7 @@ def assemble_findings(
             hist = load_state("plot_histograms")
             corr_hm = load_state("plot_correlation_heatmap")
             miss_hm = load_state("plot_missing_heatmap")
+            cls_dist = load_state("plot_class_distribution")
             merged: list[str] = []
             if hist:
                 merged.extend(json.loads(hist))
@@ -928,6 +1028,8 @@ def assemble_findings(
                 merged.extend(json.loads(corr_hm))
             if miss_hm:
                 merged.extend(json.loads(miss_hm))
+            if cls_dist:
+                merged.extend(json.loads(cls_dist))
             plot_paths = merged
             plot_paths_json = json.dumps(plot_paths)
             logger.info("plot_paths composed from %d visualization artifacts", len(plot_paths))
@@ -957,6 +1059,7 @@ def assemble_findings(
     hist_paths: list[str] = []
     corr_heatmap_paths: list[str] = []
     missing_heatmap_paths: list[str] = []
+    target_plot_paths: list[str] = []
     for pp in plot_paths:
         stem = Path(pp).stem
         if stem.startswith("hist_"):
@@ -965,6 +1068,8 @@ def assemble_findings(
             corr_heatmap_paths.append(pp)
         elif stem == "missing_heatmap":
             missing_heatmap_paths.append(pp)
+        elif stem in ("class_distribution", "target_distribution"):
+            target_plot_paths.append(pp)
 
     # --- Helper: enrich a section with LLM commentary ---
     def _enrich(
@@ -1025,6 +1130,37 @@ def assemble_findings(
         _build_quality_section(critic, is_final), "quality_assessment",
     )
 
+    # Target variable section (if target was detected)
+    target_sec: dict[str, Any] | None = None
+    if is_active():
+        ta_raw = load_state("target_analysis")
+        if ta_raw:
+            ta_data = json.loads(ta_raw)
+            target_sec = _build_target_section(ta_data)
+        else:
+            # Fallback: build basic target section from target_info
+            # (always saved pre-pipeline by main.py)
+            ti_raw = load_state("target_info")
+            if ti_raw:
+                ti = json.loads(ti_raw)
+                if ti.get("column"):
+                    total = sum(ti.get("class_counts", {}).values()) or 1
+                    target_sec = _build_target_section({
+                        "column": ti["column"],
+                        "problem_type": ti.get("problem_type", "unsupervised"),
+                        "n_classes": ti.get("n_classes", 0),
+                        "imbalance_ratio": ti.get("imbalance_ratio", 1.0),
+                        "class_distribution": {
+                            k: {"count": v, "pct": round(v / total * 100, 2)}
+                            for k, v in ti.get("class_counts", {}).items()
+                        },
+                    })
+        if target_sec is not None:
+            target_sec = _enrich(
+                target_sec, "target_variable_analysis",
+                paired_plots=target_plot_paths or None,
+            )
+
     # Conclusions & Recommendations: LLM replaces deterministic when available
     conclusions = _build_conclusions_section(eda, critic)
     if interp and interp.conclusions:
@@ -1038,10 +1174,14 @@ def assemble_findings(
         missing,
         correlation,
         statistical,
+    ]
+    if target_sec is not None:
+        sections.append(target_sec)
+    sections.extend([
         quality,
         conclusions,
         recommendations,
-    ]
+    ])
 
     # Collect unresolved flags only on final iteration with remaining issues
     unresolved: list[str] = []

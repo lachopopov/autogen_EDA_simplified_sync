@@ -387,6 +387,98 @@ class SingleValueCategoricalRule(CriticRule):
         return []
 
 
+class ClassImbalanceRule(CriticRule):
+    """Target variable class imbalance analysis.
+
+    Only fires when target_info is available via the artifact store.
+    Loads target_info from the pipeline state to inspect imbalance.
+
+    Thresholds:
+      - Imbalance ratio > 10:1 → HIGH
+      - Imbalance ratio > 3:1  → MEDIUM
+      - Position heuristic detection → LOW (confidence warning)
+      - Regression target |skew| > 2 → MEDIUM
+    """
+
+    name = "class_imbalance"
+
+    def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
+        # Load target_info from artifact store (if available)
+        try:
+            from tools._pipeline_state import is_active, load_state
+            if not is_active():
+                return []
+            raw = load_state("target_info")
+            if raw is None:
+                return []
+        except Exception:
+            return []
+
+        from eda_state import TargetInfo
+        target_info = TargetInfo.model_validate_json(raw)
+
+        if target_info.column is None:
+            return []
+
+        flags: list[CriticFlag] = []
+
+        # Confidence warning for position heuristic
+        if target_info.detection_method == "position_heuristic":
+            flags.append(CriticFlag(
+                column=target_info.column,
+                rule=self.name,
+                severity="LOW",
+                message=(
+                    f"Target '{target_info.column}' detected by position heuristic "
+                    f"— verify this is the correct target variable"
+                ),
+                value=0.0,
+                suggestion="Confirm target variable or use --target CLI flag",
+            ))
+
+        if target_info.problem_type == "classification":
+            ratio = target_info.imbalance_ratio
+            if ratio > 10:
+                flags.append(CriticFlag(
+                    column=target_info.column,
+                    rule=self.name,
+                    severity="HIGH",
+                    message=f"Severe class imbalance: {ratio:.1f}:1",
+                    value=ratio,
+                    suggestion="Consider SMOTE, class weights, or stratified sampling",
+                ))
+            elif ratio > 3:
+                flags.append(CriticFlag(
+                    column=target_info.column,
+                    rule=self.name,
+                    severity="MEDIUM",
+                    message=f"Moderate class imbalance: {ratio:.1f}:1",
+                    value=ratio,
+                    suggestion="Consider stratified train/test split and class weights",
+                ))
+
+        elif target_info.problem_type == "regression":
+            # Check regression target skewness
+            if target_info.column in df.columns:
+                series = df[target_info.column].dropna()
+                if len(series) > 2:
+                    skew_val = float(series.skew())
+                    if abs(skew_val) > 2:
+                        flags.append(CriticFlag(
+                            column=target_info.column,
+                            rule=self.name,
+                            severity="MEDIUM",
+                            message=(
+                                f"Regression target is highly skewed "
+                                f"(skewness={skew_val:.2f})"
+                            ),
+                            value=abs(skew_val),
+                            suggestion="Consider log or Box-Cox transform",
+                        ))
+
+        return flags
+
+
 # ---------------------------------------------------------------------------
 # Rule registry — Open/Closed: add new rule = add new class + append here
 # ---------------------------------------------------------------------------
@@ -402,6 +494,7 @@ DEFAULT_RULES: list[CriticRule] = [
     NearPerfectCorrelationRule(),
     AllUniqueColumnRule(),
     SingleValueCategoricalRule(),
+    ClassImbalanceRule(),
 ]
 
 

@@ -11,7 +11,9 @@ from eda_state import (
     DataProfile,
     EDAResults,
     Findings,
+    Interpretations,
     MissingInfo,
+    TargetInfo,
     get_critic_status,
 )
 
@@ -19,6 +21,83 @@ from eda_state import (
 # ===================================================================
 # Sub-model tests — validation & serialization
 # ===================================================================
+
+
+class TestTargetInfo:
+    """Tests for TargetInfo Pydantic model."""
+
+    def test_defaults(self):
+        ti = TargetInfo()
+        assert ti.column is None
+        assert ti.problem_type == "unsupervised"
+        assert ti.n_classes == 0
+        assert ti.class_counts == {}
+        assert ti.imbalance_ratio == 1.0
+        assert ti.detection_method == ""
+        assert ti.has_datetime_index is False
+
+    def test_classification(self):
+        ti = TargetInfo(
+            column="species",
+            problem_type="classification",
+            n_classes=3,
+            class_counts={"setosa": 50, "versicolor": 50, "virginica": 50},
+            imbalance_ratio=1.0,
+            detection_method="name_heuristic",
+        )
+        assert ti.column == "species"
+        assert ti.problem_type == "classification"
+        assert ti.n_classes == 3
+        assert sum(ti.class_counts.values()) == 150
+        assert ti.imbalance_ratio == 1.0
+
+    def test_regression(self):
+        ti = TargetInfo(
+            column="price",
+            problem_type="regression",
+            n_classes=0,
+            detection_method="name_heuristic",
+        )
+        assert ti.column == "price"
+        assert ti.problem_type == "regression"
+        assert ti.n_classes == 0
+
+    def test_unsupervised(self):
+        ti = TargetInfo(
+            column=None,
+            problem_type="unsupervised",
+            detection_method="none",
+        )
+        assert ti.column is None
+        assert ti.detection_method == "none"
+
+    def test_round_trip_json(self):
+        ti = TargetInfo(
+            column="label",
+            problem_type="classification",
+            n_classes=2,
+            class_counts={"positive": 80, "negative": 20},
+            imbalance_ratio=4.0,
+            detection_method="user_specified",
+            has_datetime_index=True,
+        )
+        restored = TargetInfo.model_validate_json(ti.model_dump_json())
+        assert restored.column == ti.column
+        assert restored.problem_type == ti.problem_type
+        assert restored.n_classes == ti.n_classes
+        assert restored.class_counts == ti.class_counts
+        assert restored.imbalance_ratio == ti.imbalance_ratio
+        assert restored.detection_method == ti.detection_method
+        assert restored.has_datetime_index == ti.has_datetime_index
+
+    def test_detection_methods(self):
+        for method in ("name_heuristic", "position_heuristic", "user_specified", "none"):
+            ti = TargetInfo(detection_method=method)
+            assert ti.detection_method == method
+
+    def test_has_datetime_index(self):
+        ti = TargetInfo(has_datetime_index=True)
+        assert ti.has_datetime_index is True
 
 
 class TestDataProfile:
@@ -85,6 +164,41 @@ class TestEDAResults:
         restored = EDAResults.model_validate_json(er.model_dump_json())
         assert restored.describe == er.describe
         assert restored.correlation == er.correlation
+
+
+class TestInterpretations:
+    """Tests for Interpretations Pydantic model."""
+
+    def test_defaults(self):
+        interp = Interpretations()
+        assert interp.overview is None
+        assert interp.target_variable_analysis is None
+        assert interp.plot_commentaries == []
+        assert interp.conclusions == ""
+
+    def test_target_variable_analysis_field(self):
+        interp = Interpretations(
+            target_variable_analysis={
+                "statistical": "3-class classification with balanced distribution.",
+                "ds_ml": "Stratified cross-validation recommended.",
+                "business": "Equal representation across classes.",
+            },
+        )
+        assert interp.target_variable_analysis is not None
+        assert "3-class" in interp.target_variable_analysis["statistical"]
+
+    def test_round_trip_with_target(self):
+        interp = Interpretations(
+            overview={"statistical": "s", "ds_ml": "d", "business": "b"},
+            target_variable_analysis={
+                "statistical": "s",
+                "ds_ml": "d",
+                "business": "b",
+            },
+        )
+        restored = Interpretations.model_validate_json(interp.model_dump_json())
+        assert restored.target_variable_analysis == interp.target_variable_analysis
+        assert restored.overview == interp.overview
 
 
 class TestCriticFlag:

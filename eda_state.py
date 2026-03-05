@@ -29,6 +29,28 @@ logger = logging.getLogger(__name__)
 # Sub-models — used by tools (tools layer) for I/O validation
 # ---------------------------------------------------------------------------
 
+class TargetInfo(BaseModel):
+    """Target variable metadata — detected heuristically, confirmed by user.
+
+    Used by target_analysis(), ClassImbalanceRule, and the report generator
+    to produce problem-type-aware EDA output.
+
+    detection_method values:
+      - "name_heuristic":     matched a general keyword in column names
+      - "position_heuristic": last column + low cardinality fallback
+      - "user_specified":     user provided via --target or interactive override
+      - "none":               no target detected / user declined
+    """
+
+    column: str | None = None            # None = unsupervised
+    problem_type: str = "unsupervised"   # "classification" | "regression" | "unsupervised"
+    n_classes: int = 0                   # >0 for classification only
+    class_counts: dict[str, int] = Field(default_factory=dict)
+    imbalance_ratio: float = 1.0         # majority_count / minority_count
+    detection_method: str = ""           # see docstring
+    has_datetime_index: bool = False     # True if a datetime column detected
+
+
 class DataProfile(BaseModel):
     """Schema and shape metadata produced by DataPrepAgent's tools."""
 
@@ -105,6 +127,7 @@ class Interpretations(BaseModel):
     missing_values: Optional[dict[str, str]] = None
     correlation: Optional[dict[str, str]] = None
     statistical_analysis: Optional[dict[str, str]] = None
+    target_variable_analysis: Optional[dict[str, str]] = None
     quality_assessment: Optional[dict[str, str]] = None
     plot_commentaries: list[PlotCommentary] = Field(default_factory=list)
     conclusions: str = ""

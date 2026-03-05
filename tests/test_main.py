@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from main import ensure_output_dirs, main, parse_args, run_pipeline
+from main import ensure_output_dirs, main, parse_args, run_pipeline, _resolve_target, _build_target_info, _init_openlit
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +86,26 @@ class TestParseArgs:
     def test_relative_path_preserved(self):
         args = parse_args(["../data/input.csv"])
         assert str(args.file_path) == "../data/input.csv"
+
+    def test_target_flag(self):
+        args = parse_args(["--target", "species", "data.csv"])
+        assert args.target == "species"
+        assert args.no_target is False
+
+    def test_no_target_flag(self):
+        args = parse_args(["--no-target", "data.csv"])
+        assert args.no_target is True
+        assert args.target is None
+
+    def test_target_and_no_target_mutually_exclusive(self):
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(["--target", "col", "--no-target", "data.csv"])
+        assert exc_info.value.code == 2
+
+    def test_default_no_target_flags(self):
+        args = parse_args(["data.csv"])
+        assert args.target is None
+        assert args.no_target is False
 
 
 # ===================================================================
@@ -190,7 +210,7 @@ class TestRunPipelineExecution:
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         mock_build.assert_called_once()
 
@@ -203,7 +223,7 @@ class TestRunPipelineExecution:
         manager = MagicMock()
         mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         proxy.initiate_chat.assert_called_once()
 
@@ -216,7 +236,7 @@ class TestRunPipelineExecution:
         manager = MagicMock()
         mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         args, kwargs = proxy.initiate_chat.call_args
         assert args[0] is manager
@@ -229,7 +249,7 @@ class TestRunPipelineExecution:
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         _, kwargs = proxy.initiate_chat.call_args
         message = kwargs.get("message", "")
@@ -243,7 +263,7 @@ class TestRunPipelineExecution:
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         _, kwargs = proxy.initiate_chat.call_args
         message = kwargs.get("message", "")
@@ -258,7 +278,7 @@ class TestRunPipelineExecution:
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         assert out.is_dir()
         assert plots.is_dir()
@@ -271,7 +291,7 @@ class TestRunPipelineExecution:
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         _, kwargs = proxy.initiate_chat.call_args
         message = kwargs.get("message", "")
@@ -342,7 +362,7 @@ class TestIntegration:
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
         # Should not raise
-        main([str(csv_file)])
+        main(["--no-target", str(csv_file)])
 
     @patch("orchestrator.build_group_chat")
     def test_full_flow_initiate_chat_called(self, mock_build, csv_file, monkeypatch, tmp_path):
@@ -353,7 +373,7 @@ class TestIntegration:
         manager = MagicMock()
         mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
 
-        main([str(csv_file)])
+        main(["--no-target", str(csv_file)])
 
         proxy.initiate_chat.assert_called_once_with(
             manager,
@@ -381,7 +401,7 @@ class TestCostTracking:
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
         mock_gather.return_value = {"usage_including_cached_inference": {}}
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         cost_file = out / "cost_summary.txt"
         assert cost_file.exists()
@@ -407,7 +427,7 @@ class TestCostTracking:
             },
         }
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         cost_file = out / "cost_summary.txt"
         content = cost_file.read_text(encoding="utf-8")
@@ -444,7 +464,7 @@ class TestCostTracking:
             "usage_including_cached_inference": {"total_cost": 0.031},
         }
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         content = (out / "cost_summary.txt").read_text(encoding="utf-8")
         assert "DataPrepAgent" in content
@@ -470,7 +490,7 @@ class TestCostTracking:
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, agents_list)
         mock_gather.return_value = {}
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         mock_gather.assert_called_once_with(agents_list)
 
@@ -487,7 +507,7 @@ class TestCostTracking:
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
         mock_gather.return_value = {}
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         cost_file = out / "cost_summary.txt"
         assert cost_file.exists()
@@ -506,7 +526,7 @@ class TestCostTracking:
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
         mock_gather.return_value = {"total_cost": 0.04}
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         # File should be directly in outputs, not in .pipeline_state
         assert (out / "cost_summary.txt").exists()
@@ -540,8 +560,240 @@ class TestCostTracking:
         )
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0.002}}
 
-        run_pipeline(csv_file)
+        run_pipeline(csv_file, no_target_flag=True)
 
         content = (out / "cost_summary.txt").read_text(encoding="utf-8")
         assert "EDAAnalysisAgent" in content
         assert "SkippedAgent" not in content
+
+
+# ===================================================================
+# TestResolveTarget — target detection helpers
+# ===================================================================
+
+
+class TestResolveTarget:
+    """Tests for _resolve_target(), _build_target_info()."""
+
+    @pytest.fixture()
+    def sample_df(self):
+        import pandas as pd
+        return pd.DataFrame({
+            "feat_a": [1, 2, 3, 4, 5],
+            "feat_b": [10, 20, 30, 40, 50],
+            "target": [0, 1, 0, 1, 0],
+        })
+
+    def test_no_target_flag_returns_unsupervised(self, sample_df):
+        result = _resolve_target(sample_df, target_flag=None, no_target_flag=True)
+        assert result.column is None
+        assert result.problem_type == "unsupervised"
+        assert result.detection_method == "none"
+
+    def test_target_flag_sets_column(self, sample_df):
+        result = _resolve_target(sample_df, target_flag="target", no_target_flag=False)
+        assert result.column == "target"
+        assert result.detection_method == "user_specified"
+
+    def test_target_flag_invalid_column_exits(self, sample_df):
+        with pytest.raises(SystemExit):
+            _resolve_target(sample_df, target_flag="nonexistent", no_target_flag=False)
+
+    def test_non_tty_auto_accepts_heuristic(self, sample_df, monkeypatch):
+        """Non-TTY mode auto-accepts the heuristic candidate."""
+        monkeypatch.setattr("sys.stdin", MagicMock(isatty=lambda: False))
+        result = _resolve_target(sample_df, target_flag=None, no_target_flag=False)
+        # Heuristic should detect 'target' column (low-cardinality)
+        assert result.column is not None
+        assert result.problem_type in ("classification", "regression")
+
+    def test_build_target_info_classification(self, sample_df):
+        info = _build_target_info(sample_df, "target")
+        assert info.column == "target"
+        assert info.detection_method == "user_specified"
+        assert info.problem_type == "classification"
+
+    def test_build_target_info_regression(self):
+        import pandas as pd
+        df = pd.DataFrame({
+            "feat": list(range(50)),
+            "price": [float(x) for x in range(50)],
+        })
+        info = _build_target_info(df, "price")
+        assert info.column == "price"
+        assert info.problem_type == "regression"
+
+
+class TestRunPipelineWithTarget:
+    """Tests for run_pipeline() with target flags (mocked GroupChat)."""
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_message_includes_target_context(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path,
+    ):
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        agent = MagicMock()
+        agent.name = "A"
+        agent.get_total_usage.return_value = None
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
+        mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
+
+        run_pipeline(csv_file, no_target_flag=True)
+
+        _, kwargs = proxy.initiate_chat.call_args
+        message = kwargs.get("message", "")
+        assert "unsupervised" in message.lower() or "No target" in message
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_target_flag_detected_in_message(
+        self, mock_build, mock_gather, monkeypatch, tmp_path,
+    ):
+        # Create CSV with a 'target' column
+        csv = tmp_path / "data.csv"
+        csv.write_text("feat,target\n1,0\n2,1\n3,0\n")
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        agent = MagicMock()
+        agent.name = "A"
+        agent.get_total_usage.return_value = None
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
+        mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
+
+        run_pipeline(csv, target_flag="target")
+
+        _, kwargs = proxy.initiate_chat.call_args
+        message = kwargs.get("message", "")
+        assert "target" in message.lower()
+
+
+# ===================================================================
+# TestParseArgsOpenlit — CLI --openlit / --no-openlit flags
+# ===================================================================
+
+
+class TestParseArgsOpenlit:
+    """Tests for --openlit / --no-openlit CLI flags."""
+
+    def test_openlit_flag(self):
+        args = parse_args(["--openlit", "data.csv"])
+        assert args.openlit is True
+        assert args.no_openlit is False
+
+    def test_no_openlit_flag(self):
+        args = parse_args(["--no-openlit", "data.csv"])
+        assert args.no_openlit is True
+
+    def test_default_openlit_is_none(self):
+        args = parse_args(["data.csv"])
+        assert args.openlit is None
+        assert args.no_openlit is False
+
+
+# ===================================================================
+# TestInitOpenlit — _init_openlit() helper
+# ===================================================================
+
+
+class TestInitOpenlit:
+    """Tests for _init_openlit() — OpenLIT observability initialisation."""
+
+    @patch("main.openlit", create=True)
+    def test_init_calls_openlit_init(self, mock_module, monkeypatch):
+        """openlit.init() is called when the package is available."""
+        monkeypatch.setattr("main.OPENLIT_ENDPOINT", None)
+        # Mock the import inside _init_openlit
+        with patch.dict("sys.modules", {"openlit": mock_module}):
+            _init_openlit()
+        mock_module.init.assert_called_once_with()
+
+    @patch("main.openlit", create=True)
+    def test_init_passes_endpoint(self, mock_module, monkeypatch):
+        """OPENLIT_ENDPOINT is forwarded as otlp_endpoint kwarg."""
+        monkeypatch.setattr("main.OPENLIT_ENDPOINT", "http://localhost:4318")
+        with patch.dict("sys.modules", {"openlit": mock_module}):
+            _init_openlit()
+        mock_module.init.assert_called_once_with(otlp_endpoint="http://localhost:4318")
+
+    def test_init_graceful_when_not_installed(self, monkeypatch):
+        """No crash when openlit is not installed — logs a warning instead."""
+        monkeypatch.setattr("main.OPENLIT_ENDPOINT", None)
+        with patch.dict("sys.modules", {"openlit": None}):
+            # importlib raises ImportError when module is None in sys.modules
+            _init_openlit()  # should not raise
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_openlit_enabled_calls_init(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path,
+    ):
+        """run_pipeline(enable_openlit=True) calls _init_openlit."""
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        agent = MagicMock()
+        agent.name = "A"
+        agent.get_total_usage.return_value = None
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
+        mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
+
+        with patch("main._init_openlit") as mock_init:
+            run_pipeline(csv_file, no_target_flag=True, enable_openlit=True)
+            mock_init.assert_called_once()
+
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_openlit_disabled_skips_init(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path,
+    ):
+        """run_pipeline(enable_openlit=False) does NOT call _init_openlit."""
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+        agent = MagicMock()
+        agent.name = "A"
+        agent.get_total_usage.return_value = None
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
+        mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
+
+        with patch("main._init_openlit") as mock_init:
+            run_pipeline(csv_file, no_target_flag=True, enable_openlit=False)
+            mock_init.assert_not_called()
+
+    @patch("main.run_pipeline")
+    def test_main_openlit_flag_enables(self, mock_run, csv_file):
+        """main(["--openlit", ...]) passes enable_openlit=True."""
+        main(["--openlit", "--no-target", str(csv_file)])
+        _, kwargs = mock_run.call_args
+        assert kwargs["enable_openlit"] is True
+
+    @patch("main.run_pipeline")
+    def test_main_no_openlit_flag_disables(self, mock_run, csv_file):
+        """main(["--no-openlit", ...]) passes enable_openlit=False."""
+        main(["--no-openlit", "--no-target", str(csv_file)])
+        _, kwargs = mock_run.call_args
+        assert kwargs["enable_openlit"] is False
+
+    @patch("main.run_pipeline")
+    def test_main_env_var_fallback(self, mock_run, csv_file, monkeypatch):
+        """When no CLI flag, OPENLIT_ENABLE env var is used."""
+        monkeypatch.setattr("main.OPENLIT_ENABLE", True)
+        main(["--no-target", str(csv_file)])
+        _, kwargs = mock_run.call_args
+        assert kwargs["enable_openlit"] is True
+
+    @patch("main.run_pipeline")
+    def test_no_openlit_overrides_env(self, mock_run, csv_file, monkeypatch):
+        """--no-openlit overrides OPENLIT_ENABLE=true."""
+        monkeypatch.setattr("main.OPENLIT_ENABLE", True)
+        main(["--no-openlit", "--no-target", str(csv_file)])
+        _, kwargs = mock_run.call_args
+        assert kwargs["enable_openlit"] is False

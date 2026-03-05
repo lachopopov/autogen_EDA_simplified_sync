@@ -17,6 +17,9 @@ from tools.data_loader import (
     ParquetLoader,
     _LOADERS,
     _get_loader,
+    _has_datetime_column,
+    _classify_target,
+    detect_target,
     infer_dtypes,
     load_data,
     validate_schema,
@@ -253,3 +256,148 @@ class TestInferDtypes:
         data_json = load_data(csv_path)
         profile = json.loads(infer_dtypes(data_json))
         assert profile["shape"] == [4, 4]
+
+
+# ---------------------------------------------------------------------------
+# _has_datetime_column()
+# ---------------------------------------------------------------------------
+
+class TestHasDatetimeColumn:
+    def test_datetime_dtype_detected(self):
+        df = pd.DataFrame({
+            "date": pd.to_datetime(["2021-01-01", "2021-01-02"]),
+            "val": [1, 2],
+        })
+        assert _has_datetime_column(df) is True
+
+    def test_no_datetime(self):
+        df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
+        assert _has_datetime_column(df) is False
+
+    def test_string_date_column_with_date_in_name(self):
+        df = pd.DataFrame({
+            "order_date": ["2021-01-01", "2021-01-02"],
+            "val": [1, 2],
+        })
+        # Should detect via name heuristic + parseable check
+        assert _has_datetime_column(df) is True
+
+
+# ---------------------------------------------------------------------------
+# _classify_target()
+# ---------------------------------------------------------------------------
+
+class TestClassifyTarget:
+    def test_classification_low_cardinality(self):
+        df = pd.DataFrame({"target": ["a", "b", "c", "a", "b"]})
+        info = _classify_target(df, "target")
+        assert info.problem_type == "classification"
+        assert info.n_classes == 3
+        assert info.column == "target"
+
+    def test_regression_high_cardinality(self):
+        df = pd.DataFrame({"price": list(range(50))})
+        info = _classify_target(df, "price")
+        assert info.problem_type == "regression"
+        assert info.n_classes == 0
+
+    def test_imbalance_ratio(self):
+        df = pd.DataFrame({"y": ["a"] * 90 + ["b"] * 10})
+        info = _classify_target(df, "y")
+        assert info.problem_type == "classification"
+        assert info.imbalance_ratio == 9.0
+
+
+# ---------------------------------------------------------------------------
+# detect_target()
+# ---------------------------------------------------------------------------
+
+class TestDetectTarget:
+    """Test the 4-step heuristic target detection."""
+
+    def test_exact_keyword_target(self):
+        df = pd.DataFrame({"feature_1": [1, 2, 3], "target": [0, 1, 0]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "target"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_exact_keyword_label(self):
+        df = pd.DataFrame({"feat": [1, 2, 3], "label": ["a", "b", "a"]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "label"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_exact_keyword_y(self):
+        df = pd.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "y"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_contains_keyword_outcome(self):
+        df = pd.DataFrame({"feat": [1, 2], "patient_outcome": ["good", "bad"]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "patient_outcome"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_prefix_is_(self):
+        df = pd.DataFrame({"feat": [1, 2, 3], "is_fraud": [0, 1, 0]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "is_fraud"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_prefix_has_(self):
+        df = pd.DataFrame({"feat": [1, 2, 3], "has_subscription": [1, 0, 1]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "has_subscription"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_fallback_last_low_cardinality(self):
+        # No keyword matches, last column with nunique < 10
+        df = pd.DataFrame({
+            "feat1": list(range(20)),
+            "feat2": list(range(20, 40)),
+            "status": ["ok", "fail"] * 10,
+        })
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "status"
+        assert result["detection_method"] == "position_heuristic"
+
+    def test_no_target_unsupervised(self):
+        # All columns have high cardinality, no keyword matches
+        df = pd.DataFrame({
+            "alpha": list(range(100)),
+            "beta": list(range(100, 200)),
+            "gamma": list(range(200, 300)),
+        })
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] is None
+        assert result["problem_type"] == "unsupervised"
+        assert result["detection_method"] == "none"
+
+    def test_classification_type_detected(self):
+        df = pd.DataFrame({"feat": [1, 2, 3], "class": ["a", "b", "a"]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["problem_type"] == "classification"
+
+    def test_regression_type_detected(self):
+        # "price" is an exact keyword, and column has high cardinality
+        df = pd.DataFrame({
+            "feat": list(range(50)),
+            "price": [x * 1.5 for x in range(50)],
+        })
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["problem_type"] == "regression"
+
+    def test_exact_keyword_priority_over_contains(self):
+        # "target" (exact) and a column with "outcome" (contains)
+        df = pd.DataFrame({
+            "patient_outcome": ["good", "bad", "good"],
+            "target": [0, 1, 0],
+        })
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "target"
+
+    def test_case_insensitive(self):
+        df = pd.DataFrame({"Feature": [1, 2], "TARGET": [0, 1]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "TARGET"
