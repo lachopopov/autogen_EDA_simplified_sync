@@ -38,6 +38,12 @@ from eda_state import CriticReport, EDAResults, Findings, Interpretations
 
 logger = logging.getLogger(__name__)
 
+# Token usage captured from the comprehensive evaluation LLM call.
+# Populated by _run_comprehensive_eval(); read by main._format_cost_summary().
+# Survives clear_session() because it lives at module level, not in the
+# artifact store.
+_eval_cost_info: dict[str, Any] = {}
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -502,6 +508,123 @@ def _build_recommendations_section(
     }
 
 
+# ---------------------------------------------------------------------------
+# Trustworthiness Assessment (from hallucination evaluation)
+# ---------------------------------------------------------------------------
+
+_TRUST_THRESHOLDS = [
+    (0.3, "High Trustworthiness",
+     "The AI-generated commentary is well-grounded in the source data. "
+     "No significant bias, toxicity, or hallucination detected. "
+     "Statistical observations, interpretations, and recommendations are "
+     "consistent with the deterministic fact sheet produced by the pipeline."),
+    (0.7, "Medium Trustworthiness",
+     "Some claims in the AI-generated commentary may not be fully supported "
+     "by the source data, or minor bias/toxicity concerns were detected. "
+     "Readers should cross-check flagged sections against "
+     "the raw statistics before relying on them for decisions."),
+    (1.1, "Low Trustworthiness",
+     "Significant issues detected in the AI-generated commentary "
+     "(hallucination, bias, or toxicity). "
+     "The generated text contains statements that contradict or go beyond the "
+     "source data, or exhibits problematic bias/toxicity. "
+     "Treat all AI-generated interpretations with caution and "
+     "verify against the deterministic analysis sections above."),
+]
+
+
+# Map eval evaluation types to human-readable labels for the report.
+_EVAL_TYPE_LABELS = {
+    "hallucination": "hallucination",
+    "bias_detection": "bias",
+    "toxicity_detection": "toxicity",
+}
+
+
+def _build_trustworthiness_section(
+    eval_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a report section from the comprehensive evaluation result.
+
+    Parameters
+    ----------
+    eval_result : dict
+        Keys: verdict, score, evaluation, classification, explanation
+        (as returned by ``_run_comprehensive_eval``).
+
+    Returns
+    -------
+    dict
+        A Findings-compatible section dict with title + content.
+    """
+    score = float(eval_result.get("score", 0.0))
+    verdict = eval_result.get("verdict", "unknown")
+    evaluation = eval_result.get("evaluation", "none")
+    classification = eval_result.get("classification", "none")
+    explanation = eval_result.get("explanation", "")
+
+    # Map score to trust level
+    trust_label = "Low Trustworthiness"
+    trust_description = _TRUST_THRESHOLDS[-1][2]
+    for threshold, label, desc in _TRUST_THRESHOLDS:
+        if score < threshold:
+            trust_label = label
+            trust_description = desc
+            break
+
+    # Determine the issue type label for display
+    eval_label = _EVAL_TYPE_LABELS.get(evaluation, evaluation)
+    if verdict == "yes":
+        verdict_text = f"issue detected ({eval_label})"
+    else:
+        verdict_text = "no issues detected"
+
+    lines: list[str] = [
+        f"Assessment: {trust_label}",
+        "",
+        trust_description,
+        "",
+        "Evaluated scope: Hallucination + Bias + Toxicity "
+        "(combined evaluation via openlit.evals.All)",
+        "",
+        f"Overall score: {score:.2f} (0.00 = fully grounded, "
+        f"1.00 = highest risk)",
+        f"Overall verdict: {verdict_text}",
+    ]
+
+    # Per-type breakdown: always show all three evaluation categories
+    _EVAL_TYPES = ["hallucination", "bias_detection", "toxicity_detection"]
+    _EVAL_DISPLAY = {
+        "hallucination": "Hallucination",
+        "bias_detection": "Bias",
+        "toxicity_detection": "Toxicity",
+    }
+    lines.append("")
+    lines.append("Per-type results:")
+    for etype in _EVAL_TYPES:
+        display_name = _EVAL_DISPLAY[etype]
+        if verdict == "yes" and evaluation == etype:
+            lines.append(
+                f"  {display_name}: ✗ Issue detected "
+                f"(score={score:.2f}, classification={classification})"
+            )
+        else:
+            lines.append(f"  {display_name}: ✓ No issues detected")
+
+    if evaluation and evaluation != "none":
+        lines.append("")
+        lines.append(f"Highest-risk type: {eval_label}")
+    if classification and classification != "none":
+        lines.append(f"Classification: {classification}")
+    if explanation:
+        lines.append(f"Judge explanation: {explanation}")
+
+    return {
+        "title": "Trustworthiness Assessment",
+        "content": "\n".join(lines),
+    }
+
+
 def _build_visualizations_section(plot_paths: list[str]) -> dict[str, Any]:
     """Build the visualizations section listing generated plots."""
     if not plot_paths:
@@ -755,7 +878,7 @@ def prepare_interpretation_context() -> str:
     Returns:
         A structured text fact sheet for LLM interpretation.
     """
-    from tools._pipeline_state import is_active, load_state, \
+    from tools._pipeline_state import is_active, load_state, save_state, \
         PipelineStateError
 
     if not is_active():
@@ -859,6 +982,10 @@ def prepare_interpretation_context() -> str:
 
     fact_sheet = "\n".join(sections)
 
+    # Persist fact sheet for downstream hallucination evaluation
+    if is_active():
+        save_state("_interpretation_context", fact_sheet)
+
     logger.info(
         "Interpretation context prepared: %d chars, %d plots",
         len(fact_sheet),
@@ -870,6 +997,150 @@ def prepare_interpretation_context() -> str:
         f"--- END OF FACT SHEET ---\n"
         f"Use this data to generate expert commentary via save_interpretations()."
     )
+
+
+# ---------------------------------------------------------------------------
+# Hallucination evaluation (OpenLIT programmatic evals)
+# ---------------------------------------------------------------------------
+
+def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
+    """Run OpenLIT comprehensive eval (bias + toxicity + hallucination).
+
+    Uses ``openlit.evals.All`` to perform a combined evaluation of LLM-
+    generated interpretations against the deterministic fact sheet.
+
+    Non-blocking: logs warnings but never raises. Skipped when OpenLIT
+    is disabled or the fact sheet is unavailable.
+
+    Side effect: populates module-level ``_eval_cost_info`` with token counts
+    and cost so that ``main._format_cost_summary()`` can include the evaluator
+    in the pipeline cost report.
+
+    Returns:
+        Dict with keys {verdict, score, evaluation, classification, explanation}
+        or None if the eval was skipped or failed.
+    """
+    from config import OPENLIT_ENABLE, OPENLIT_EVAL_MODEL
+    if not OPENLIT_ENABLE:
+        return None
+
+    from tools._pipeline_state import is_active, load_state, save_state
+    if not is_active():
+        return None
+
+    fact_sheet = load_state("_interpretation_context")
+    if not fact_sheet:
+        logger.debug("Skipping comprehensive eval: no fact sheet in artifact store")
+        return None
+
+    try:
+        import openlit  # noqa: F811
+        import openlit.evals.utils as _evals_utils
+
+        # --- Capture token usage ---
+        # openlit.evals.utils.llm_response_openai() returns only the content
+        # string and discards response.usage.  We temporarily replace it with
+        # an identical function that also records the token counts.
+        _orig_llm_fn = _evals_utils.llm_response_openai
+        captured_usage: dict[str, Any] = {}
+
+        def _capturing_openai(prompt, model, base_url):
+            """Drop-in for llm_response_openai that also captures usage."""
+            from openai import OpenAI as _OAI
+
+            client = _OAI(base_url=base_url)
+            if model is None:
+                model = "gpt-4o-mini"
+            resp = client.beta.chat.completions.parse(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format=_evals_utils.JsonOutput,
+            )
+            if hasattr(resp, "usage") and resp.usage:
+                captured_usage["prompt_tokens"] = resp.usage.prompt_tokens
+                captured_usage["completion_tokens"] = resp.usage.completion_tokens
+                captured_usage["model"] = resp.model
+            return resp.choices[0].message.content
+
+        _evals_utils.llm_response_openai = _capturing_openai
+        try:
+            evals = openlit.evals.All(
+                provider="openai",
+                model=OPENLIT_EVAL_MODEL,
+                collect_metrics=True,
+            )
+            result = evals.measure(
+                prompt="Expert EDA interpretation of dataset based on fact sheet",
+                contexts=[fact_sheet],
+                text=interpretations_json,
+            )
+        finally:
+            _evals_utils.llm_response_openai = _orig_llm_fn
+
+        logger.info(
+            "Comprehensive eval: verdict=%s, score=%.2f, evaluation=%s, "
+            "classification=%s",
+            result.verdict,
+            result.score,
+            result.evaluation,
+            result.classification,
+        )
+        if result.verdict == "yes":
+            logger.warning(
+                "Issue detected (evaluation=%s, score=%.2f): %s",
+                result.evaluation,
+                result.score,
+                result.explanation,
+            )
+
+        # --- Compute eval cost and store in module-level dict ---
+        if captured_usage:
+            pt = captured_usage.get("prompt_tokens", 0)
+            ct = captured_usage.get("completion_tokens", 0)
+            cost = _compute_eval_cost(OPENLIT_EVAL_MODEL, pt, ct)
+            _eval_cost_info.clear()
+            _eval_cost_info.update({
+                "model": captured_usage.get("model", OPENLIT_EVAL_MODEL),
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "cost": cost,
+            })
+            logger.info(
+                "Eval cost captured: model=%s, prompt=%d, completion=%d, cost=$%.4f",
+                _eval_cost_info["model"], pt, ct, cost,
+            )
+
+        eval_dict: dict[str, Any] = {
+            "verdict": result.verdict,
+            "score": result.score,
+            "evaluation": result.evaluation,
+            "classification": result.classification,
+            "explanation": result.explanation,
+        }
+        save_state("comprehensive_eval", json.dumps(eval_dict))
+        return eval_dict
+    except Exception:
+        logger.warning("Comprehensive eval failed — skipping", exc_info=True)
+        return None
+
+
+def _compute_eval_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Look up pricing from openlit_pricing.json and compute cost.
+
+    Falls back to 0.0 if the pricing file is missing or the model
+    is not listed.
+    """
+    from pathlib import Path
+
+    pricing_path = Path(__file__).resolve().parent.parent / "openlit_pricing.json"
+    try:
+        with open(pricing_path, encoding="utf-8") as f:
+            pricing = json.load(f)
+        p = pricing["chat"][model]
+        return (prompt_tokens / 1000) * p["promptPrice"] + \
+               (completion_tokens / 1000) * p["completionPrice"]
+    except Exception:
+        return 0.0
 
 
 def save_interpretations(
@@ -904,6 +1175,9 @@ def save_interpretations(
     # Validate against Pydantic schema
     interp = Interpretations.model_validate_json(interpretations_json)
     validated_json = interp.model_dump_json()
+
+    # --- Comprehensive evaluation (bias + toxicity + hallucination, OpenLIT, opt-in) ---
+    _run_comprehensive_eval(validated_json)
 
     save_state("interpretations", validated_json)
 
@@ -1169,6 +1443,20 @@ def assemble_findings(
     if interp and interp.recommendations_and_business_implications:
         recommendations["content"] = interp.recommendations_and_business_implications
 
+    # --- Trustworthiness Assessment (from comprehensive eval) ---
+    trust_sec: dict[str, Any] | None = None
+    if is_active():
+        eval_raw = load_state("comprehensive_eval") or load_state("hallucination_eval")
+        if eval_raw:
+            try:
+                trust_sec = _build_trustworthiness_section(json.loads(eval_raw))
+                logger.info("Trustworthiness section added from comprehensive eval")
+            except Exception:
+                logger.warning(
+                    "Failed to build trustworthiness section — skipping",
+                    exc_info=True,
+                )
+
     sections: list[dict[str, Any]] = [
         overview,
         missing,
@@ -1182,6 +1470,8 @@ def assemble_findings(
         conclusions,
         recommendations,
     ])
+    if trust_sec is not None:
+        sections.append(trust_sec)
 
     # Collect unresolved flags only on final iteration with remaining issues
     unresolved: list[str] = []

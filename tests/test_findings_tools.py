@@ -1047,3 +1047,411 @@ class TestAssembleFindingsTargetFallback:
             assert "class_distribution.png" in str(target_sec.get("plot_paths", []))
         finally:
             clear_session()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _run_comprehensive_eval
+# ---------------------------------------------------------------------------
+
+class TestRunComprehensiveEval:
+    """Tests for the comprehensive evaluation helper (bias + toxicity + hallucination)."""
+
+    def test_skips_when_openlit_disabled(self, monkeypatch):
+        """No-op when OPENLIT_ENABLE is false (default)."""
+        monkeypatch.setenv("OPENLIT_ENABLE", "false")
+        # Reload config to pick up env var
+        import config
+        monkeypatch.setattr(config, "OPENLIT_ENABLE", False)
+        from tools.findings_tools import _run_comprehensive_eval
+        # Should return immediately without error
+        _run_comprehensive_eval('{"overview": {}}')
+
+    def test_skips_when_no_active_session(self, monkeypatch):
+        """No-op when pipeline session is not active."""
+        import config
+        monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
+        from tools.findings_tools import _run_comprehensive_eval
+        # No active session → should return without error
+        _run_comprehensive_eval('{"overview": {}}')
+
+    def test_skips_when_no_fact_sheet(self, monkeypatch):
+        """No-op when _interpretation_context artifact is missing."""
+        import config
+        monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
+        from tools.findings_tools import _run_comprehensive_eval
+        from tools._pipeline_state import init_session, clear_session
+        try:
+            init_session()
+            # No fact sheet saved → should skip
+            _run_comprehensive_eval('{"overview": {}}')
+        finally:
+            clear_session()
+
+    def test_calls_openlit_eval_when_enabled(self, monkeypatch):
+        """Calls openlit.evals.All.measure when everything is set up."""
+        import config
+        monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
+        monkeypatch.setattr(config, "OPENLIT_EVAL_MODEL", "gpt-5")
+
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+
+        # Mock openlit.evals.All
+        class FakeResult:
+            verdict = "no"
+            score = 0.1
+            evaluation = "none"
+            classification = "none"
+            explanation = "No issues detected"
+
+        class FakeAll:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def measure(self, **kwargs):
+                return FakeResult()
+
+        import types
+        fake_openlit = types.ModuleType("openlit")
+        fake_evals = types.ModuleType("openlit.evals")
+        fake_evals_utils = types.ModuleType("openlit.evals.utils")
+        fake_evals_utils.llm_response_openai = lambda prompt, model, base_url: "{}"
+        fake_evals_utils.JsonOutput = None  # not called in this test path
+        fake_evals.All = FakeAll
+        fake_openlit.evals = fake_evals
+        monkeypatch.setitem(__import__("sys").modules, "openlit", fake_openlit)
+        monkeypatch.setitem(__import__("sys").modules, "openlit.evals", fake_evals)
+        monkeypatch.setitem(__import__("sys").modules, "openlit.evals.utils", fake_evals_utils)
+
+        from tools.findings_tools import _run_comprehensive_eval
+
+        try:
+            init_session()
+            save_state("_interpretation_context", "FACT SHEET DATA")
+            # Should call the mock and return result dict
+            result = _run_comprehensive_eval('{"overview": {}}')
+            assert result is not None
+            assert result["verdict"] == "no"
+            assert result["score"] == 0.1
+            assert result["evaluation"] == "none"
+            assert result["classification"] == "none"
+            # Verify artifact persisted
+            stored = load_state("comprehensive_eval")
+            assert stored is not None
+            import json
+            parsed = json.loads(stored)
+            assert parsed["verdict"] == "no"
+            assert parsed["score"] == 0.1
+            assert parsed["evaluation"] == "none"
+        finally:
+            clear_session()
+
+    def test_does_not_raise_on_eval_failure(self, monkeypatch):
+        """Eval errors are caught and logged, not raised."""
+        import config
+        monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
+
+        from tools._pipeline_state import init_session, clear_session, save_state
+
+        # Mock openlit to raise
+        import types
+        fake_openlit = types.ModuleType("openlit")
+        fake_evals = types.ModuleType("openlit.evals")
+        fake_evals_utils = types.ModuleType("openlit.evals.utils")
+        fake_evals_utils.llm_response_openai = lambda prompt, model, base_url: "{}"
+        fake_evals_utils.JsonOutput = None
+
+        class BrokenAll:
+            def __init__(self, **kwargs):
+                pass
+            def measure(self, **kwargs):
+                raise RuntimeError("Eval API down")
+
+        fake_evals.All = BrokenAll
+        fake_openlit.evals = fake_evals
+        monkeypatch.setitem(__import__("sys").modules, "openlit", fake_openlit)
+        monkeypatch.setitem(__import__("sys").modules, "openlit.evals", fake_evals)
+        monkeypatch.setitem(__import__("sys").modules, "openlit.evals.utils", fake_evals_utils)
+
+        from tools.findings_tools import _run_comprehensive_eval
+
+        try:
+            init_session()
+            save_state("_interpretation_context", "FACT SHEET DATA")
+            # Should NOT raise, should return None
+            result = _run_comprehensive_eval('{"overview": {}}')
+            assert result is None
+        finally:
+            clear_session()
+
+    def test_returns_none_when_disabled(self, monkeypatch):
+        """Returns None when OPENLIT_ENABLE is false."""
+        import config
+        monkeypatch.setattr(config, "OPENLIT_ENABLE", False)
+        from tools.findings_tools import _run_comprehensive_eval
+        result = _run_comprehensive_eval('{"overview": {}}')
+        assert result is None
+
+    def test_eval_cost_info_populated(self, monkeypatch):
+        """_eval_cost_info is populated when the capturing wrapper captures usage."""
+        import config
+        monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
+        monkeypatch.setattr(config, "OPENLIT_EVAL_MODEL", "gpt-5")
+
+        from tools._pipeline_state import init_session, clear_session, save_state
+
+        class FakeResult:
+            verdict = "no"
+            score = 0.05
+            evaluation = "none"
+            classification = "none"
+            explanation = "All good"
+
+        class FakeUsage:
+            prompt_tokens = 2000
+            completion_tokens = 150
+
+        class FakeResponse:
+            model = "gpt-5-2025-08-07"
+            usage = FakeUsage()
+            class _Choice:
+                class _Msg:
+                    content = '{"score": 0.05, "evaluation": "none", "classification": "none", "explanation": "All good", "verdict": "no"}'
+                message = _Msg()
+            choices = [_Choice()]
+
+        class FakeJsonOutput:
+            pass
+
+        # Build mock modules
+        import types
+        fake_evals_utils = types.ModuleType("openlit.evals.utils")
+        fake_evals_utils.JsonOutput = FakeJsonOutput
+        fake_evals_utils.llm_response_openai = lambda p, m, b: FakeResponse.choices[0].message.content
+
+        fake_evals = types.ModuleType("openlit.evals")
+
+        class FakeAll:
+            def __init__(self, **kwargs):
+                self._model = kwargs.get("model", "gpt-5")
+            def measure(self, **kwargs):
+                # Call through the captured llm_response_openai so
+                # _capturing_openai is invoked and usage is recorded.
+                import sys
+                eutils = sys.modules["openlit.evals.utils"]
+                eutils.llm_response_openai("prompt", self._model, None)
+                return FakeResult()
+
+        fake_evals.All = FakeAll
+        fake_openlit = types.ModuleType("openlit")
+        fake_openlit.evals = fake_evals
+
+        monkeypatch.setitem(__import__("sys").modules, "openlit", fake_openlit)
+        monkeypatch.setitem(__import__("sys").modules, "openlit.evals", fake_evals)
+        monkeypatch.setitem(__import__("sys").modules, "openlit.evals.utils", fake_evals_utils)
+
+        # Mock the OpenAI client so _capturing_openai actually works
+        class FakeClient:
+            class beta:
+                class chat:
+                    class completions:
+                        @staticmethod
+                        def parse(**kwargs):
+                            return FakeResponse()
+
+        monkeypatch.setattr("openai.OpenAI", lambda **kw: FakeClient())
+
+        from tools.findings_tools import _run_comprehensive_eval, _eval_cost_info
+
+        try:
+            init_session()
+            save_state("_interpretation_context", "FACT SHEET DATA")
+            result = _run_comprehensive_eval('{"overview": {}}')
+            assert result is not None
+            # _eval_cost_info should be populated from captured usage
+            assert _eval_cost_info.get("model") == "gpt-5-2025-08-07"
+            assert _eval_cost_info["prompt_tokens"] == 2000
+            assert _eval_cost_info["completion_tokens"] == 150
+            assert _eval_cost_info["cost"] > 0
+        finally:
+            clear_session()
+            _eval_cost_info.clear()
+
+
+class TestComputeEvalCost:
+    """Tests for _compute_eval_cost pricing lookup."""
+
+    def test_computes_cost_from_pricing_json(self):
+        from tools.findings_tools import _compute_eval_cost
+        # gpt-5 pricing: prompt=0.00125/1K, completion=0.01/1K
+        cost = _compute_eval_cost("gpt-5", 1000, 500)
+        expected = (1000 / 1000) * 0.00125 + (500 / 1000) * 0.01
+        assert abs(cost - expected) < 1e-9
+
+    def test_returns_zero_for_unknown_model(self):
+        from tools.findings_tools import _compute_eval_cost
+        cost = _compute_eval_cost("nonexistent-model-xyz", 1000, 500)
+        assert cost == 0.0
+
+    def test_returns_zero_for_zero_tokens(self):
+        from tools.findings_tools import _compute_eval_cost
+        cost = _compute_eval_cost("gpt-5", 0, 0)
+        assert cost == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Tests for _build_trustworthiness_section
+# ---------------------------------------------------------------------------
+
+class TestBuildTrustworthinessSection:
+    """Tests for the trustworthiness section builder."""
+
+    def test_high_trust_low_score(self):
+        """Score < 0.3 maps to High Trustworthiness."""
+        from tools.findings_tools import _build_trustworthiness_section
+        result = _build_trustworthiness_section({
+            "verdict": "no", "score": 0.05,
+            "evaluation": "none",
+            "classification": "none", "explanation": "All good",
+        })
+        assert result["title"] == "Trustworthiness Assessment"
+        assert "High Trustworthiness" in result["content"]
+        assert "well-grounded" in result["content"]
+        assert "0.05" in result["content"]
+        assert "no issues detected" in result["content"]
+
+    def test_medium_trust_mid_score(self):
+        """Score 0.3-0.7 maps to Medium Trustworthiness."""
+        from tools.findings_tools import _build_trustworthiness_section
+        result = _build_trustworthiness_section({
+            "verdict": "yes", "score": 0.5,
+            "evaluation": "hallucination",
+            "classification": "factual_inaccuracy",
+            "explanation": "Some inaccuracies",
+        })
+        assert "Medium Trustworthiness" in result["content"]
+        assert "cross-check" in result["content"]
+        assert "issue detected" in result["content"]
+        assert "factual_inaccuracy" in result["content"]
+
+    def test_low_trust_high_score(self):
+        """Score >= 0.7 maps to Low Trustworthiness."""
+        from tools.findings_tools import _build_trustworthiness_section
+        result = _build_trustworthiness_section({
+            "verdict": "yes", "score": 0.85,
+            "evaluation": "bias_detection",
+            "classification": "gender",
+            "explanation": "Gender bias detected",
+        })
+        assert "Low Trustworthiness" in result["content"]
+        assert "caution" in result["content"]
+        assert "gender" in result["content"]
+        assert "Highest-risk type: bias" in result["content"]
+
+    def test_classification_none_omitted(self):
+        """Classification 'none' is not shown in the output."""
+        from tools.findings_tools import _build_trustworthiness_section
+        result = _build_trustworthiness_section({
+            "verdict": "no", "score": 0.0,
+            "evaluation": "none",
+            "classification": "none", "explanation": "",
+        })
+        assert "Classification:" not in result["content"]
+        assert "Highest-risk type:" not in result["content"]
+
+    def test_boundary_score_0_3(self):
+        """Score exactly 0.3 maps to Medium Trustworthiness."""
+        from tools.findings_tools import _build_trustworthiness_section
+        result = _build_trustworthiness_section({
+            "verdict": "no", "score": 0.3,
+            "classification": "none", "explanation": "",
+        })
+        assert "Medium Trustworthiness" in result["content"]
+
+    def test_boundary_score_0_7(self):
+        """Score exactly 0.7 maps to Low Trustworthiness."""
+        from tools.findings_tools import _build_trustworthiness_section
+        result = _build_trustworthiness_section({
+            "verdict": "yes", "score": 0.7,
+            "classification": "factual_inaccuracy", "explanation": "Issues",
+        })
+        assert "Low Trustworthiness" in result["content"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for trustworthiness section in assemble_findings
+# ---------------------------------------------------------------------------
+
+class TestAssembleFindingsTrustworthiness:
+    """Tests that assemble_findings includes trustworthiness section when eval is available."""
+
+    def test_trustworthiness_section_included_when_eval_present(self):
+        """Findings include a Trustworthiness Assessment section when comprehensive_eval artifact exists."""
+        import json
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools.findings_tools import assemble_findings
+        from eda_state import EDAResults, CriticReport
+
+        try:
+            init_session()
+            # Set up minimal artifacts
+            eda = EDAResults(
+                describe={"col_a": {"mean": 1.0, "std": 0.5, "min": 0.0, "max": 2.0, "count": 100}},
+                correlation={},
+            )
+            critic = CriticReport(flags=[], iteration=1, status="APPROVED")
+            save_state("eda_results", eda.model_dump_json())
+            save_state("critic_report", critic.model_dump_json())
+            save_state("plot_paths", "[]")
+            # Store comprehensive eval result
+            eval_result = {
+                "verdict": "no", "score": 0.05,
+                "evaluation": "none",
+                "classification": "none",
+                "explanation": "All claims are grounded",
+            }
+            save_state("comprehensive_eval", json.dumps(eval_result))
+
+            assemble_findings(
+                "STATE_REF:eda_results",
+                "STATE_REF:critic_report",
+                "STATE_REF:plot_paths",
+            )
+            findings_raw = json.loads(load_state("findings"))
+            section_titles = [s["title"] for s in findings_raw["sections"]]
+            assert "Trustworthiness Assessment" in section_titles
+            # Should be the last section
+            assert section_titles[-1] == "Trustworthiness Assessment"
+            trust_content = findings_raw["sections"][-1]["content"]
+            assert "High Trustworthiness" in trust_content
+        finally:
+            clear_session()
+
+    def test_no_trustworthiness_section_when_no_eval(self):
+        """Findings omit trustworthiness section when no comprehensive_eval artifact."""
+        import json
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools.findings_tools import assemble_findings
+        from eda_state import EDAResults, CriticReport
+
+        try:
+            init_session()
+            eda = EDAResults(
+                describe={"col_a": {"mean": 1.0, "std": 0.5, "min": 0.0, "max": 2.0, "count": 100}},
+                correlation={},
+            )
+            critic = CriticReport(flags=[], iteration=1, status="APPROVED")
+            save_state("eda_results", eda.model_dump_json())
+            save_state("critic_report", critic.model_dump_json())
+            save_state("plot_paths", "[]")
+            # NO comprehensive_eval stored
+
+            assemble_findings(
+                "STATE_REF:eda_results",
+                "STATE_REF:critic_report",
+                "STATE_REF:plot_paths",
+            )
+            findings_raw = json.loads(load_state("findings"))
+            section_titles = [s["title"] for s in findings_raw["sections"]]
+            assert "Trustworthiness Assessment" not in section_titles
+        finally:
+            clear_session()

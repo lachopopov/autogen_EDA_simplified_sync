@@ -65,6 +65,7 @@ IPYNB_EXPORT: bool = os.getenv("IPYNB_EXPORT", "false").lower() == "true"
 # If OPENLIT_ENDPOINT is set, traces go there; otherwise they print to console.
 OPENLIT_ENABLE: bool = os.getenv("OPENLIT_ENABLE", "false").lower() == "true"
 OPENLIT_ENDPOINT: str | None = os.getenv("OPENLIT_ENDPOINT")
+OPENLIT_EVAL_MODEL: str = os.getenv("OPENLIT_EVAL_MODEL", "gpt-5")
 
 # --- Critic config ---
 MAX_CRITIC_ITERATIONS: int = int(os.getenv("MAX_CRITIC_ITERATIONS", "2"))

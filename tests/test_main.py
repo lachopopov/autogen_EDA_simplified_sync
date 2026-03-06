@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from main import ensure_output_dirs, main, parse_args, run_pipeline, _resolve_target, _build_target_info, _init_openlit
+from main import ensure_output_dirs, main, parse_args, run_pipeline, _resolve_target, _build_target_info, _init_openlit, _shutdown_openlit
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +566,91 @@ class TestCostTracking:
         assert "EDAAnalysisAgent" in content
         assert "SkippedAgent" not in content
 
+    @patch("autogen.gather_usage_summary")
+    @patch("orchestrator.build_group_chat")
+    def test_cost_summary_includes_eval_cost(
+        self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
+    ):
+        """Eval cost from _eval_cost_info appears in the cost summary."""
+        out = tmp_path / "outputs"
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        proxy = MagicMock()
+
+        agent_a = MagicMock()
+        agent_a.name = "DataPrepAgent"
+        agent_a.get_total_usage.return_value = {
+            "gpt-5-nano": {"cost": 0.001, "prompt_tokens": 500, "completion_tokens": 100},
+        }
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent_a])
+        mock_gather.return_value = {
+            "usage_including_cached_inference": {"total_cost": 0.001},
+        }
+
+        # Populate eval cost info before running
+        import tools.findings_tools as ft
+        ft._eval_cost_info.update({
+            "model": "gpt-5-2025-08-07",
+            "prompt_tokens": 3000,
+            "completion_tokens": 200,
+            "cost": 0.0058,
+        })
+
+        try:
+            run_pipeline(csv_file, no_target_flag=True)
+        finally:
+            ft._eval_cost_info.clear()
+
+        content = (out / "cost_summary.txt").read_text(encoding="utf-8")
+        assert "HallucinationEval" in content
+        assert "gpt-5-2025-08-07" in content
+        assert "$0.0058" in content
+        # Grand total should include eval cost
+        assert "Pipeline total:" in content
+
+    def test_format_cost_summary_with_eval_cost(self):
+        """_format_cost_summary includes eval_cost in breakdown and totals."""
+        from main import _format_cost_summary
+
+        agent_a = MagicMock()
+        agent_a.name = "TestAgent"
+        agent_a.get_total_usage.return_value = {
+            "gpt-5-nano": {"cost": 0.01, "prompt_tokens": 1000, "completion_tokens": 200},
+        }
+        usage_dict = {
+            "usage_including_cached_inference": {
+                "total_cost": 0.01,
+                "gpt-5-nano": {"cost": 0.01, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
+            },
+        }
+        eval_cost = {
+            "model": "gpt-5-2025-08-07",
+            "prompt_tokens": 2000,
+            "completion_tokens": 100,
+            "cost": 0.005,
+        }
+
+        text = _format_cost_summary([agent_a], usage_dict, eval_cost=eval_cost)
+        assert "HallucinationEval" in text
+        assert "gpt-5-2025-08-07" in text
+        # Grand total = agent 0.01 + eval 0.005 = 0.015
+        assert "$0.0150" in text
+
+    def test_format_cost_summary_without_eval_cost(self):
+        """_format_cost_summary works without eval_cost (backward compatible)."""
+        from main import _format_cost_summary
+
+        agent_a = MagicMock()
+        agent_a.name = "TestAgent"
+        agent_a.get_total_usage.return_value = None
+        usage_dict = {
+            "usage_including_cached_inference": {"total_cost": 0.02},
+        }
+
+        text = _format_cost_summary([agent_a], usage_dict)
+        assert "HallucinationEval" not in text
+        assert "$0.0200" in text
+
 
 # ===================================================================
 # TestResolveTarget — target detection helpers
@@ -711,7 +796,9 @@ class TestInitOpenlit:
         # Mock the import inside _init_openlit
         with patch.dict("sys.modules", {"openlit": mock_module}):
             _init_openlit()
-        mock_module.init.assert_called_once_with()
+        mock_module.init.assert_called_once()
+        call_kwargs = mock_module.init.call_args[1]
+        assert call_kwargs["disabled_instrumentors"] == ["agno"]
 
     @patch("main.openlit", create=True)
     def test_init_passes_endpoint(self, mock_module, monkeypatch):
@@ -719,7 +806,10 @@ class TestInitOpenlit:
         monkeypatch.setattr("main.OPENLIT_ENDPOINT", "http://localhost:4318")
         with patch.dict("sys.modules", {"openlit": mock_module}):
             _init_openlit()
-        mock_module.init.assert_called_once_with(otlp_endpoint="http://localhost:4318")
+        mock_module.init.assert_called_once()
+        call_kwargs = mock_module.init.call_args[1]
+        assert call_kwargs["otlp_endpoint"] == "http://localhost:4318"
+        assert call_kwargs["disabled_instrumentors"] == ["agno"]
 
     def test_init_graceful_when_not_installed(self, monkeypatch):
         """No crash when openlit is not installed — logs a warning instead."""
@@ -744,9 +834,11 @@ class TestInitOpenlit:
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
 
-        with patch("main._init_openlit") as mock_init:
+        with patch("main._init_openlit") as mock_init, \
+             patch("main._shutdown_openlit") as mock_shutdown:
             run_pipeline(csv_file, no_target_flag=True, enable_openlit=True)
             mock_init.assert_called_once()
+            mock_shutdown.assert_called_once()
 
     @patch("autogen.gather_usage_summary")
     @patch("orchestrator.build_group_chat")
@@ -764,9 +856,11 @@ class TestInitOpenlit:
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
 
-        with patch("main._init_openlit") as mock_init:
+        with patch("main._init_openlit") as mock_init, \
+             patch("main._shutdown_openlit") as mock_shutdown:
             run_pipeline(csv_file, no_target_flag=True, enable_openlit=False)
             mock_init.assert_not_called()
+            mock_shutdown.assert_not_called()
 
     @patch("main.run_pipeline")
     def test_main_openlit_flag_enables(self, mock_run, csv_file):
@@ -797,3 +891,53 @@ class TestInitOpenlit:
         main(["--no-openlit", "--no-target", str(csv_file)])
         _, kwargs = mock_run.call_args
         assert kwargs["enable_openlit"] is False
+
+
+# ===================================================================
+# TestShutdownOpenlit — _shutdown_openlit() helper
+# ===================================================================
+
+
+class TestShutdownOpenlit:
+    """Tests for _shutdown_openlit() — OTel tracer + meter flush/shutdown."""
+
+    def test_flush_and_shutdown_called(self):
+        """force_flush and shutdown are called on the tracer provider."""
+        mock_provider = MagicMock()
+        mock_provider.force_flush.return_value = True
+        with patch("opentelemetry.trace.get_tracer_provider", return_value=mock_provider):
+            _shutdown_openlit()
+        mock_provider.force_flush.assert_called_once_with(timeout_millis=10_000)
+        mock_provider.shutdown.assert_called_once()
+
+    def test_meter_provider_flushed(self):
+        """force_flush and shutdown are called on the meter provider."""
+        mock_trace_provider = MagicMock()
+        mock_meter_provider = MagicMock()
+        with patch("opentelemetry.trace.get_tracer_provider", return_value=mock_trace_provider), \
+             patch("opentelemetry.metrics.get_meter_provider", return_value=mock_meter_provider):
+            _shutdown_openlit()
+        mock_meter_provider.force_flush.assert_called_once_with(timeout_millis=10_000)
+        mock_meter_provider.shutdown.assert_called_once()
+
+    def test_no_crash_when_otel_not_available(self):
+        """Graceful no-op when opentelemetry is not importable."""
+        with patch.dict("sys.modules", {"opentelemetry": None, "opentelemetry.trace": None, "opentelemetry.metrics": None}):
+            _shutdown_openlit()  # should not raise
+
+    def test_no_crash_when_provider_has_no_flush(self):
+        """Handles providers that lack force_flush/shutdown methods."""
+        mock_provider = MagicMock(spec=[])  # no attributes at all
+        with patch("opentelemetry.trace.get_tracer_provider", return_value=mock_provider):
+            _shutdown_openlit()  # should not raise
+
+    def test_meter_flush_independent_of_trace_failure(self):
+        """Meter flush runs even if trace flush raises."""
+        mock_trace_provider = MagicMock()
+        mock_trace_provider.force_flush.side_effect = RuntimeError("trace error")
+        mock_meter_provider = MagicMock()
+        with patch("opentelemetry.trace.get_tracer_provider", return_value=mock_trace_provider), \
+             patch("opentelemetry.metrics.get_meter_provider", return_value=mock_meter_provider):
+            _shutdown_openlit()  # should not raise
+        # Meter provider should still be flushed even though trace provider failed
+        mock_meter_provider.force_flush.assert_called_once_with(timeout_millis=10_000)

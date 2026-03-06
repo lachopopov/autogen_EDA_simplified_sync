@@ -109,12 +109,23 @@ def ensure_output_dirs() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _format_cost_summary(agents_list: list, usage_dict: dict) -> str:
+def _format_cost_summary(
+    agents_list: list,
+    usage_dict: dict,
+    eval_cost: dict | None = None,
+) -> str:
     """
     Build a human-readable cost summary with per-agent breakdown.
 
     Uses ``agent.get_total_usage()`` for per-agent rows and the aggregate
     ``usage_dict`` (from ``gather_usage_summary``) for grand totals.
+
+    Parameters
+    ----------
+    eval_cost : dict | None
+        Optional dict with keys {model, prompt_tokens, completion_tokens, cost}
+        for the hallucination evaluator LLM call (tracked separately from
+        AG2 agents).
 
     Only agents with usage > 0 are included.
     """
@@ -147,6 +158,16 @@ def _format_cost_summary(agents_list: list, usage_dict: dict) -> str:
                 agent.name, model, cost, prompt, completion,
             ))
 
+    # --- Evaluator Cost (hallucination judge, outside AG2 agent framework) ---
+    if eval_cost and eval_cost.get("cost", 0) > 0:
+        lines.append(col_fmt.format(
+            "HallucinationEval",
+            eval_cost.get("model", "unknown"),
+            eval_cost["cost"],
+            eval_cost.get("prompt_tokens", 0),
+            eval_cost.get("completion_tokens", 0),
+        ))
+
     lines.append("")
 
     # --- Grand Totals ---
@@ -166,6 +187,18 @@ def _format_cost_summary(agents_list: list, usage_dict: dict) -> str:
         lines.append(
             f"  {model:<28}  ${cost:<10.4f}  {prompt:>7,} prompt / "
             f"{completion:>7,} completion ({total_tok:>7,} total)"
+        )
+
+    # Add eval cost to grand total
+    eval_total = eval_cost.get("cost", 0.0) if eval_cost else 0.0
+    grand_total += eval_total
+    if eval_cost and eval_total > 0:
+        em = eval_cost.get("model", "unknown")
+        ep = eval_cost.get("prompt_tokens", 0)
+        ec = eval_cost.get("completion_tokens", 0)
+        lines.append(
+            f"  {em + ' (eval)':<28}  ${eval_total:<10.4f}  {ep:>7,} prompt / "
+            f"{ec:>7,} completion ({ep + ec:>7,} total)"
         )
 
     lines.append(f"  {'':28}  ----------")
@@ -345,8 +378,59 @@ def _init_openlit() -> None:
     else:
         logger.info("OpenLIT: tracing to console (no OPENLIT_ENDPOINT set)")
 
+    # Disable the agno instrumentor — openlit 1.36.x has a SyntaxError in
+    # async_agno.py (return-with-value inside async generator). See Lesson #29.
+    kwargs["disabled_instrumentors"] = ["agno"]
+
+    # Custom pricing for gpt-5-nano/gpt-5-mini (not in openlit's default pricing.json)
+    pricing_path = Path(__file__).resolve().parent / "openlit_pricing.json"
+    if pricing_path.exists():
+        kwargs["pricing_json"] = str(pricing_path)
+        logger.info("OpenLIT: using custom pricing from %s", pricing_path)
+
     openlit.init(**kwargs)
     logger.info("OpenLIT initialised — auto-tracking LLM calls, tokens, costs.")
+
+
+def _shutdown_openlit() -> None:
+    """Flush and shut down the OpenTelemetry tracer and meter providers.
+
+    The openlit SDK configures a ``BatchSpanProcessor`` that flushes on a
+    timer (default 5 s).  If the Python process exits before the next flush
+    cycle, pending spans are silently lost.  Calling ``force_flush`` followed
+    by ``shutdown`` guarantees every span is exported to the OTLP collector
+    before the process terminates.
+
+    The ``MeterProvider`` is also flushed so that evaluation counters
+    (e.g. hallucination eval via ``collect_metrics=True``) are exported
+    before exit — the default ``PeriodicExportingMetricReader`` interval
+    is 60 s, far longer than a typical pipeline run.
+    """
+    try:
+        from opentelemetry import trace
+
+        provider = trace.get_tracer_provider()
+        if hasattr(provider, "force_flush"):
+            provider.force_flush(timeout_millis=10_000)
+            logger.info("OpenLIT: tracer provider flushed.")
+        if hasattr(provider, "shutdown"):
+            provider.shutdown()
+            logger.info("OpenLIT: tracer provider shut down.")
+    except Exception:  # noqa: BLE001
+        logger.debug("OpenLIT shutdown: no-op (tracing not initialised).")
+
+    try:
+        from opentelemetry import metrics
+
+        meter_provider = metrics.get_meter_provider()
+        if hasattr(meter_provider, "force_flush"):
+            meter_provider.force_flush(timeout_millis=10_000)
+            logger.info("OpenLIT: meter provider flushed.")
+        if hasattr(meter_provider, "shutdown"):
+            meter_provider.shutdown()
+            logger.info("OpenLIT: meter provider shut down.")
+    except Exception:  # noqa: BLE001
+        logger.debug("OpenLIT shutdown: meter flush no-op.")
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +535,8 @@ def run_pipeline(
         user_proxy.initiate_chat(manager, message=initial_message)
     finally:
         clear_session()
+        if enable_openlit:
+            _shutdown_openlit()
 
     # --- Cost tracking (Option C: standalone file, post-pipeline) ---
     # gather_usage_summary is the canonical AG2 cost API (grand totals).
@@ -464,7 +550,13 @@ def run_pipeline(
         len(agents_list),
     )
 
-    cost_text = _format_cost_summary(agents_list, usage_dict)
+    # Include hallucination evaluator cost (tracked outside AG2 agents).
+    from tools.findings_tools import _eval_cost_info  # noqa: E402
+
+    cost_text = _format_cost_summary(
+        agents_list, usage_dict,
+        eval_cost=_eval_cost_info if _eval_cost_info else None,
+    )
     cost_path = OUTPUTS_DIR / "cost_summary.txt"
     cost_path.write_text(cost_text, encoding="utf-8")
     logger.info("Cost summary written to %s", cost_path)
