@@ -401,3 +401,58 @@ class TestDetectTarget:
         df = pd.DataFrame({"Feature": [1, 2], "TARGET": [0, 1]})
         result = json.loads(detect_target(df.to_json(orient="records")))
         assert result["column"] == "TARGET"
+
+
+# ---------------------------------------------------------------------------
+# NA sentinel handling — CSVLoader
+# ---------------------------------------------------------------------------
+
+class TestCSVLoaderNASentinels:
+    """Tests that CSVLoader converts common sentinel tokens to NaN at load time."""
+
+    def test_question_mark_becomes_nan(self, tmp_path):
+        """Bare '?' must be read as NaN, not a literal string."""
+        p = tmp_path / "qmark.csv"
+        p.write_text("a,b\n1,2\n3,?\n")
+        df = CSVLoader().load(str(p))
+        assert pd.isna(df.loc[1, "b"]), "'?' should be NaN"
+
+    def test_leading_space_question_mark_becomes_nan(self, tmp_path):
+        """' ?' (UCI-style leading space) must be read as NaN via skipinitialspace."""
+        p = tmp_path / "spaced_qmark.csv"
+        p.write_text("a,b\n1, 2\n3, ?\n")
+        df = CSVLoader().load(str(p))
+        assert pd.isna(df.loc[1, "b"]), "' ?' should be NaN after skipinitialspace"
+
+    def test_other_sentinels_become_nan(self, tmp_path):
+        """Common tokens (Unknown, NULL, N/A) must also become NaN."""
+        p = tmp_path / "sentinels.csv"
+        p.write_text("a,b,c\nUnknown,NULL,N/A\n")
+        df = CSVLoader().load(str(p))
+        assert pd.isna(df.loc[0, "a"]), "'Unknown' should be NaN"
+        assert pd.isna(df.loc[0, "b"]), "'NULL' should be NaN"
+        assert pd.isna(df.loc[0, "c"]), "'N/A' should be NaN"
+
+    def test_clean_values_unaffected(self, tmp_path):
+        """Normal string and numeric values must not be converted to NaN."""
+        p = tmp_path / "clean.csv"
+        p.write_text("name,score\nAlice,42\nBob,17\n")
+        df = CSVLoader().load(str(p))
+        assert df.loc[0, "name"] == "Alice"
+        assert df.loc[1, "score"] == 17
+
+    def test_missing_analysis_detects_question_mark(self, tmp_path):
+        """Integration: missing_analysis() must report >0% missing for a '?'-only column."""
+        from tools.eda_tools import missing_analysis
+        p = tmp_path / "adult_mini.csv"
+        p.write_text(
+            "age,workclass,occupation\n"
+            "39, State-gov, Adm-clerical\n"
+            "54, ?, ?\n"
+            "28, Private, Prof-specialty\n"
+        )
+        data_json = load_data(str(p))
+        result = json.loads(missing_analysis(data_json))
+        assert result["per_column"]["workclass"] > 0, "workclass should have missing%>0"
+        assert result["per_column"]["occupation"] > 0, "occupation should have missing%>0"
+        assert result["per_column"]["age"] == 0.0, "age has no missing values"

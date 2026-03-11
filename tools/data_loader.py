@@ -53,7 +53,13 @@ class DataLoader(ABC):
 
 class CSVLoader(DataLoader):
     def load(self, path: str) -> pd.DataFrame:
-        return pd.read_csv(path)
+        from config import NA_TOKENS
+        return pd.read_csv(
+            path,
+            skipinitialspace=True,
+            na_values=NA_TOKENS,
+            keep_default_na=True,
+        )
 
     def supports(self, ext: str) -> bool:
         return ext == ".csv"
@@ -69,7 +75,13 @@ class ParquetLoader(DataLoader):
 
 class ExcelLoader(DataLoader):
     def load(self, path: str) -> pd.DataFrame:
-        return pd.read_excel(path, engine="openpyxl")
+        from config import NA_TOKENS
+        return pd.read_excel(
+            path,
+            engine="openpyxl",
+            na_values=NA_TOKENS,
+            keep_default_na=True,
+        )
 
     def supports(self, ext: str) -> bool:
         return ext in (".xlsx", ".xls")

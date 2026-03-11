@@ -72,3 +72,23 @@ MAX_CRITIC_ITERATIONS: int = int(os.getenv("MAX_CRITIC_ITERATIONS", "2"))
 
 # --- GroupChat config ---
 MAX_ROUNDS: int = int(os.getenv("MAX_ROUNDS", "50"))
+
+# --- CSV / Excel missing-value sentinel tokens ---
+# These tokens are treated as NaN at load time (in addition to pandas defaults).
+# Override via CSV_NA_TOKENS env var (comma-separated) for datasets where
+# any of these strings is a legitimate value rather than a missing sentinel.
+_env_na = os.getenv("CSV_NA_TOKENS")
+NA_TOKENS: list[str] = (
+    [t.strip() for t in _env_na.split(",")]
+    if _env_na
+    else [
+        "?", "??",                                      # UCI / survey sentinel
+        "NA", "N/A", "n/a", "na", "N\\A",             # standard abbreviations
+        "NULL", "null", "None", "none",                # programming defaults
+        "NaN", "nan", "<NA>", "<missing>",             # typed representations
+        "missing", "MISSING", "Missing",
+        "Unknown", "unknown", "UNK", "unk",
+        "Refused", "refused", "No answer",
+        "Not applicable", "Not available",
+    ]
+)
