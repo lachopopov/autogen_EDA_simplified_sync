@@ -74,7 +74,7 @@ class TestCreateCriticAgent:
         assert "Do NOT include the word TERMINATE" in critic_agent.system_message
 
     def test_max_consecutive_auto_reply(self, critic_agent):
-        assert critic_agent._max_consecutive_auto_reply == 5
+        assert critic_agent._max_consecutive_auto_reply == 10
 
     def test_termination_guard(self, critic_agent):
         assert critic_agent._is_termination_msg({"content": "TERMINATE"}) is True

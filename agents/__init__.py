@@ -37,7 +37,7 @@ def make_agent(
     Enforces:
       - Shared LLM_CONFIG (model selection via EDA_MODE) unless
         *llm_config* is provided (e.g. gpt-5-mini for interpretation).
-      - max_consecutive_auto_reply = 5
+      - max_consecutive_auto_reply = 10  (allows 3 tools + retries + final text)
       - Keyword-based termination guard ("TERMINATE" in content)
 
     Never subclasses AssistantAgent.
@@ -46,6 +46,6 @@ def make_agent(
         name=name,
         system_message=system_message,
         llm_config=llm_config if llm_config is not None else LLM_CONFIG,
-        max_consecutive_auto_reply=5,
+        max_consecutive_auto_reply=10,
         is_termination_msg=_TERMINATION_GUARD,
     )

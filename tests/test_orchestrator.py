@@ -511,10 +511,10 @@ class TestToolRegistration:
         assert len(user_proxy._function_map) == 0
 
     def test_total_tool_count_across_executors(self, group_chat_components):
-        """17 total tools distributed across 6 executors."""
+        """18 total tools distributed across 6 executors."""
         _, _, _, _, executors_dict, _ = group_chat_components
         total = sum(len(e._function_map) for e in executors_dict.values())
-        assert total == 17
+        assert total == 18
 
     @pytest.mark.parametrize("executor_name,expected_tools", [
         ("DataPrepExecutor", {"load_data", "validate_schema", "infer_dtypes"}),
@@ -522,7 +522,7 @@ class TestToolRegistration:
         ("VisualizationExecutor", {"plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap", "plot_class_distribution"}),
         ("CriticExecutor", {"run_critic_rules"}),
         ("FindingsGeneratorExecutor", {"assemble_findings", "prepare_interpretation_context", "save_interpretations"}),
-        ("ReportExporterExecutor", {"render_pdf", "render_ipynb"}),
+        ("ReportExporterExecutor", {"render_pdf", "render_markdown", "render_ipynb"}),
     ])
     def test_executor_has_correct_tools(self, group_chat_components,
                                          executor_name, expected_tools):
@@ -577,10 +577,10 @@ class TestAgentLLMConfig:
         names = self._get_tool_names(agents["FindingsGeneratorAgent"])
         assert names == {"assemble_findings", "prepare_interpretation_context", "save_interpretations"}
 
-    def test_report_has_2_tools(self, group_chat_components):
+    def test_report_has_3_tools(self, group_chat_components):
         _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["ReportExporterAgent"])
-        assert names == {"render_pdf", "render_ipynb"}
+        assert names == {"render_pdf", "render_markdown", "render_ipynb"}
 
 
 # ---------------------------------------------------------------------------
@@ -633,12 +633,12 @@ class TestThreeLayerTerminationGuard:
             else:
                 assert "Do NOT include the word TERMINATE" in agent.system_message
 
-    def test_all_assistant_agents_have_max_auto_reply_5(self, group_chat_components):
-        """All AssistantAgents have max_consecutive_auto_reply=5."""
+    def test_all_assistant_agents_have_max_auto_reply_10(self, group_chat_components):
+        """All AssistantAgents have max_consecutive_auto_reply=10 (3 tools + retries + final text)."""
         _, _, _, agents, _, _ = group_chat_components
         for name, agent in agents.items():
-            assert agent._max_consecutive_auto_reply == 5, (
-                f"{name} max_consecutive_auto_reply != 5"
+            assert agent._max_consecutive_auto_reply == 10, (
+                f"{name} max_consecutive_auto_reply != 10"
             )
 
 

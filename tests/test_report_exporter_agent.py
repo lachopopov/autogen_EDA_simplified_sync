@@ -59,6 +59,7 @@ class TestCreateReportExporterAgent:
 
     def test_system_message(self, report_agent):
         assert "render_pdf" in report_agent.system_message
+        assert "render_markdown" in report_agent.system_message
         assert "render_ipynb()" in report_agent.system_message
         assert 'output_dir="outputs/"' in report_agent.system_message
 
@@ -75,7 +76,7 @@ class TestCreateReportExporterAgent:
         assert "Do NOT include the word TERMINATE" not in report_agent.system_message
 
     def test_max_consecutive_auto_reply(self, report_agent):
-        assert report_agent._max_consecutive_auto_reply == 5
+        assert report_agent._max_consecutive_auto_reply == 10
 
     def test_termination_guard(self, report_agent):
         assert report_agent._is_termination_msg({"content": "TERMINATE"}) is True
@@ -93,24 +94,28 @@ class TestRegisterReportExporterTools:
         _, proxy = wired_pair
         assert "render_pdf" in proxy._function_map
 
+    def test_function_map_has_render_markdown(self, wired_pair):
+        _, proxy = wired_pair
+        assert "render_markdown" in proxy._function_map
+
     def test_function_map_has_render_ipynb(self, wired_pair):
         _, proxy = wired_pair
         assert "render_ipynb" in proxy._function_map
 
     def test_function_map_count(self, wired_pair):
-        """ReportExporterAgent has exactly 2 tools."""
+        """ReportExporterAgent has exactly 3 tools."""
         _, proxy = wired_pair
-        assert len(proxy._function_map) == 2
+        assert len(proxy._function_map) == 3
 
     def test_llm_config_has_tool_schemas(self, wired_pair):
         agent, _ = wired_pair
         tools = agent.llm_config.get("tools", [])
-        assert len(tools) == 2
+        assert len(tools) == 3
 
     def test_tool_schema_names(self, wired_pair):
         agent, _ = wired_pair
         names = {t["function"]["name"] for t in agent.llm_config["tools"]}
-        assert names == {"render_pdf", "render_ipynb"}
+        assert names == {"render_pdf", "render_markdown", "render_ipynb"}
 
     def test_render_pdf_schema_has_parameters(self, wired_pair):
         agent, _ = wired_pair
@@ -121,6 +126,16 @@ class TestRegisterReportExporterTools:
                 assert "output_dir" in params.get("properties", {})
                 return
         pytest.fail("render_pdf tool schema not found")
+
+    def test_render_markdown_schema_has_parameters(self, wired_pair):
+        agent, _ = wired_pair
+        for tool in agent.llm_config["tools"]:
+            if tool["function"]["name"] == "render_markdown":
+                params = tool["function"]["parameters"]
+                assert "findings_json" in params.get("properties", {})
+                assert "output_dir" in params.get("properties", {})
+                return
+        pytest.fail("render_markdown tool schema not found")
 
     def test_render_ipynb_schema_has_parameters(self, wired_pair):
         agent, _ = wired_pair
@@ -168,6 +183,18 @@ class TestEndToEnd:
         assert result.endswith("report.pdf")
         assert Path(result).exists()
 
+    def test_render_markdown_via_proxy(self, wired_pair, tmp_path):
+        """render_markdown callable through the proxy's function_map."""
+        _, proxy = wired_pair
+        fn = proxy._function_map["render_markdown"]
+        result = fn(
+            findings_json=self._make_findings_json(),
+            output_dir=str(tmp_path),
+        )
+        assert isinstance(result, str)
+        assert result.endswith("report.md")
+        assert Path(result).exists()
+
     def test_render_ipynb_via_proxy(self, wired_pair, tmp_path):
         """render_ipynb callable through the proxy's function_map."""
         _, proxy = wired_pair
@@ -205,11 +232,11 @@ class TestEndToEnd:
         assert nb.nbformat == 4
 
     def test_chained_registration_invariant(self, wired_pair):
-        """Both tools appear in agent LLM tools AND proxy function_map (P6)."""
+        """All 3 tools appear in agent LLM tools AND proxy function_map (P6)."""
         agent, proxy = wired_pair
         tool_names = {t["function"]["name"] for t in agent.llm_config.get("tools", [])}
         fn_names = set(proxy._function_map.keys())
-        for name in ("render_pdf", "render_ipynb"):
+        for name in ("render_pdf", "render_markdown", "render_ipynb"):
             assert name in tool_names, f"{name} missing from LLM tools"
             assert name in fn_names, f"{name} missing from function_map"
 

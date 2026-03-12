@@ -15,10 +15,12 @@ import pytest
 
 from tools.report_tools import (
     IPYNBRenderer,
+    MarkdownRenderer,
     PDFRenderer,
     ReportRenderer,
     _extract_plot_paths,
     render_ipynb,
+    render_markdown,
     render_pdf,
 )
 
@@ -737,6 +739,182 @@ class TestHardBoundaryRule:
     """Verify zero AG2 imports in tools/report_tools.py (P7)."""
 
     def test_no_ag2_imports(self):
+        import tools.report_tools as module
+        source = inspect.getsource(module)
+        assert "import autogen" not in source
+        assert "from autogen" not in source
+
+
+# ---------------------------------------------------------------------------
+# MarkdownRenderer
+# ---------------------------------------------------------------------------
+
+class TestMarkdownRenderer:
+    """Test Markdown rendering."""
+
+    def test_produces_md_file(self, sample_findings, output_dir):
+        """render() creates a .md file on disk."""
+        path = str(output_dir / "report.md")
+        result = MarkdownRenderer().render(sample_findings, [], path)
+        assert Path(result).exists()
+        assert result == path
+
+    def test_valid_utf8(self, sample_findings, output_dir):
+        """Generated file is valid UTF-8 text."""
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(sample_findings, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert isinstance(text, str)
+        assert len(text) > 0
+
+    def test_title_heading(self, sample_findings, output_dir):
+        """Document starts with # EDA Report."""
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(sample_findings, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert "# EDA Report" in text
+
+    def test_section_headings_present(self, sample_findings, output_dir):
+        """Each section title appears as a ## heading."""
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(sample_findings, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert "## Dataset Overview" in text
+        assert "## Missing Values" in text
+        assert "## Conclusions" in text
+
+    def test_content_present(self, sample_findings, output_dir):
+        """Deterministic section content appears in the output."""
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(sample_findings, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert "100 rows, 5 columns" in text
+        assert "income: 12.0% missing" in text
+
+    def test_expert_commentary_bold_labels(self, output_dir):
+        """3-lens perspective labels are bolded in output."""
+        findings = {
+            "sections": [{
+                "title": "Overview",
+                "content": "100 rows.",
+                "expert_commentary": (
+                    "Statistical Perspective: Normal distribution.\n\n"
+                    "Data Science & ML Perspective: Good for modeling.\n\n"
+                    "Business Perspective: Revenue growth indicator."
+                ),
+            }],
+            "unresolved_flags": [],
+        }
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(findings, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert "**Statistical Perspective:**" in text
+        assert "**Business Perspective:**" in text
+        assert "Normal distribution." in text
+
+    def test_plot_references(self, output_dir):
+        """Plot paths appear as Markdown image references."""
+        findings = {
+            "sections": [{
+                "title": "Stats",
+                "content": "text",
+                "plot_paths": ["/tmp/hist_age.png", "/tmp/corr.png"],
+            }],
+            "unresolved_flags": [],
+        }
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(findings, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert "![" in text
+        assert "/tmp/hist_age.png" in text
+        assert "/tmp/corr.png" in text
+
+    def test_per_plot_commentary(self, output_dir):
+        """Per-plot 3-lens commentary appears beneath plot reference."""
+        findings = {
+            "sections": [{
+                "title": "Stats",
+                "content": "text",
+                "plot_paths": ["/tmp/hist_age.png"],
+                "plot_commentaries": [{
+                    "plot_file": "hist_age.png",
+                    "statistical": "Right-skewed.",
+                    "ds_ml": "Log transform needed.",
+                    "business": "Concentration risk.",
+                }],
+            }],
+            "unresolved_flags": [],
+        }
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(findings, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert "Right-skewed." in text
+        assert "Log transform needed." in text
+        assert "Concentration risk." in text
+
+    def test_unresolved_flags(self, findings_with_unresolved, output_dir):
+        """Unresolved flags appear as bullet list items."""
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(findings_with_unresolved, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert "## Unresolved Data Quality Issues" in text
+        assert "- [UNRESOLVED]" in text
+
+    def test_creates_output_dir(self, sample_findings, tmp_path):
+        """Creates parent directory if it doesn't exist."""
+        nested = tmp_path / "deep" / "nested" / "dir"
+        path = str(nested / "report.md")
+        MarkdownRenderer().render(sample_findings, [], path)
+        assert Path(path).exists()
+
+    def test_handles_empty_sections(self, output_dir):
+        """Empty findings → still produces valid Markdown file."""
+        findings = {"sections": [], "unresolved_flags": []}
+        path = str(output_dir / "report.md")
+        MarkdownRenderer().render(findings, [], path)
+        text = Path(path).read_text(encoding="utf-8")
+        assert "# EDA Report" in text
+
+
+# ---------------------------------------------------------------------------
+# render_markdown() — AG2-facing function
+# ---------------------------------------------------------------------------
+
+class TestRenderMarkdown:
+    """Test the render_markdown AG2 entry point."""
+
+    def test_returns_path_string(self, findings_json, output_dir):
+        """Function returns the output file path as a string."""
+        result = render_markdown(findings_json, str(output_dir))
+        assert isinstance(result, str)
+        assert result.endswith("report.md")
+
+    def test_creates_md_file(self, findings_json, output_dir):
+        """Markdown file is created on disk."""
+        result = render_markdown(findings_json, str(output_dir))
+        assert Path(result).exists()
+
+    def test_valid_utf8_content(self, findings_json, output_dir):
+        """Generated file is valid UTF-8 plain text."""
+        result = render_markdown(findings_json, str(output_dir))
+        text = Path(result).read_text(encoding="utf-8")
+        assert "# EDA Report" in text
+
+    def test_creates_output_dir_if_missing(self, findings_json, tmp_path):
+        """Auto-creates output directory if it doesn't exist."""
+        nonexistent = str(tmp_path / "new_output_dir")
+        result = render_markdown(findings_json, nonexistent)
+        assert Path(result).exists()
+
+    def test_empty_findings(self, output_dir):
+        """Empty findings → still produces valid Markdown."""
+        fj = json.dumps({"sections": [], "unresolved_flags": []})
+        result = render_markdown(fj, str(output_dir))
+        text = Path(result).read_text(encoding="utf-8")
+        assert "# EDA Report" in text
+
+    def test_hard_boundary_rule(self):
+        """render_markdown lives in tools/ with zero AG2 imports."""
         import tools.report_tools as module
         source = inspect.getsource(module)
         assert "import autogen" not in source
