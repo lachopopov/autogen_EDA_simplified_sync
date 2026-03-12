@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from eda_state import CriticFlag, CriticReport, EDAResults, Findings, MissingInfo
+from eda_state import CriticFlag, CriticReport, DataProfile, EDAResults, Findings, MissingInfo
 from tools.findings_tools import (
     _build_conclusions_section,
     _build_correlation_section,
@@ -1399,7 +1399,10 @@ class TestAssembleFindingsTrustworthiness:
                 correlation={},
             )
             critic = CriticReport(flags=[], iteration=1, status="APPROVED")
-            save_state("eda_results", eda.model_dump_json())
+            # Save individual artifacts (required by direct-composition path)
+            save_state("describe_stats", json.dumps(eda.describe))
+            save_state("missing_analysis", eda.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda.correlation))
             save_state("critic_report", critic.model_dump_json())
             save_state("plot_paths", "[]")
             # Store comprehensive eval result
@@ -1412,7 +1415,7 @@ class TestAssembleFindingsTrustworthiness:
             save_state("comprehensive_eval", json.dumps(eval_result))
 
             assemble_findings(
-                "STATE_REF:eda_results",
+                "STATE_REF:describe_stats",
                 "STATE_REF:critic_report",
                 "STATE_REF:plot_paths",
             )
@@ -1440,18 +1443,183 @@ class TestAssembleFindingsTrustworthiness:
                 correlation={},
             )
             critic = CriticReport(flags=[], iteration=1, status="APPROVED")
-            save_state("eda_results", eda.model_dump_json())
+            # Save individual artifacts (required by direct-composition path)
+            save_state("describe_stats", json.dumps(eda.describe))
+            save_state("missing_analysis", eda.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda.correlation))
             save_state("critic_report", critic.model_dump_json())
             save_state("plot_paths", "[]")
             # NO comprehensive_eval stored
 
             assemble_findings(
-                "STATE_REF:eda_results",
+                "STATE_REF:describe_stats",
                 "STATE_REF:critic_report",
                 "STATE_REF:plot_paths",
             )
             findings_raw = json.loads(load_state("findings"))
             section_titles = [s["title"] for s in findings_raw["sections"]]
             assert "Trustworthiness Assessment" not in section_titles
+        finally:
+            clear_session()
+
+
+# ---------------------------------------------------------------------------
+# W1 / W2 / W3 regression tests — artifact-composition correctness
+#
+# These tests guard against the silent-empty-field bug where resolve()
+# returned an incompatible JSON blob, EDAResults.model_validate_json()
+# succeeded with all-default empty values, and the report rendered
+# "0 rows / No columns / No missing values / No numerical columns".
+# ---------------------------------------------------------------------------
+
+class TestW1W2W3ArtifactComposition:
+    """Regression tests for W1 (row count), W2 (correlation), W3 (missingness)."""
+
+    def _setup_session(self, save_state, eda: EDAResults, critic: CriticReport,
+                       schema_shape: tuple[int, int] | None = None) -> None:
+        """Save all individual pipeline artifacts for a test session."""
+        save_state("describe_stats", json.dumps(eda.describe))
+        save_state("missing_analysis", eda.missing.model_dump_json())
+        save_state("correlation_matrix", json.dumps(eda.correlation))
+        save_state("critic_report", critic.model_dump_json())
+        save_state("plot_paths", "[]")
+        if schema_shape is not None:
+            profile = DataProfile(shape=schema_shape)
+            save_state("schema_json", profile.model_dump_json())
+
+    def test_w1_overview_uses_dataprofile_shape(self):
+        """W1: overview row/col count comes from DataProfile.shape, not describe[count]."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        try:
+            init_session()
+            eda = EDAResults(
+                describe={
+                    "age":    {"count": 48842.0, "mean": 38.58, "std": 13.64},
+                    "income": {"count": 48842.0, "mean": 50000.0, "std": 15000.0},
+                },
+                missing=MissingInfo(per_column={"age": 0.0, "income": 0.0}, total_pct=0.0),
+                correlation={"age": {"age": 1.0, "income": 0.45},
+                             "income": {"age": 0.45, "income": 1.0}},
+            )
+            critic = CriticReport(flags=[], iteration=1, status="APPROVED")
+            self._setup_session(save_state, eda, critic, schema_shape=(48842, 15))
+
+            assemble_findings(
+                "STATE_REF:describe_stats",
+                "STATE_REF:critic_report",
+                "STATE_REF:plot_paths",
+            )
+            findings_raw = json.loads(load_state("findings"))
+            overview = next(s for s in findings_raw["sections"] if s["title"] == "Dataset Overview")
+            # Authoritative shape from DataProfile must appear
+            assert "48842" in overview["content"], "W1: row count must be 48842, not 0"
+            assert "15" in overview["content"], "W1: col count must be 15, not 0"
+        finally:
+            clear_session()
+
+    def test_w1_overview_fallback_when_no_schema(self):
+        """W1 fallback: no schema_json → row count inferred from describe[count]."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        try:
+            init_session()
+            eda = EDAResults(
+                describe={"age": {"count": 1000.0, "mean": 35.0, "std": 10.0}},
+                missing=MissingInfo(per_column={}, total_pct=0.0),
+                correlation={},
+            )
+            critic = CriticReport(flags=[], iteration=1, status="APPROVED")
+            self._setup_session(save_state, eda, critic, schema_shape=None)
+
+            assemble_findings("x", "STATE_REF:critic_report", "STATE_REF:plot_paths")
+            findings_raw = json.loads(load_state("findings"))
+            overview = next(s for s in findings_raw["sections"] if s["title"] == "Dataset Overview")
+            assert "1000" in overview["content"], "W1 fallback: count from describe must be used"
+        finally:
+            clear_session()
+
+    def test_w2_correlation_section_populated(self):
+        """W2: correlation section shows actual pairs, not 'No numerical columns'."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        try:
+            init_session()
+            eda = EDAResults(
+                describe={
+                    "age":    {"count": 48842.0, "mean": 38.58, "std": 13.64},
+                    "fnlwgt": {"count": 48842.0, "mean": 189778.0, "std": 105550.0},
+                },
+                missing=MissingInfo(per_column={}, total_pct=0.0),
+                correlation={
+                    "age":    {"age": 1.0, "fnlwgt": -0.077},
+                    "fnlwgt": {"age": -0.077, "fnlwgt": 1.0},
+                },
+            )
+            critic = CriticReport(flags=[], iteration=1, status="APPROVED")
+            self._setup_session(save_state, eda, critic)
+
+            assemble_findings("x", "STATE_REF:critic_report", "STATE_REF:plot_paths")
+            findings_raw = json.loads(load_state("findings"))
+            corr_section = next(s for s in findings_raw["sections"] if s["title"] == "Correlation Analysis")
+            assert "No numerical" not in corr_section["content"], \
+                "W2: correlation section must not show 'No numerical columns'"
+            assert "age" in corr_section["content"]
+        finally:
+            clear_session()
+
+    def test_w3_missing_section_populated(self):
+        """W3: missing section shows actual percentages, not 'No missing values detected'."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        try:
+            init_session()
+            eda = EDAResults(
+                describe={"workclass": {"count": 45222.0, "unique": 8, "top": "Private", "freq": 33906}},
+                missing=MissingInfo(
+                    per_column={"workclass": 5.64, "occupation": 5.66, "native-country": 1.79},
+                    total_pct=4.36,
+                ),
+                correlation={},
+            )
+            critic = CriticReport(flags=[], iteration=1, status="APPROVED")
+            self._setup_session(save_state, eda, critic)
+
+            assemble_findings("x", "STATE_REF:critic_report", "STATE_REF:plot_paths")
+            findings_raw = json.loads(load_state("findings"))
+            missing_section = next(s for s in findings_raw["sections"] if s["title"] == "Missing Values")
+            assert "No missing" not in missing_section["content"], \
+                "W3: missing section must not show 'No missing values detected'"
+            assert "workclass" in missing_section["content"]
+            assert "4.4" in missing_section["content"] or "4.3" in missing_section["content"]
+        finally:
+            clear_session()
+
+    def test_wrong_eda_ref_still_uses_individual_artifacts(self):
+        """Core regression: even when eda_results_json is a garbage/wrong ref,
+        assemble_findings must compose from individual artifacts (not silently
+        produce empty EDAResults with default zero values)."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        try:
+            init_session()
+            eda = EDAResults(
+                describe={"age": {"count": 999.0, "mean": 40.0, "std": 12.0}},
+                missing=MissingInfo(per_column={"age": 3.5}, total_pct=1.2),
+                correlation={"age": {"age": 1.0}},
+            )
+            critic = CriticReport(flags=[], iteration=1, status="APPROVED")
+            self._setup_session(save_state, eda, critic)
+
+            # Pass intentionally wrong/garbage eda_results_json —
+            # the new composition path ignores it and loads from artifacts directly.
+            assemble_findings(
+                eda_results_json="garbage_that_is_not_a_ref_or_valid_json",
+                critic_report_json="STATE_REF:critic_report",
+                plot_paths_json="STATE_REF:plot_paths",
+            )
+            findings_raw = json.loads(load_state("findings"))
+            overview = next(s for s in findings_raw["sections"] if s["title"] == "Dataset Overview")
+            missing_section = next(s for s in findings_raw["sections"] if s["title"] == "Missing Values")
+            # Must reflect actual data, not zero defaults
+            assert "999" in overview["content"] or "1" in overview["content"], \
+                "Row count must not be 0 (W1 regression)"
+            assert "No missing" not in missing_section["content"], \
+                "Missing section must not be 'No missing values' (W3 regression)"
         finally:
             clear_session()

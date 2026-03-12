@@ -152,9 +152,9 @@ class TestCreateExecutor:
         assert executor.human_input_mode == "NEVER"
 
     def test_max_consecutive_auto_reply(self):
-        """Executors allow up to 10 auto-replies for multi-tool sequences."""
+        """Executors allow up to 20 auto-replies to absorb retries and critic-loop iterations."""
         executor = _create_executor("TestExecutor")
-        assert executor._max_consecutive_auto_reply == 10
+        assert executor._max_consecutive_auto_reply == 20
 
     def test_code_execution_disabled(self):
         executor = _create_executor("TestExecutor")

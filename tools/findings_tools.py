@@ -34,7 +34,7 @@ from typing import Annotated, Any
 import numpy as np
 import pandas as pd
 
-from eda_state import CriticReport, EDAResults, Findings, Interpretations
+from eda_state import CriticReport, DataProfile, EDAResults, Findings, Interpretations
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +49,27 @@ _eval_cost_info: dict[str, Any] = {}
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _build_overview_section(eda: EDAResults) -> dict[str, Any]:
-    """Build the overview section from EDA describe stats."""
-    describe = eda.describe
-    num_columns = len(describe)
-    # Extract row count from first column's 'count' if available
-    row_count = 0
-    if describe:
-        first_col_stats = next(iter(describe.values()), {})
-        row_count = int(first_col_stats.get("count", 0))
+def _build_overview_section(
+    eda: EDAResults,
+    shape: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    """Build the overview section from EDA describe stats.
+
+    Args:
+        eda: Populated EDAResults (used as fallback for row/column count).
+        shape: Authoritative (rows, cols) from DataProfile.  When supplied,
+            this is used directly instead of inferring from describe[col][count]
+            which can be 0 when describe stats are sparsely populated (W1 fix).
+    """
+    if shape is not None:
+        row_count, num_columns = shape
+    else:
+        describe = eda.describe
+        num_columns = len(describe)
+        row_count = 0
+        if describe:
+            first_col_stats = next(iter(describe.values()), {})
+            row_count = int(first_col_stats.get("count", 0) or 0)
     return {
         "title": "Dataset Overview",
         "content": (
@@ -1174,6 +1186,25 @@ def save_interpretations(
 
     # Validate against Pydantic schema
     interp = Interpretations.model_validate_json(interpretations_json)
+
+    # Enforce that recommendations_and_business_implications is substantive.
+    # An empty or trivially short string means the LLM omitted PART 1 / PART 2.
+    # Return a recoverable error so the LLM retries with the field populated.
+    if not interp.recommendations_and_business_implications or \
+            len(interp.recommendations_and_business_implications.strip()) < 200:
+        return (
+            "Error: 'recommendations_and_business_implications' is missing or too short. "
+            "This field MUST contain: "
+            "PART 1 — a numbered prioritised action plan (ACTION, EXPECTED OUTCOME, "
+            "RISK IF SKIPPED for each item, plus monitoring recommendation and "
+            "next-step checklist); AND "
+            "PART 2 — Business Problem Catalogue: 5-8 business problems each starting "
+            "with a BUSINESS QUESTION, classified High/Med/Low with EDA justification, "
+            "plus full PROBLEM / METRIC / RECOMMENDATIONS / BUSINESS IMPACT deep-dives "
+            "for the TOP 3 HIGH-PROBABILITY problems. "
+            "Please call save_interpretations() again with both parts fully populated."
+        )
+
     validated_json = interp.model_dump_json()
 
     # --- Comprehensive evaluation (bias + toxicity + hallucination, OpenLIT, opt-in) ---
@@ -1235,38 +1266,48 @@ def assemble_findings(
         STATE_REF_PREFIX, PipelineStateError
 
     if is_active():
-        # --- Resolve eda_results_json (may require composition) ---
-        try:
-            eda_results_json = resolve(eda_results_json, "eda_results")
-            eda = EDAResults.model_validate_json(eda_results_json)
-        except (PipelineStateError, Exception):
-            # Compose from individual artifacts
-            desc_raw = load_state("describe_stats")
-            miss_raw = load_state("missing_analysis")
-            corr_raw = load_state("correlation_matrix")
-            if desc_raw is None:
-                raise PipelineStateError(
-                    "Cannot compose EDAResults: 'describe_stats' artifact missing. "
-                    "EDAAnalysisAgent may not have executed describe_stats()."
-                )
-            if miss_raw is None:
-                raise PipelineStateError(
-                    "Cannot compose EDAResults: 'missing_analysis' artifact missing. "
-                    "EDAAnalysisAgent may not have executed missing_analysis()."
-                )
-            if corr_raw is None:
-                raise PipelineStateError(
-                    "Cannot compose EDAResults: 'correlation_matrix' artifact missing. "
-                    "EDAAnalysisAgent may not have executed correlation_matrix()."
-                )
-            composed = {
-                "describe": json.loads(desc_raw),
-                "missing": json.loads(miss_raw),
-                "correlation": json.loads(corr_raw),
-            }
-            eda_results_json = json.dumps(composed)
-            eda = EDAResults.model_validate_json(eda_results_json)
-            logger.info("EDAResults composed from individual artifacts")
+        # --- Compose EDAResults directly from individual artifacts (W1/W2/W3 fix) ---
+        # Resolving via a combined 'eda_results' state-ref silently produced empty
+        # fields: when the LLM passed STATE_REF:describe_stats, resolve() returned
+        # the raw describe JSON and EDAResults.model_validate_json() succeeded with
+        # all default-empty values because the top-level keys (describe/missing/
+        # correlation) were absent.  Loading each artifact by its canonical key
+        # directly guarantees correct field population regardless of what the LLM
+        # passes as eda_results_json.
+        desc_raw = load_state("describe_stats")
+        miss_raw = load_state("missing_analysis")
+        corr_raw = load_state("correlation_matrix")
+        if desc_raw is None:
+            raise PipelineStateError(
+                "Cannot compose EDAResults: 'describe_stats' artifact missing. "
+                "EDAAnalysisAgent may not have executed describe_stats()."
+            )
+        if miss_raw is None:
+            raise PipelineStateError(
+                "Cannot compose EDAResults: 'missing_analysis' artifact missing. "
+                "EDAAnalysisAgent may not have executed missing_analysis()."
+            )
+        if corr_raw is None:
+            raise PipelineStateError(
+                "Cannot compose EDAResults: 'correlation_matrix' artifact missing. "
+                "EDAAnalysisAgent may not have executed correlation_matrix()."
+            )
+        eda = EDAResults.model_validate({
+            "describe": json.loads(desc_raw),
+            "missing": json.loads(miss_raw),
+            "correlation": json.loads(corr_raw),
+        })
+        logger.info("EDAResults composed from individual artifacts")
+
+        # Load DataProfile shape for the overview section (W1 fix: authoritative
+        # row/col counts, not inferred from describe[col][count]).
+        _shape: tuple[int, int] | None = None
+        schema_raw = load_state("schema_json")
+        if schema_raw:
+            try:
+                _shape = DataProfile.model_validate_json(schema_raw).shape
+            except Exception:
+                pass  # Non-critical — _build_overview_section falls back to describe
 
         # --- Resolve critic_report_json ---
         try:
@@ -1311,6 +1352,7 @@ def assemble_findings(
         eda = EDAResults.model_validate_json(eda_results_json)
         critic = CriticReport.model_validate_json(critic_report_json)
         plot_paths = json.loads(plot_paths_json)
+        _shape = None
 
     # Determine if this is the final iteration
     is_final = critic.status == "APPROVED" or critic.iteration >= 2
@@ -1387,7 +1429,7 @@ def assemble_findings(
         return section
 
     # Build sections in report order (Option A: plots inline in parent sections)
-    overview = _enrich(_build_overview_section(eda), "overview")
+    overview = _enrich(_build_overview_section(eda, shape=_shape), "overview")
     missing = _enrich(
         _build_missing_section(eda), "missing_values",
         paired_plots=missing_heatmap_paths or None,

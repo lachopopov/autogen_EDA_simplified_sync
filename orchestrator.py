@@ -95,7 +95,7 @@ def _create_executor(name: str) -> UserProxyAgent:
     return UserProxyAgent(
         name=name,
         human_input_mode="NEVER",
-        max_consecutive_auto_reply=10,
+        max_consecutive_auto_reply=20,
         is_termination_msg=lambda x: "TERMINATE" in (x.get("content") or ""),
         code_execution_config=False,
     )

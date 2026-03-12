@@ -70,13 +70,30 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
     Do NOT just restate technical facts — translate every finding into an
     operational decision, a cost/benefit trade-off, or a risk assessment.
 
-  Write "recommendations_and_business_implications" as a PRIORITISED action plan:
+  Write "recommendations_and_business_implications" in TWO parts:
+
+  PART 1 — PRIORITISED ACTION PLAN:
     - Number each recommendation (1, 2, 3, …) in order of business impact
     - Each item must include: ACTION, EXPECTED OUTCOME, and RISK IF SKIPPED
     - Include at least one cost-optimisation or measurement-simplification
       recommendation when redundancy is detected
     - Include a monitoring/alerting recommendation for production readiness
     - Close with a concrete next-step checklist (bullet or numbered)
+
+  PART 2 — BUSINESS PROBLEM CATALOGUE (grounded in assembled findings + fact sheet):
+    a) Identify ALL realistic business problems (5-8 max) this dataset could solve.
+       Start each with a BUSINESS QUESTION.
+       Classify each by solution probability: High / Med / Low, with a one-sentence
+       EDA justification (cite column name and observed pattern).
+    b) For the TOP 3 HIGH-PROBABILITY problems, answer all four questions:
+       - PROBLEM: Business question + EDA context (what signals in the data support this?)
+       - METRIC: 1-2 KPIs, defined and measurable (e.g., "churn rate: % customers lost per quarter")
+       - RECOMMENDATIONS: 2-3 actions + modelled impact (e.g., "apply X → expected Y% lift")
+       - BUSINESS IMPACT: ROI quantified using fact-sheet numbers (e.g., "$XM annual saving").
+         If ROI cannot be derived from the fact sheet, state the value driver
+         (e.g., "reduces manual review hours by ~30%") without inventing dollar figures.
+    Ground ONLY in the fact sheet / assembled findings. Do NOT invent statistics.
+    Cap at 8 problems to avoid dilution.
 
 STEP 3: Call save_interpretations() with your structured JSON commentary.
 
@@ -91,6 +108,15 @@ RULES:
 - Do NOT include the word TERMINATE in your response.
 - When a tool returns "Reference: STATE_REF:...", the tool has SUCCEEDED.
   Do NOT re-call the same tool.
+- CRITICAL: The JSON for save_interpretations() MUST include the key
+  "recommendations_and_business_implications" with a non-empty string containing
+  BOTH PART 1 (prioritised action plan with ACTION/OUTCOME/RISK per item, plus
+  monitoring recommendation and next-step checklist) AND PART 2 (Business Problem
+  Catalogue: 5-8 problems with BUSINESS QUESTION + High/Med/Low probability +
+  EDA justification, full PROBLEM/METRIC/RECOMMENDATIONS/BUSINESS IMPACT for
+  TOP 3 HIGH-PROBABILITY problems). Omitting this field or providing less than
+  ~200 characters will cause save_interpretations() to return an error requiring
+  you to retry.
 Ground your answers only on data returned by your tools. If you do not have \
 the facts, state "No info available at this stage." Do NOT invent or fabricate \
 any statistics, numbers, or findings."""
