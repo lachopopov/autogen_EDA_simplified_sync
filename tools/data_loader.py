@@ -126,17 +126,22 @@ def load_data(
 
     logger.info("Loading data from %s", file_path)
     df = _get_loader(file_path).load(file_path)
+    # Count duplicates BEFORE dropping so the count is available downstream (W8).
+    dup_count = int(df.duplicated().sum())
     df = df.drop_duplicates().reset_index(drop=True)
-    logger.info("Loaded %d rows × %d columns (%.2f MB)",
-                df.shape[0], df.shape[1], df.memory_usage(deep=True).sum() / 1e6)
+    logger.info("Loaded %d rows × %d columns (%.2f MB); %d duplicate(s) removed",
+                df.shape[0], df.shape[1], df.memory_usage(deep=True).sum() / 1e6,
+                dup_count)
     result = df.to_json(orient="records")
 
     # Artifact store: persist for downstream tools
     from tools._pipeline_state import is_active, save_state, STATE_REF_PREFIX
     if is_active():
         save_state("data_json", result)
+        save_state("duplicate_count", str(dup_count))
         return (
-            f"Loaded {df.shape[0]} rows × {df.shape[1]} columns from {path.name}. "
+            f"Loaded {df.shape[0]} rows × {df.shape[1]} columns from {path.name} "
+            f"({dup_count} duplicate row(s) removed). "
             f"Reference: {STATE_REF_PREFIX}data_json"
         )
     return result
@@ -153,24 +158,38 @@ def validate_schema(
         JSON string of a DataProfile (shape, dtypes, memory_mb).
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import is_active, load_state, resolve, save_state, STATE_REF_PREFIX
     if is_active():
         data_json = resolve(data_json, "data_json")
 
     df = pd.DataFrame(json.loads(data_json))
+
+    # Load original duplicate count from artifact (populated by load_data before dedup).
+    dup_count = 0
+    if is_active():
+        dup_raw = load_state("duplicate_count")
+        if dup_raw is not None:
+            try:
+                dup_count = int(dup_raw)
+            except (ValueError, TypeError):
+                pass
+
     profile = DataProfile(
         shape=(df.shape[0], df.shape[1]),
         memory_mb=round(df.memory_usage(deep=True).sum() / 1e6, 3),
         dtypes={str(col): str(dtype) for col, dtype in df.dtypes.items()},
+        duplicate_count=dup_count,
     )
-    logger.info("Schema validated: %d×%d, %.3f MB", *profile.shape, profile.memory_mb)
+    logger.info("Schema validated: %d×%d, %.3f MB, %d duplicate(s)",
+                *profile.shape, profile.memory_mb, profile.duplicate_count)
     result = profile.model_dump_json()
 
     if is_active():
         save_state("schema_json", result)
         return (
             f"Schema validated: {profile.shape[0]}×{profile.shape[1]}, "
-            f"{profile.memory_mb:.3f} MB, {len(profile.dtypes)} columns. "
+            f"{profile.memory_mb:.3f} MB, {len(profile.dtypes)} columns, "
+            f"{profile.duplicate_count} duplicate(s) in original file. "
             f"Reference: {STATE_REF_PREFIX}schema_json"
         )
     return result

@@ -59,6 +59,7 @@ class DataProfile(BaseModel):
     dtypes: dict[str, str] = Field(default_factory=dict)
     numerical_cols: list[str] = Field(default_factory=list)
     categorical_cols: list[str] = Field(default_factory=list)
+    duplicate_count: int = 0  # Rows removed by load_data() dedup (W8)
 
 
 class MissingInfo(BaseModel):

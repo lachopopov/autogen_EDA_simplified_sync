@@ -14,16 +14,18 @@ Design:
   - Zero AG2 imports. Pure Python.
 
 Rules implemented (from architecture.md § 8 — V1 Critic Ruleset):
-  1. MissingValueRule       — per-column missing: >50% BLOCKER, 30-50% HIGH, 5-30% MEDIUM
-  2. DatasetMissingnessRule  — dataset-level: >30% total cells → HIGH
-  3. DuplicateRowsRule       — >1% duplicate rows → MEDIUM
-  4. OutlierRule             — IQR method, >5% flagged in worst column → MEDIUM
-  5. SkewnessRule            — |skew|>2 HIGH, 1<|skew|≤2 MEDIUM
-  6. ZeroVarianceRule        — std==0 → HIGH
-  7. NearZeroVarianceRule    — std < 0.01×|mean| → LOW
+  1. MissingValueRule          — per-column missing: >50% BLOCKER, 30-50% HIGH, 5-30% MEDIUM
+  2. DatasetMissingnessRule    — dataset-level: >30% total cells → HIGH
+  3. DuplicateRowsRule         — >1% duplicate rows → HIGH, >0.1% → MEDIUM
+  4. OutlierRule               — IQR method, >5% flagged in worst column → MEDIUM
+  5. SkewnessRule              — |skew|>2 HIGH, 1<|skew|≤2 MEDIUM
+  6. ZeroVarianceRule          — std==0 → HIGH
+  7. NearZeroVarianceRule      — std < 0.01×|mean| → LOW
   8. NearPerfectCorrelationRule — |r|>0.95 HIGH, 0.85<|r|≤0.95 MEDIUM
-  9. AllUniqueColumnRule     — nunique==n_rows → LOW (likely ID)
+  9. AllUniqueColumnRule       — nunique==n_rows → LOW (likely ID)
   10. SingleValueCategoricalRule — nunique==1 for non-numeric → HIGH
+  11. HighCardinalityRule      — >50 unique values → HIGH, >20 → MEDIUM (W9)
+  12. RareCategoryRule         — any level < 0.5% frequency → LOW per column (W9)
 
 AG2 Version: 0.10.3
 """
@@ -68,7 +70,7 @@ class CriticRule(ABC):
 class MissingValueRule(CriticRule):
     """Per-column missing values: >50% BLOCKER, 30–50% HIGH, 5–30% MEDIUM.
 
-    Reports the worst (highest missing %) column only.
+    Reports ALL columns that cross a threshold (not only the worst).
     """
 
     name = "missing_values"
@@ -79,18 +81,21 @@ class MissingValueRule(CriticRule):
         missing_pct = df.isnull().mean()
         if missing_pct.max() == 0.0:
             return []
-        worst_col = str(missing_pct.idxmax())
-        pct = float(missing_pct[worst_col])
-        if pct > 0.50:
-            return [CriticFlag(column=worst_col, rule=self.name, severity="BLOCKER",
-                              message=f"{pct:.0%} missing", value=pct)]
-        if pct > 0.30:
-            return [CriticFlag(column=worst_col, rule=self.name, severity="HIGH",
-                              message=f"{pct:.0%} missing", value=pct)]
-        if pct > 0.05:
-            return [CriticFlag(column=worst_col, rule=self.name, severity="MEDIUM",
-                              message=f"{pct:.0%} missing", value=pct)]
-        return []
+        flags: list[CriticFlag] = []
+        for col, pct in missing_pct.items():
+            pct = float(pct)
+            if pct > 0.50:
+                flags.append(CriticFlag(column=str(col), rule=self.name, severity="BLOCKER",
+                                        message=f"{pct:.0%} missing", value=pct))
+            elif pct > 0.30:
+                flags.append(CriticFlag(column=str(col), rule=self.name, severity="HIGH",
+                                        message=f"{pct:.0%} missing", value=pct))
+            elif pct > 0.05:
+                flags.append(CriticFlag(column=str(col), rule=self.name, severity="MEDIUM",
+                                        message=f"{pct:.0%} missing", value=pct))
+        # Sort: highest missing % first so the report reads in priority order
+        flags.sort(key=lambda f: f.value, reverse=True)
+        return flags
 
 
 class DatasetMissingnessRule(CriticRule):
@@ -110,21 +115,59 @@ class DatasetMissingnessRule(CriticRule):
 
 
 class DuplicateRowsRule(CriticRule):
-    """Duplicate rows: >1% of rows → MEDIUM."""
+    """Duplicate rows: >1% → HIGH, >0.1% → MEDIUM.
+
+    In pipeline mode the data passed to run_critic_rules() has already been
+    deduplicated by load_data().  This rule therefore first tries to load the
+    original duplicate count from the artifact store (saved before dedup).
+    When the artifact is absent (unit-test / non-pipeline mode) it falls back
+    to computing directly on the DataFrame.
+    """
 
     name = "duplicate_rows"
 
     def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
         if df.empty:
             return []
+
+        dup_pct: float | None = None
+        dup_count: int = 0
+
+        # --- Pipeline mode: load pre-dedup count from artifact store ---
         try:
-            dup_pct = float(df.duplicated().mean())
-        except TypeError:
-            # Unhashable columns (dicts/lists) — stringify before hashing
-            dup_pct = float(df.astype(str).duplicated().mean())
+            from tools._pipeline_state import is_active, load_state
+            if is_active():
+                raw = load_state("duplicate_count")
+                if raw is not None:
+                    dup_count = int(raw)
+                    original_rows = df.shape[0] + dup_count
+                    dup_pct = dup_count / max(original_rows, 1)
+        except Exception:
+            pass
+
+        # --- Fallback: compute directly (unit-test / non-pipeline mode) ---
+        if dup_pct is None:
+            try:
+                dup_pct = float(df.duplicated().mean())
+                dup_count = int(df.duplicated().sum())
+            except TypeError:
+                dup_pct = float(df.astype(str).duplicated().mean())
+                dup_count = int(df.astype(str).duplicated().sum())
+
         if dup_pct > 0.01:
-            return [CriticFlag(column=None, rule=self.name, severity="MEDIUM",
-                              message=f"{dup_pct:.1%} duplicate rows", value=dup_pct)]
+            return [CriticFlag(
+                column=None, rule=self.name, severity="HIGH",
+                message=f"{dup_pct:.1%} duplicate rows ({dup_count} rows)",
+                value=dup_pct,
+                suggestion="Investigate data pipeline for unintended row duplication",
+            )]
+        if dup_pct > 0.001:
+            return [CriticFlag(
+                column=None, rule=self.name, severity="MEDIUM",
+                message=f"{dup_pct:.1%} duplicate rows ({dup_count} rows)",
+                value=dup_pct,
+                suggestion="Verify duplicate rows are expected or investigate upstream",
+            )]
         return []
 
 
@@ -387,6 +430,90 @@ class SingleValueCategoricalRule(CriticRule):
         return []
 
 
+class HighCardinalityRule(CriticRule):
+    """High-cardinality categorical: >50 unique values → HIGH, >20 → MEDIUM.
+
+    Skips all-unique columns (already flagged as likely ID by AllUniqueColumnRule).
+    Reports all columns above threshold, sorted by nunique descending.
+    """
+
+    name = "high_cardinality"
+
+    def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
+        cat = df.select_dtypes(exclude="number")
+        if cat.empty or len(df) == 0:
+            return []
+        n_rows = len(df)
+        flags: list[CriticFlag] = []
+        for col in cat.columns:
+            nunique = int(cat[col].nunique())
+            if nunique == n_rows:
+                continue  # AllUniqueColumnRule handles ID-like columns
+            if nunique > 50:
+                flags.append(CriticFlag(
+                    column=str(col), rule=self.name, severity="HIGH",
+                    message=f"{nunique} unique values — high encoding cost",
+                    value=float(nunique),
+                    suggestion=(
+                        f"Consider target-encoding or embedding instead of one-hot; "
+                        f"one-hot would add {nunique} sparse columns"
+                    ),
+                ))
+            elif nunique > 20:
+                flags.append(CriticFlag(
+                    column=str(col), rule=self.name, severity="MEDIUM",
+                    message=f"{nunique} unique values — moderate encoding cost",
+                    value=float(nunique),
+                    suggestion="Consider grouping low-frequency categories or ordinal encoding",
+                ))
+        flags.sort(key=lambda f: f.value, reverse=True)
+        return flags
+
+
+class RareCategoryRule(CriticRule):
+    """Rare category levels: any level appearing in < 0.5% of rows → LOW per column.
+
+    Only fires when n_rows >= 100 (below that the 0.5% threshold is meaningless —
+    minimum frequency 1/99 ≈ 1.0% > 0.5%).
+    NaN values are excluded from frequency calculation (handled by MissingValueRule).
+    """
+
+    name = "rare_category"
+    _RARE_THRESHOLD = 0.005  # < 0.5%
+    _MIN_ROWS = 100
+    _EXAMPLE_LIMIT = 3
+
+    def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
+        cat = df.select_dtypes(exclude="number")
+        if cat.empty:
+            return []
+        if len(df) < self._MIN_ROWS:
+            return []
+        flags: list[CriticFlag] = []
+        for col in cat.columns:
+            series = cat[col].dropna()
+            if series.empty:
+                continue
+            freq = series.value_counts(normalize=True)
+            rare = freq[freq < self._RARE_THRESHOLD]
+            if rare.empty:
+                continue
+            n_rare = len(rare)
+            examples = [str(v) for v in rare.index[: self._EXAMPLE_LIMIT]]
+            example_str = ", ".join(f"'{v}'" for v in examples)
+            if n_rare > self._EXAMPLE_LIMIT:
+                example_str += f" (+{n_rare - self._EXAMPLE_LIMIT} more)"
+            flags.append(CriticFlag(
+                column=str(col),
+                rule=self.name,
+                severity="LOW",
+                message=f"{n_rare} rare level(s) (<0.5% each): {example_str}",
+                value=float(n_rare),
+                suggestion="Consider grouping rare categories into 'Other' to reduce noise",
+            ))
+        return flags
+
+
 class ClassImbalanceRule(CriticRule):
     """Target variable class imbalance analysis.
 
@@ -494,6 +621,8 @@ DEFAULT_RULES: list[CriticRule] = [
     NearPerfectCorrelationRule(),
     AllUniqueColumnRule(),
     SingleValueCategoricalRule(),
+    HighCardinalityRule(),       # W9
+    RareCategoryRule(),          # W9
     ClassImbalanceRule(),
 ]
 

@@ -52,6 +52,7 @@ _eval_cost_info: dict[str, Any] = {}
 def _build_overview_section(
     eda: EDAResults,
     shape: tuple[int, int] | None = None,
+    duplicate_count: int = 0,
 ) -> dict[str, Any]:
     """Build the overview section from EDA describe stats.
 
@@ -60,6 +61,7 @@ def _build_overview_section(
         shape: Authoritative (rows, cols) from DataProfile.  When supplied,
             this is used directly instead of inferring from describe[col][count]
             which can be 0 when describe stats are sparsely populated (W1 fix).
+        duplicate_count: Number of duplicate rows removed during loading (W8).
     """
     if shape is not None:
         row_count, num_columns = shape
@@ -70,12 +72,19 @@ def _build_overview_section(
         if describe:
             first_col_stats = next(iter(describe.values()), {})
             row_count = int(first_col_stats.get("count", 0) or 0)
+    parts = [
+        f"The dataset contains {row_count} rows and {num_columns} columns. "
+        f"Descriptive statistics were computed for all columns."
+    ]
+    if duplicate_count > 0:
+        dup_pct = duplicate_count / max(row_count + duplicate_count, 1) * 100
+        parts.append(
+            f"{duplicate_count} duplicate row(s) ({dup_pct:.1f}% of original rows) "
+            f"were detected and removed automatically before analysis."
+        )
     return {
         "title": "Dataset Overview",
-        "content": (
-            f"The dataset contains {row_count} rows and {num_columns} columns. "
-            f"Descriptive statistics were computed for all columns."
-        ),
+        "content": " ".join(parts),
     }
 
 
@@ -127,6 +136,53 @@ def _build_correlation_section(eda: EDAResults) -> dict[str, Any]:
         content = f"Pearson correlation computed for {len(cols)} numerical columns. No notable correlations found."
 
     return {"title": "Correlation Analysis", "content": content}
+
+
+def _compute_target_analysis_fallback(ti: dict, data_raw: str | None) -> dict:
+    """Build a full target analysis dict from target_info + raw data JSON.
+
+    Produces the same schema as eda_tools.target_analysis(), used as a
+    fallback when the LLM agent skips calling that tool.  Computes
+    per_class_feature_stats on the fly from data_json so the report always
+    includes per-class statistics regardless of LLM non-determinism.
+    """
+    col = ti.get("column", "")
+    ptype = ti.get("problem_type", "unsupervised")
+    total = sum(ti.get("class_counts", {}).values()) or 1
+
+    result: dict = {
+        "column": col,
+        "problem_type": ptype,
+        "n_classes": ti.get("n_classes", 0),
+        "imbalance_ratio": ti.get("imbalance_ratio", 1.0),
+        "class_distribution": {
+            k: {"count": v, "pct": round(v / total * 100, 2)}
+            for k, v in ti.get("class_counts", {}).items()
+        },
+    }
+
+    if data_raw and ptype == "classification" and col:
+        try:
+            df = pd.DataFrame(json.loads(data_raw))
+            if col in df.columns:
+                num_cols = df.select_dtypes(include="number").columns.tolist()
+                feature_num = [c for c in num_cols if c != col]
+                if feature_num:
+                    per_class_stats: dict = {}
+                    for cls_val, group_df in df.groupby(col):
+                        cls_stats: dict = {}
+                        for feat in feature_num:
+                            series = group_df[feat].dropna()
+                            cls_stats[feat] = {
+                                "mean": round(float(series.mean()), 4),
+                                "std": round(float(series.std()), 4),
+                            }
+                        per_class_stats[str(cls_val)] = cls_stats
+                    result["per_class_feature_stats"] = per_class_stats
+        except Exception:
+            pass  # silently skip — per-class stats are enrichment, not critical
+
+    return result
 
 
 def _build_target_section(target_analysis_data: dict) -> dict[str, Any]:
@@ -935,6 +991,19 @@ def prepare_interpretation_context() -> str:
     first_stats = next(iter(describe.values()), {})
     row_count = int(first_stats.get("count", 0))
     sections.append(f"\nDATASET: {row_count} rows x {num_cols} columns")
+    # Surface duplicate count in fact sheet (W8)
+    dup_raw = load_state("duplicate_count")
+    if dup_raw:
+        try:
+            dup_ct = int(dup_raw)
+            if dup_ct > 0:
+                dup_pct_fs = dup_ct / max(row_count + dup_ct, 1) * 100
+                sections.append(
+                    f"  Duplicate rows removed before analysis: "
+                    f"{dup_ct} ({dup_pct_fs:.1f}% of original rows)"
+                )
+        except (ValueError, TypeError):
+            pass
 
     # Per-column statistics
     sections.append("\nPER-COLUMN STATISTICS:")
@@ -974,12 +1043,13 @@ def prepare_interpretation_context() -> str:
     elif target_info_raw:
         ti = json.loads(target_info_raw)
         if ti.get("column"):
-            sections.append(
-                f"\nTARGET VARIABLE ANALYSIS:\n"
-                f"  Target column '{ti['column']}' identified "
-                f"(type: {ti.get('problem_type', 'unknown')}) "
-                f"but detailed analysis not yet available."
-            )
+            # Use the same fallback helper as assemble_findings so the LLM
+            # receives full per-class stats in its context, not just
+            # "not yet available".
+            ta_data = _compute_target_analysis_fallback(ti, data_raw)
+            target_section = _build_target_section(ta_data)
+            sections.append("\nTARGET VARIABLE ANALYSIS:")
+            sections.append(f"  {target_section['content']}")
 
     # Critic flags
     sections.append("\nQUALITY FLAGS:")
@@ -1299,15 +1369,18 @@ def assemble_findings(
         })
         logger.info("EDAResults composed from individual artifacts")
 
-        # Load DataProfile shape for the overview section (W1 fix: authoritative
-        # row/col counts, not inferred from describe[col][count]).
+        # Load DataProfile for the overview section — authoritative shape (W1)
+        # and duplicate_count (W8).
         _shape: tuple[int, int] | None = None
+        _duplicate_count: int = 0
         schema_raw = load_state("schema_json")
         if schema_raw:
             try:
-                _shape = DataProfile.model_validate_json(schema_raw).shape
+                _dp = DataProfile.model_validate_json(schema_raw)
+                _shape = _dp.shape
+                _duplicate_count = _dp.duplicate_count
             except Exception:
-                pass  # Non-critical — _build_overview_section falls back to describe
+                pass  # Non-critical — overview falls back to describe
 
         # --- Resolve critic_report_json ---
         try:
@@ -1353,6 +1426,7 @@ def assemble_findings(
         critic = CriticReport.model_validate_json(critic_report_json)
         plot_paths = json.loads(plot_paths_json)
         _shape = None
+        _duplicate_count = 0
 
     # Determine if this is the final iteration
     is_final = critic.status == "APPROVED" or critic.iteration >= 2
@@ -1429,7 +1503,10 @@ def assemble_findings(
         return section
 
     # Build sections in report order (Option A: plots inline in parent sections)
-    overview = _enrich(_build_overview_section(eda, shape=_shape), "overview")
+    overview = _enrich(
+        _build_overview_section(eda, shape=_shape, duplicate_count=_duplicate_count),
+        "overview",
+    )
     missing = _enrich(
         _build_missing_section(eda), "missing_values",
         paired_plots=missing_heatmap_paths or None,
@@ -1454,23 +1531,17 @@ def assemble_findings(
             ta_data = json.loads(ta_raw)
             target_sec = _build_target_section(ta_data)
         else:
-            # Fallback: build basic target section from target_info
-            # (always saved pre-pipeline by main.py)
+            # Fallback: build full target section from target_info + data_json.
+            # _compute_target_analysis_fallback computes per_class_feature_stats
+            # on the fly so the report is complete even when the LLM skipped
+            # calling target_analysis() (known non-determinism).
             ti_raw = load_state("target_info")
             if ti_raw:
                 ti = json.loads(ti_raw)
                 if ti.get("column"):
-                    total = sum(ti.get("class_counts", {}).values()) or 1
-                    target_sec = _build_target_section({
-                        "column": ti["column"],
-                        "problem_type": ti.get("problem_type", "unsupervised"),
-                        "n_classes": ti.get("n_classes", 0),
-                        "imbalance_ratio": ti.get("imbalance_ratio", 1.0),
-                        "class_distribution": {
-                            k: {"count": v, "pct": round(v / total * 100, 2)}
-                            for k, v in ti.get("class_counts", {}).items()
-                        },
-                    })
+                    data_raw_fb = load_state("data_json")
+                    ta_data = _compute_target_analysis_fallback(ti, data_raw_fb)
+                    target_sec = _build_target_section(ta_data)
         if target_sec is not None:
             target_sec = _enrich(
                 target_sec, "target_variable_analysis",

@@ -456,3 +456,61 @@ class TestCSVLoaderNASentinels:
         assert result["per_column"]["workclass"] > 0, "workclass should have missing%>0"
         assert result["per_column"]["occupation"] > 0, "occupation should have missing%>0"
         assert result["per_column"]["age"] == 0.0, "age has no missing values"
+
+
+# ---------------------------------------------------------------------------
+# W8: duplicate_count artifact
+# ---------------------------------------------------------------------------
+
+class TestDuplicateCountArtifact:
+    """Test that load_data() saves and validate_schema() exposes duplicate_count."""
+
+    def test_load_data_saves_duplicate_count_artifact(self, csv_with_duplicates):
+        """load_data() stores the pre-dedup duplicate count in the artifact store."""
+        from tools._pipeline_state import init_session, clear_session, load_state
+        try:
+            init_session()
+            load_data(csv_with_duplicates)
+            raw = load_state("duplicate_count")
+            assert raw is not None
+            assert int(raw) == 1  # csv_with_duplicates has 3 rows, 1 duplicate
+        finally:
+            clear_session()
+
+    def test_load_data_saves_zero_for_clean_csv(self, csv_path):
+        """load_data() stores 0 when there are no duplicates."""
+        from tools._pipeline_state import init_session, clear_session, load_state
+        try:
+            init_session()
+            load_data(csv_path)
+            raw = load_state("duplicate_count")
+            assert int(raw) == 0
+        finally:
+            clear_session()
+
+    def test_validate_schema_includes_duplicate_count(self, csv_with_duplicates):
+        """validate_schema() exposes duplicate_count in the DataProfile JSON."""
+        from tools._pipeline_state import init_session, clear_session, load_state
+        try:
+            init_session()
+            data_json = load_data(csv_with_duplicates)
+            validate_schema(data_json)
+            # In pipeline mode validate_schema returns a STATE_REF string;
+            # the DataProfile JSON is in the schema_json artifact.
+            profile_json = json.loads(load_state("schema_json"))
+            assert "duplicate_count" in profile_json
+            assert profile_json["duplicate_count"] == 1
+        finally:
+            clear_session()
+
+    def test_validate_schema_duplicate_count_zero_clean_data(self, csv_path):
+        """validate_schema() returns duplicate_count=0 for a clean dataset."""
+        from tools._pipeline_state import init_session, clear_session, load_state
+        try:
+            init_session()
+            data_json = load_data(csv_path)
+            validate_schema(data_json)
+            profile_json = json.loads(load_state("schema_json"))
+            assert profile_json.get("duplicate_count", -1) == 0
+        finally:
+            clear_session()

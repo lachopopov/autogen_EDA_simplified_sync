@@ -23,10 +23,12 @@ from tools.critic_rules import (
     CriticRule,
     DatasetMissingnessRule,
     DuplicateRowsRule,
+    HighCardinalityRule,
     MissingValueRule,
     NearPerfectCorrelationRule,
     NearZeroVarianceRule,
     OutlierRule,
+    RareCategoryRule,
     SingleValueCategoricalRule,
     SkewnessRule,
     ZeroVarianceRule,
@@ -59,7 +61,7 @@ def empty_df():
 # ---------------------------------------------------------------------------
 
 class TestMissingValueRule:
-    """Test MissingValueRule: per-column missing thresholds."""
+    """Test MissingValueRule: per-column missing thresholds (all columns flagged)."""
 
     def test_blocker_severity(self):
         """Column with > 50% missing → BLOCKER."""
@@ -102,17 +104,37 @@ class TestMissingValueRule:
         """Empty DataFrame → no flag."""
         assert MissingValueRule().check(empty_df, {}) == []
 
-    def test_returns_worst_column(self):
-        """Flag reports the column with highest missing %."""
+    def test_all_columns_above_threshold_flagged(self):
+        """All columns exceeding threshold are flagged, not just the worst."""
         df = pd.DataFrame({
-            "low_missing": [None, 2, 3, 4, 5, 6, 7, 8, 9, 10],   # 10%
-            "high_missing": [None, None, None, None, None, None, 7, 8, 9, 10],  # 60%
+            "low_missing": [None, 2, 3, 4, 5, 6, 7, 8, 9, 10],   # 10% → MEDIUM
+            "high_missing": [None, None, None, None, None, None, 7, 8, 9, 10],  # 60% → BLOCKER
+        })
+        flags = MissingValueRule().check(df, {})
+        assert len(flags) == 2
+        severities = {f.column: f.severity for f in flags}
+        assert severities["high_missing"] == "BLOCKER"
+        assert severities["low_missing"] == "MEDIUM"
+
+    def test_flags_sorted_by_missing_pct_descending(self):
+        """Flags are returned highest missing % first."""
+        df = pd.DataFrame({
+            "a": [None, 2, 3, 4, 5, 6, 7, 8, 9, 10],   # 10%
+            "b": [None, None, None, 4, 5, 6, 7, 8, 9, 10],  # 30% → just at boundary, no flag (≤0.30)
+            "c": [None, None, None, None, 5, 6, 7, 8, 9, 10],  # 40% → HIGH
+        })
+        flags = MissingValueRule().check(df, {})
+        assert flags[0].value >= flags[-1].value  # descending order
+
+    def test_only_one_column_above_threshold(self):
+        """Only the column crossing the threshold appears in flags."""
+        df = pd.DataFrame({
+            "ok": [None, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],  # 5% — no flag
+            "bad": [None, None, None, None, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],  # 20% → MEDIUM
         })
         flags = MissingValueRule().check(df, {})
         assert len(flags) == 1
-        flag = flags[0]
-        assert flag.column == "high_missing"
-        assert flag.severity == "BLOCKER"
+        assert flags[0].column == "bad"
 
 
 # ---------------------------------------------------------------------------
@@ -150,25 +172,89 @@ class TestDatasetMissingnessRule:
 # ---------------------------------------------------------------------------
 
 class TestDuplicateRowsRule:
-    """Test DuplicateRowsRule: >1% duplicate rows → MEDIUM."""
+    """Test DuplicateRowsRule: >1% → HIGH, >0.1% → MEDIUM (W8 thresholds)."""
 
-    def test_medium_severity(self):
-        """More than 1% duplicate rows → MEDIUM."""
+    def test_high_severity_over_1pct(self):
+        """More than 1% duplicate rows → HIGH."""
         # 5 duplicates in 10 rows = 50%
         df = pd.DataFrame({"x": [1, 1, 1, 1, 1, 2, 2, 2, 2, 2]})
         flags = DuplicateRowsRule().check(df, {})
         assert len(flags) == 1
         flag = flags[0]
-        assert flag.severity == "MEDIUM"
+        assert flag.severity == "HIGH"
         assert flag.column is None  # dataset-level
+        assert "rows" in flag.message
+
+    def test_medium_severity_between_0_1_and_1_pct(self):
+        """Between 0.1% and 1% duplicate rows → MEDIUM."""
+        # Build df with ~0.5% duplicate rate: 1 duplicate in 200 rows
+        base = list(range(199))  # 199 unique values
+        df = pd.DataFrame({"x": base + [base[0]]})  # add 1 dup → 1/200 = 0.5%
+        flags = DuplicateRowsRule().check(df, {})
+        assert len(flags) == 1
+        flag = flags[0]
+        assert flag.severity == "MEDIUM"
+        assert flag.column is None
 
     def test_no_flag_no_duplicates(self, clean_df):
         """No duplicate rows → no flag."""
         assert DuplicateRowsRule().check(clean_df, {}) == []
 
+    def test_no_flag_below_0_1_pct(self):
+        """Below 0.1% duplicate rate → no flag."""
+        # 1 duplicate in 2000 rows = 0.05%
+        base = list(range(1999))
+        df = pd.DataFrame({"x": base + [base[0]]})
+        flags = DuplicateRowsRule().check(df, {})
+        assert flags == []
+
     def test_empty_dataframe(self, empty_df):
         """Empty DataFrame → no flag."""
         assert DuplicateRowsRule().check(empty_df, {}) == []
+
+    def test_flag_includes_row_count(self):
+        """Flag message includes the raw duplicate count."""
+        df = pd.DataFrame({"x": [1, 1, 1, 2, 2]})
+        flags = DuplicateRowsRule().check(df, {})
+        assert len(flags) == 1
+        # [1,1,1,2,2]: 3 out of 5 rows are duplicates (indices 1, 2, 4)
+        assert "3" in flags[0].message
+
+    def test_suggestion_present(self):
+        """Flag carries a non-empty suggestion."""
+        df = pd.DataFrame({"x": [1, 1, 1, 2, 2]})
+        flags = DuplicateRowsRule().check(df, {})
+        assert len(flags) == 1
+        assert flags[0].suggestion
+
+    def test_pipeline_artifact_used_over_df(self):
+        """In pipeline mode the artifact-based count is used, not df.duplicated()."""
+        from tools._pipeline_state import init_session, clear_session, save_state
+        try:
+            init_session()
+            # Store 500 duplicate count in artifact — high enough to trigger HIGH
+            save_state("duplicate_count", "500")
+            # df has zero duplicates (already deduped by load_data)
+            df = pd.DataFrame({"x": list(range(1000))})
+            flags = DuplicateRowsRule().check(df, {})
+            assert len(flags) == 1
+            # 500 dupes / (1000 + 500) original rows ≈ 33% → HIGH
+            assert flags[0].severity == "HIGH"
+            assert "500" in flags[0].message
+        finally:
+            clear_session()
+
+    def test_pipeline_artifact_zero_no_flag(self):
+        """Artifact count of 0 → no flag even in pipeline mode."""
+        from tools._pipeline_state import init_session, clear_session, save_state
+        try:
+            init_session()
+            save_state("duplicate_count", "0")
+            df = pd.DataFrame({"x": [1, 2, 3, 4, 5]})
+            flags = DuplicateRowsRule().check(df, {})
+            assert flags == []
+        finally:
+            clear_session()
 
 
 # ---------------------------------------------------------------------------
@@ -538,8 +624,8 @@ class TestDefaultRules:
     """Test the DEFAULT_RULES list."""
 
     def test_count(self):
-        """All 11 V1 rules are registered."""
-        assert len(DEFAULT_RULES) == 11
+        """All 13 rules are registered (11 V1 + 2 W9)."""
+        assert len(DEFAULT_RULES) == 13
 
     def test_all_critic_rule_instances(self):
         """Every item in DEFAULT_RULES is a CriticRule instance."""
@@ -613,11 +699,10 @@ class TestRunCriticRules:
 
     def test_approved_medium_only(self):
         """Only MEDIUM severity flags → APPROVED."""
-        # Duplicate rows → MEDIUM; columns uncorrelated to avoid HIGH correlation
-        df = pd.DataFrame({
-            "a": [1, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            "b": [5, 5, 8, 1, 7, 2, 9, 4, 3, 6],
-        })
+        # Single column: no correlation rule fires.
+        # 1 duplicate in 200 rows = 0.5% → MEDIUM (>0.1% but ≤1%).
+        a_vals = list(range(199))
+        df = pd.DataFrame({"a": a_vals + [a_vals[0]]})
         result = run_critic_rules(df.to_json(orient="records"))
         report = CriticReport.model_validate_json(result)
         # Only MEDIUM or LOW flags → APPROVED
@@ -786,3 +871,162 @@ class TestClassImbalanceRule:
         """ClassImbalanceRule must be in DEFAULT_RULES."""
         class_names = [type(r).__name__ for r in DEFAULT_RULES]
         assert "ClassImbalanceRule" in class_names
+
+
+# ---------------------------------------------------------------------------
+# HighCardinalityRule (W9)
+# ---------------------------------------------------------------------------
+
+class TestHighCardinalityRule:
+    """Test HighCardinalityRule: >50 unique → HIGH, >20 → MEDIUM."""
+
+    def test_high_severity(self):
+        """51 unique values in a non-ID column → HIGH."""
+        df = pd.DataFrame({"cat": [str(i) for i in range(51)] * 2})
+        flags = HighCardinalityRule().check(df, {})
+        assert len(flags) == 1
+        assert flags[0].severity == "HIGH"
+        assert flags[0].value == 51.0
+        assert flags[0].column == "cat"
+
+    def test_medium_severity(self):
+        """25 unique values → MEDIUM."""
+        df = pd.DataFrame({"cat": [str(i % 25) for i in range(100)]})
+        flags = HighCardinalityRule().check(df, {})
+        assert len(flags) == 1
+        assert flags[0].severity == "MEDIUM"
+        assert flags[0].value == 25.0
+
+    def test_no_flag_at_threshold(self):
+        """Exactly 20 unique values → no flag (threshold is strictly >20)."""
+        df = pd.DataFrame({"cat": [str(i % 20) for i in range(100)]})
+        assert HighCardinalityRule().check(df, {}) == []
+
+    def test_no_flag_below_threshold(self):
+        """10 unique values → no flag."""
+        df = pd.DataFrame({"cat": [str(i % 10) for i in range(100)]})
+        assert HighCardinalityRule().check(df, {}) == []
+
+    def test_id_column_skipped(self):
+        """nunique == n_rows (ID column) → skipped, no flag."""
+        df = pd.DataFrame({"id": [str(i) for i in range(100)]})
+        assert HighCardinalityRule().check(df, {}) == []
+
+    def test_multiple_columns_sorted_descending(self):
+        """Multiple flagged columns → highest cardinality first."""
+        df = pd.DataFrame({
+            "col30": [str(i % 30) for i in range(300)],
+            "col60": [str(i % 60) for i in range(300)],
+        })
+        flags = HighCardinalityRule().check(df, {})
+        assert len(flags) == 2
+        assert flags[0].column == "col60"
+        assert flags[1].column == "col30"
+
+    def test_numeric_columns_skipped(self):
+        """Numeric columns are not checked for cardinality."""
+        df = pd.DataFrame({"num": range(200)})
+        assert HighCardinalityRule().check(df, {}) == []
+
+    def test_empty_dataframe(self):
+        """Empty DataFrame → no flag."""
+        assert HighCardinalityRule().check(pd.DataFrame(), {}) == []
+
+    def test_suggestion_present(self):
+        """HIGH flag includes a non-empty suggestion."""
+        df = pd.DataFrame({"cat": [str(i) for i in range(51)] * 2})
+        flags = HighCardinalityRule().check(df, {})
+        assert flags[0].suggestion != ""
+
+    def test_in_default_rules(self):
+        """HighCardinalityRule must be in DEFAULT_RULES."""
+        class_names = [type(r).__name__ for r in DEFAULT_RULES]
+        assert "HighCardinalityRule" in class_names
+
+
+# ---------------------------------------------------------------------------
+# RareCategoryRule (W9)
+# ---------------------------------------------------------------------------
+
+class TestRareCategoryRule:
+    """Test RareCategoryRule: any level < 0.5% frequency → LOW per column."""
+
+    def test_rare_level_flagged(self):
+        """One rare level (0.2% in 500 rows) → LOW flag."""
+        data = ["common_a"] * 250 + ["common_b"] * 249 + ["rare_x"]
+        df = pd.DataFrame({"cat": data})
+        flags = RareCategoryRule().check(df, {})
+        assert len(flags) == 1
+        assert flags[0].severity == "LOW"
+        assert flags[0].column == "cat"
+        assert "rare_x" in flags[0].message
+
+    def test_no_flag_when_all_common(self):
+        """All categories >= 0.5% → no flag."""
+        df = pd.DataFrame({"cat": [str(i % 10) for i in range(100)]})
+        assert RareCategoryRule().check(df, {}) == []
+
+    def test_small_df_skipped(self):
+        """n_rows < 100 → no check (threshold meaningless at that scale)."""
+        data = ["common"] * 97 + ["rare_1", "rare_2"]
+        df = pd.DataFrame({"cat": data})
+        assert RareCategoryRule().check(df, {}) == []
+
+    def test_exactly_100_rows_checked(self):
+        """n_rows == 100 → check is performed."""
+        data = ["common"] * 99 + ["rare_x"]
+        df = pd.DataFrame({"cat": data})
+        # rare_x = 1% which is above 0.5% → no flag
+        assert RareCategoryRule().check(df, {}) == []
+
+    def test_truncated_examples_with_overflow(self):
+        """More than 3 rare levels → shows 3 examples + '(+N more)'."""
+        rare_vals = [f"rare_{i}" for i in range(5)]
+        data = ["common"] * 500 + rare_vals
+        df = pd.DataFrame({"cat": data})
+        flags = RareCategoryRule().check(df, {})
+        assert len(flags) == 1
+        assert "+2 more" in flags[0].message
+
+    def test_exactly_three_examples_no_overflow(self):
+        """Exactly 3 rare levels → no '+N more' suffix."""
+        rare_vals = [f"rare_{i}" for i in range(3)]
+        data = ["common"] * 500 + rare_vals
+        df = pd.DataFrame({"cat": data})
+        flags = RareCategoryRule().check(df, {})
+        assert len(flags) == 1
+        assert "more" not in flags[0].message
+
+    def test_numeric_columns_skipped(self):
+        """Numeric columns are not checked for rare categories."""
+        df = pd.DataFrame({"num": range(200)})
+        assert RareCategoryRule().check(df, {}) == []
+
+    def test_nan_not_counted_as_rare_level(self):
+        """NaN is excluded from frequency calculation — not flagged as rare."""
+        # "b" is 9/499 non-null = 1.8% which is > 0.5% → no flag
+        data = ["a"] * 490 + ["b"] * 9 + [None]
+        df = pd.DataFrame({"cat": data})
+        assert RareCategoryRule().check(df, {}) == []
+
+    def test_multiple_columns_each_get_own_flag(self):
+        """Two columns with rare levels → two separate flags."""
+        data = ["common"] * 498 + ["r1", "r2"]
+        df = pd.DataFrame({"col1": data, "col2": data})
+        flags = RareCategoryRule().check(df, {})
+        assert len(flags) == 2
+        columns_flagged = {f.column for f in flags}
+        assert columns_flagged == {"col1", "col2"}
+
+    def test_suggestion_present(self):
+        """Flag includes a non-empty suggestion."""
+        data = ["common"] * 499 + ["rare_x"]
+        df = pd.DataFrame({"cat": data})
+        flags = RareCategoryRule().check(df, {})
+        assert len(flags) == 1
+        assert flags[0].suggestion != ""
+
+    def test_in_default_rules(self):
+        """RareCategoryRule must be in DEFAULT_RULES."""
+        class_names = [type(r).__name__ for r in DEFAULT_RULES]
+        assert "RareCategoryRule" in class_names

@@ -128,6 +128,26 @@ class TestBuildOverviewSection:
         assert section["title"] == "Dataset Overview"
         assert "0" in section["content"]
 
+    def test_duplicate_count_mentioned_when_nonzero(self, eda_results_basic):
+        """W8: duplicate_count > 0 → sentence in overview content."""
+        section = _build_overview_section(eda_results_basic, shape=(99, 5), duplicate_count=3)
+        assert "3 duplicate" in section["content"]
+        # 3 / (99 + 3) * 100 ≈ 2.9%
+        assert "%" in section["content"]
+        assert "removed" in section["content"]
+
+    def test_duplicate_count_zero_no_mention(self, eda_results_basic):
+        """W8: duplicate_count == 0 → no duplicate sentence."""
+        section = _build_overview_section(eda_results_basic, shape=(100, 5), duplicate_count=0)
+        assert "duplicate" not in section["content"]
+
+    def test_duplicate_percentage_calculation(self, eda_results_basic):
+        """W8: percentage = dup_count / (row_count + dup_count) * 100."""
+        # 10 dupes, 90 rows after dedup → 10/100 = 10%
+        section = _build_overview_section(eda_results_basic, shape=(90, 3), duplicate_count=10)
+        assert "10 duplicate" in section["content"]
+        assert "10.0%" in section["content"]
+
 
 # ---------------------------------------------------------------------------
 # _build_missing_section
@@ -997,7 +1017,7 @@ class TestAssembleFindingsTargetFallback:
                 s for s in findings.sections
                 if s["title"] == "Target Variable Analysis"
             )
-            # per_class_feature_stats only comes from target_analysis, not fallback
+            # per_class_feature_stats now comes from target_analysis (preferred)
             assert "sepal_length" in target_sec["content"]
         finally:
             clear_session()
@@ -1048,10 +1068,62 @@ class TestAssembleFindingsTargetFallback:
         finally:
             clear_session()
 
+    def test_fallback_computes_per_class_stats_from_data_json(
+        self, eda_results_basic, critic_approved, tmp_path, monkeypatch,
+    ):
+        """When target_analysis is missing but data_json is present, the fallback
+        computes per_class_feature_stats on the fly so the section is as rich as
+        if the LLM had called target_analysis()."""
+        from tools._pipeline_state import (
+            init_session, clear_session, save_state, load_state,
+        )
+        import pandas as pd
 
-# ---------------------------------------------------------------------------
-# Tests for _run_comprehensive_eval
-# ---------------------------------------------------------------------------
+        monkeypatch.setattr(
+            "tools._pipeline_state._BASE_STATE_DIR", tmp_path / ".state",
+        )
+        init_session()
+        try:
+            # Build a minimal dataset: 20 rows, binary target, 1 numeric feature
+            df = pd.DataFrame({
+                "score": list(range(10)) + list(range(10, 20)),
+                "label": ["low"] * 10 + ["high"] * 10,
+            })
+            save_state("data_json", df.to_json(orient="records"))
+            save_state("describe_stats", json.dumps(eda_results_basic.describe))
+            save_state("missing_analysis", eda_results_basic.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda_results_basic.correlation))
+            save_state("critic_report", critic_approved.model_dump_json())
+            save_state("target_info", json.dumps({
+                "column": "label",
+                "problem_type": "classification",
+                "n_classes": 2,
+                "class_counts": {"low": 10, "high": 10},
+                "imbalance_ratio": 1.0,
+                "detection_method": "name_heuristic",
+                "has_datetime_index": False,
+            }))
+            # Intentionally do NOT save target_analysis
+
+            assemble_findings(
+                eda_results_json="STATE_REF:describe_stats",
+                critic_report_json="STATE_REF:critic_report",
+                plot_paths_json=json.dumps([]),
+            )
+            findings = Findings.model_validate_json(load_state("findings"))
+            target_sec = next(
+                s for s in findings.sections
+                if s["title"] == "Target Variable Analysis"
+            )
+            # The fallback should have computed per-class stats from data_json
+            assert "score" in target_sec["content"], \
+                "per_class_feature_stats (score column) must appear in fallback section"
+            assert "low" in target_sec["content"]
+            assert "high" in target_sec["content"]
+        finally:
+            clear_session()
+
+
 
 class TestRunComprehensiveEval:
     """Tests for the comprehensive evaluation helper (bias + toxicity + hallucination)."""
