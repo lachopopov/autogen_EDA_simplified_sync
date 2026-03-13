@@ -24,8 +24,9 @@ Rules implemented (from architecture.md § 8 — V1 Critic Ruleset):
   8. NearPerfectCorrelationRule — |r|>0.95 HIGH, 0.85<|r|≤0.95 MEDIUM
   9. AllUniqueColumnRule       — nunique==n_rows → LOW (likely ID)
   10. SingleValueCategoricalRule — nunique==1 for non-numeric → HIGH
-  11. HighCardinalityRule      — >50 unique values → HIGH, >20 → MEDIUM (W9)
-  12. RareCategoryRule         — any level < 0.5% frequency → LOW per column (W9)
+  11. HighCardinalityRule              — >50 unique values → HIGH, >20 → MEDIUM (W9)
+  12. RareCategoryRule                 — any level < 0.5% frequency → LOW per column (W9)
+  13. CategoricalNumericRedundancyRule — eta²>0.95 between cat+num column pair → HIGH (W5)
 
 AG2 Version: 0.10.3
 """
@@ -356,6 +357,29 @@ class NearZeroVarianceRule(CriticRule):
         return []
 
 
+def _eta_squared(series_cat: pd.Series, series_num: pd.Series) -> float:
+    """Compute eta² (correlation ratio) between a categorical and numeric series.
+
+    eta² = SS_between / SS_total, where SS_between is the variance in series_num
+    explained by the categorical grouping in series_cat.
+
+    Returns 0.0 when computation is not meaningful (too few rows, zero variance).
+    """
+    df_pair = pd.DataFrame({"cat": series_cat, "num": series_num}).dropna()
+    if len(df_pair) < 2:
+        return 0.0
+    grand_mean = df_pair["num"].mean()
+    ss_total = float(((df_pair["num"] - grand_mean) ** 2).sum())
+    if ss_total == 0.0:
+        return 0.0  # ZeroVarianceRule already handles this column
+    ss_between = float(
+        df_pair.groupby("cat")["num"]
+        .apply(lambda g: len(g) * (g.mean() - grand_mean) ** 2)
+        .sum()
+    )
+    return min(ss_between / ss_total, 1.0)  # clamp: floating-point can exceed 1.0
+
+
 class NearPerfectCorrelationRule(CriticRule):
     """Near-perfect correlation: |r|>0.95 HIGH, 0.85<|r|≤0.95 MEDIUM.
 
@@ -382,6 +406,64 @@ class NearPerfectCorrelationRule(CriticRule):
             return [CriticFlag(column=None, rule=self.name, severity="MEDIUM",
                               message=f"|r|={max_val:.2f}", value=max_val)]
         return []
+
+
+class CategoricalNumericRedundancyRule(CriticRule):
+    """Categorical–numeric redundancy: eta² > 0.95 → HIGH.
+
+    Uses the correlation ratio (eta²) to detect when a categorical column and
+    a numeric column are encoding the same concept (e.g., 'education' and
+    'education-num' in the Adult Census dataset).
+
+    eta² = SS_between / SS_total measures how much variance in the numeric
+    column is explained by the categorical grouping. Values near 1.0 indicate
+    the pair is essentially redundant — at least one should be dropped before
+    modeling to avoid leakage or inflated feature importance.
+
+    Guards:
+      - Skips categoricals with nunique == n_rows (ID-like; eta² trivially ≈ 1.0)
+      - Skips categoricals with nunique > n_rows // 2 (sparse groups: unreliable)
+      - Skips numeric columns with zero variance (SS_total = 0)
+      - Returns empty list when n_rows < 10
+
+    Reports all qualifying pairs above threshold, sorted by eta² descending.
+    """
+
+    name = "categorical_numeric_redundancy"
+    _ETA2_THRESHOLD = 0.95
+
+    def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
+        num_cols = df.select_dtypes("number").columns.tolist()
+        cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+        if not num_cols or not cat_cols:
+            return []
+        n_rows = len(df)
+        if n_rows < 10:
+            return []
+        flags: list[CriticFlag] = []
+        for cat_col in cat_cols:
+            nunique = int(df[cat_col].nunique())
+            if nunique == n_rows or nunique > n_rows // 2:
+                continue  # Skip ID-like or hyper-sparse categoricals
+            for num_col in num_cols:
+                eta2 = _eta_squared(df[cat_col], df[num_col])
+                if eta2 > self._ETA2_THRESHOLD:
+                    flags.append(CriticFlag(
+                        column=None,
+                        rule=self.name,
+                        severity="HIGH",
+                        message=(
+                            f"'{cat_col}' ~ '{num_col}': eta²={eta2:.3f}"
+                            f" — likely categorical encoding pair"
+                        ),
+                        value=round(eta2, 6),
+                        suggestion=(
+                            f"'{cat_col}' and '{num_col}' carry redundant information;"
+                            f" consider dropping '{num_col}' or using only one for modeling"
+                        ),
+                    ))
+        flags.sort(key=lambda f: f.value, reverse=True)
+        return flags
 
 
 class AllUniqueColumnRule(CriticRule):
@@ -619,10 +701,11 @@ DEFAULT_RULES: list[CriticRule] = [
     ZeroVarianceRule(),
     NearZeroVarianceRule(),
     NearPerfectCorrelationRule(),
+    CategoricalNumericRedundancyRule(),  # W5
     AllUniqueColumnRule(),
     SingleValueCategoricalRule(),
-    HighCardinalityRule(),       # W9
-    RareCategoryRule(),          # W9
+    HighCardinalityRule(),               # W9
+    RareCategoryRule(),                  # W9
     ClassImbalanceRule(),
 ]
 

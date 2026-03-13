@@ -19,6 +19,7 @@ from eda_state import CriticReport
 from tools.critic_rules import (
     DEFAULT_RULES,
     AllUniqueColumnRule,
+    CategoricalNumericRedundancyRule,
     ClassImbalanceRule,
     CriticRule,
     DatasetMissingnessRule,
@@ -32,6 +33,7 @@ from tools.critic_rules import (
     SingleValueCategoricalRule,
     SkewnessRule,
     ZeroVarianceRule,
+    _eta_squared,
     run_critic_rules,
 )
 
@@ -624,8 +626,8 @@ class TestDefaultRules:
     """Test the DEFAULT_RULES list."""
 
     def test_count(self):
-        """All 13 rules are registered (11 V1 + 2 W9)."""
-        assert len(DEFAULT_RULES) == 13
+        """All 14 rules are registered (11 V1 + 2 W9 + 1 W5)."""
+        assert len(DEFAULT_RULES) == 14
 
     def test_all_critic_rule_instances(self):
         """Every item in DEFAULT_RULES is a CriticRule instance."""
@@ -1030,3 +1032,180 @@ class TestRareCategoryRule:
         """RareCategoryRule must be in DEFAULT_RULES."""
         class_names = [type(r).__name__ for r in DEFAULT_RULES]
         assert "RareCategoryRule" in class_names
+
+
+# ---------------------------------------------------------------------------
+# _eta_squared helper (W5)
+# ---------------------------------------------------------------------------
+
+class TestEtaSquared:
+    """Unit tests for the _eta_squared module-level helper."""
+
+    def test_perfect_encoding(self):
+        """Perfect group separation → eta²=1.0."""
+        cat = pd.Series(["a"] * 50 + ["b"] * 50)
+        num = pd.Series([0.0] * 50 + [1.0] * 50)
+        assert _eta_squared(cat, num) == pytest.approx(1.0, abs=1e-9)
+
+    def test_zero_eta(self):
+        """All values same within every group → SS_between drives score.
+        Uniform numeric → SS_total=0 → returns 0.0."""
+        cat = pd.Series(["a", "b"] * 50)
+        num = pd.Series([5.0] * 100)  # zero variance
+        assert _eta_squared(cat, num) == 0.0
+
+    def test_random_gives_low_eta(self):
+        """Random numeric unrelated to groups → eta²≈0."""
+        rng = np.random.default_rng(0)
+        cat = pd.Series(["a", "b", "c"] * 100)
+        num = pd.Series(rng.standard_normal(300))
+        result = _eta_squared(cat, num)
+        assert result < 0.05
+
+    def test_nan_rows_excluded(self):
+        """NaN in either series dropped; result still computes correctly."""
+        cat = pd.Series(["a"] * 50 + ["b"] * 50 + [None])
+        num = pd.Series([0.0] * 50 + [1.0] * 50 + [0.5])
+        result = _eta_squared(cat, num)
+        assert result == pytest.approx(1.0, abs=1e-9)
+
+    def test_too_few_rows(self):
+        """Fewer than 2 non-null pairs → 0.0."""
+        assert _eta_squared(pd.Series(["a"]), pd.Series([1.0])) == 0.0
+
+    def test_clamp_above_one(self):
+        """Result is clamped to ≤ 1.0 regardless of floating-point overshoot."""
+        # Force conditions that could cause FP > 1.0 by extreme separation
+        cat = pd.Series(["x"] * 3 + ["y"] * 3)
+        num = pd.Series([0.0, 0.0, 0.0, 1e15, 1e15, 1e15])
+        result = _eta_squared(cat, num)
+        assert result <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# CategoricalNumericRedundancyRule (W5)
+# ---------------------------------------------------------------------------
+
+class TestCategoricalNumericRedundancyRule:
+    """Test CategoricalNumericRedundancyRule: eta²>0.95 → HIGH."""
+
+    def test_perfect_encoding_pair(self):
+        """Categorical is exact int encoding of numeric → eta²=1.0 → HIGH."""
+        df = pd.DataFrame({
+            "cat": ["a"] * 50 + ["b"] * 50 + ["c"] * 50,
+            "num": [1.0] * 50 + [2.0] * 50 + [3.0] * 50,
+        })
+        flags = CategoricalNumericRedundancyRule().check(df, {})
+        assert len(flags) == 1
+        assert flags[0].severity == "HIGH"
+        assert flags[0].column is None          # pair-level flag
+        assert "cat" in flags[0].message
+        assert "num" in flags[0].message
+        assert flags[0].value > 0.95
+
+    def test_no_redundancy(self):
+        """Random numeric within groups → eta²≈0 → no flag."""
+        rng = np.random.default_rng(42)
+        df = pd.DataFrame({
+            "cat": ["a", "b", "c"] * 50,
+            "num": rng.standard_normal(150).tolist(),
+        })
+        assert CategoricalNumericRedundancyRule().check(df, {}) == []
+
+    def test_below_threshold_no_flag(self):
+        """Moderate group separation (eta²<0.95) → no flag."""
+        df = pd.DataFrame({
+            "cat": ["a"] * 50 + ["b"] * 50,
+            # Overlapping ranges: many within-group obs far from group mean
+            "num": list(range(50)) + list(range(25, 75)),
+        })
+        flags = CategoricalNumericRedundancyRule().check(df, {})
+        assert flags == []
+
+    def test_id_column_skipped(self):
+        """nunique == n_rows → all-unique column skipped."""
+        df = pd.DataFrame({
+            "id": [f"id_{i}" for i in range(100)],
+            "num": list(range(100)),
+        })
+        assert CategoricalNumericRedundancyRule().check(df, {}) == []
+
+    def test_hyper_sparse_categorical_skipped(self):
+        """nunique > n_rows // 2 → sparse groups, skip."""
+        df = pd.DataFrame({
+            "cat": [f"v_{i}" for i in range(60)] + [f"v_{i}" for i in range(40)],
+            "num": [float(i % 3) for i in range(100)],
+        })
+        assert CategoricalNumericRedundancyRule().check(df, {}) == []
+
+    def test_no_categoricals(self):
+        """Only numeric columns → no check, no flag."""
+        df = pd.DataFrame({"x": range(50), "y": range(50)})
+        assert CategoricalNumericRedundancyRule().check(df, {}) == []
+
+    def test_no_numerics(self):
+        """Only categorical columns → no check, no flag."""
+        df = pd.DataFrame({"cat": ["a", "b"] * 50})
+        assert CategoricalNumericRedundancyRule().check(df, {}) == []
+
+    def test_small_dataframe_skipped(self):
+        """n_rows < 10 → no check."""
+        df = pd.DataFrame({
+            "cat": ["a"] * 5 + ["b"] * 4,
+            "num": [1.0] * 5 + [2.0] * 4,
+        })
+        assert CategoricalNumericRedundancyRule().check(df, {}) == []
+
+    def test_zero_variance_numeric_skipped(self):
+        """Numeric column with std=0 → SS_total=0 → skipped, no flag."""
+        df = pd.DataFrame({
+            "cat": ["a"] * 50 + ["b"] * 50,
+            "num": [5.0] * 100,
+        })
+        assert CategoricalNumericRedundancyRule().check(df, {}) == []
+
+    def test_nan_rows_excluded(self):
+        """NaN in either column dropped before eta² — result still correct."""
+        df = pd.DataFrame({
+            "cat": ["a"] * 50 + ["b"] * 50 + [None],
+            "num": [1.0] * 50 + [2.0] * 50 + [1.5],
+        })
+        flags = CategoricalNumericRedundancyRule().check(df, {})
+        assert len(flags) == 1
+        assert flags[0].severity == "HIGH"
+
+    def test_multiple_pairs_sorted_descending(self):
+        """Two redundant pairs → both flagged, higher eta² first."""
+        # Pair (cat1, num1): perfect encoding → eta²=1.0
+        # Pair (cat2, num2): near-perfect but with slight noise → eta²<1.0
+        df = pd.DataFrame({
+            "cat1": ["x"] * 50 + ["y"] * 50 + ["z"] * 50,
+            "num1": [10.0] * 50 + [20.0] * 50 + [30.0] * 50,
+            "cat2": ["p"] * 50 + ["q"] * 50 + ["r"] * 50,
+            # Small noise within groups but still high eta²
+            "num2": [1.0] * 48 + [1.05, 1.05] + [2.0] * 48 + [2.05, 2.05] + [3.0] * 50,
+        })
+        flags = CategoricalNumericRedundancyRule().check(df, {})
+        assert len(flags) >= 2
+        # Sorted by eta² descending
+        assert flags[0].value >= flags[1].value
+
+    def test_suggestion_references_both_columns(self):
+        """Flag suggestion names both the categorical and numeric columns."""
+        df = pd.DataFrame({
+            "education": ["a"] * 50 + ["b"] * 50,
+            "education_num": [0.0] * 50 + [1.0] * 50,
+        })
+        flags = CategoricalNumericRedundancyRule().check(df, {})
+        assert len(flags) == 1
+        assert "education" in flags[0].suggestion
+        assert "education_num" in flags[0].suggestion
+
+    def test_rule_name(self):
+        """Rule name string is 'categorical_numeric_redundancy'."""
+        assert CategoricalNumericRedundancyRule().name == "categorical_numeric_redundancy"
+
+    def test_in_default_rules(self):
+        """CategoricalNumericRedundancyRule must be in DEFAULT_RULES."""
+        class_names = [type(r).__name__ for r in DEFAULT_RULES]
+        assert "CategoricalNumericRedundancyRule" in class_names
