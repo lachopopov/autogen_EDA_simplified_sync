@@ -172,14 +172,76 @@ class DuplicateRowsRule(CriticRule):
         return []
 
 
-class OutlierRule(CriticRule):
-    """Outliers (IQR method): >5% of rows flagged in worst column → MEDIUM.
 
-    For each numerical column, values outside [Q1 − 1.5·IQR, Q3 + 1.5·IQR]
-    are counted as outliers. Reports the worst column only.
+def _iqr_unreliability_hint(series: "pd.Series") -> str:
+    """Return a distribution-shape hint explaining WHY the IQR outlier rate is high.
+
+    Uses excess kurtosis as a cheap, dependency-free secondary signal to
+    distinguish the two main causes of a >20% IQR outlier rate:
+
+    (a) Platykurtic (kurt < 0): probability mass spread across separated
+        sub-groups with gaps between them.  IQR collapses around the dominant
+        cluster and over-flags members of the other natural groups.
+        e.g. work-hours column with clusters at 20h, 40h, 60h.
+        --> "multiple natural clusters or flat spread (platykurtic)"
+
+    (b) Leptokurtic + skewed (kurt > 0, |skew| > 1): a long heavy tail pushes
+        values past the 1.5*IQR fences in a fully unimodal distribution.
+        e.g. lognormal income, Pareto wealth distributions.
+        --> "heavy tail / skewed distribution (leptokurtic)"
+
+    Fallback: generic message when kurtosis is ambiguous.
+
+    This is a heuristic used only to write a more informative flag message.
+    The severity decision (LOW at >20%) is correct for BOTH causes.
+    """
+    s = series.dropna()
+    if len(s) < 8:
+        return "distribution shape unclear (too few observations)"
+    kurt = float(s.kurt())   # excess kurtosis: <0 platykurtic, >0 leptokurtic
+    skew = float(s.skew())
+    if kurt < 0:
+        return "multiple natural clusters or flat spread (platykurtic)"
+    if abs(skew) > 1:
+        return "heavy tail / skewed distribution (leptokurtic)"
+    if kurt > 0:
+        # Leptokurtic but symmetric: one dominant central spike with satellite
+        # sub-populations.  The IQR collapses around the spike and mechanically
+        # flags legitimate sub-groups.  A true bell-curve sits at ~6.7% IQR
+        # outliers; reaching >20% without skew requires satellite clusters.
+        return "dominant central spike with satellite sub-populations (IQR collapses around the spike)"
+    return "distribution shape makes IQR fences unreliable at this scale"
+
+
+class OutlierRule(CriticRule):
+    """Outliers (IQR method): >5% of rows flagged in worst column.
+
+    Severity logic:
+      - MEDIUM (5-20%): IQR anomaly signal is plausible; values in this range
+        more likely represent true outliers worth investigating.
+      - LOW (>20%): IQR fences are no longer a reliable anomaly detector.
+        Two distinct causes, both handled identically:
+
+        (a) Tight-IQR multimodal: a dominant narrow cluster collapses the IQR;
+            members of other natural clusters are mechanically over-flagged.
+        (b) Heavy-tailed unimodal: a long right tail (Pareto, lognormal) pushes
+            25-30% of values past the 1.5*IQR fences while remaining unimodal.
+
+        In BOTH cases the correct response is NOT outlier removal.
+        _iqr_unreliability_hint() uses excess kurtosis to surface the likely
+        cause in the flag message without over-claiming modality.
+
+    Threshold rationale: true data-entry anomalies are typically rare (<5%).
+    Rates from 5-20% merit investigation.  Above 20% the IQR fences are
+    almost certainly responding to a distributional feature, not data errors.
+    Claiming "consider winsorization / removal" at >20% would actively mislead.
+
+    For each numerical column, values outside [Q1 - 1.5*IQR, Q3 + 1.5*IQR]
+    are counted as outliers.  Reports the worst column only.
     """
 
     name = "outliers_iqr"
+    _UNRELIABLE_THRESHOLD = 0.20  # IQR fences unreliable above this rate
 
     def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
         num = df.select_dtypes("number")
@@ -195,19 +257,70 @@ class OutlierRule(CriticRule):
             q3 = float(series.quantile(0.75))
             iqr = q3 - q1
             if iqr == 0:
-                continue  # Zero spread — handled by ZeroVarianceRule
+                continue  # Zero spread -- handled by ZeroVarianceRule
             lower = q1 - 1.5 * iqr
             upper = q3 + 1.5 * iqr
             outlier_pct = float(((series < lower) | (series > upper)).mean())
             if outlier_pct > worst_pct:
                 worst_pct = outlier_pct
                 worst_col = str(col)
-        if worst_col is not None and worst_pct > 0.05:
-            return [CriticFlag(column=worst_col, rule=self.name, severity="MEDIUM",
-                              message=f"{worst_pct:.1%} outliers (IQR)", value=worst_pct)]
-        return []
-
-
+        if worst_col is None or worst_pct <= 0.05:
+            return []
+        # High outlier rate: IQR fences unreliable regardless of cause.
+        # _iqr_unreliability_hint() uses kurtosis to write a precise message.
+        if worst_pct > self._UNRELIABLE_THRESHOLD:
+            hint = _iqr_unreliability_hint(num[worst_col])
+            # Branch-specific suggestion: Tukey context + actionable advice.
+            # "Tukey's 1.5×IQR fence" context in each branch explains the
+            # 20 % threshold to report readers who have no access to the code.
+            if "spike" in hint:
+                suggestion = (
+                    f"Tukey’s 1.5×IQR fence is calibrated for normally distributed "
+                    f"data and flags only ~0.7 % of values there; {worst_pct:.0%} flags "
+                    f"signal the method has broken down — this is a structural artefact, not "
+                    f"true outliers. The distribution has a dominant central spike with "
+                    f"legitimate satellite sub-populations. Do not remove these rows; "
+                    f"bin the column into schedule categories (e.g. part-time / full-time / "
+                    f"overtime) or segment the model by group."
+                )
+            elif "heavy tail" in hint or "leptokurtic" in hint:
+                suggestion = (
+                    f"Tukey’s 1.5×IQR fence is calibrated for normally distributed "
+                    f"data and flags only ~0.7 % of values there; {worst_pct:.0%} flags "
+                    f"signal a heavy-tailed distribution where legitimate extreme values "
+                    f"sit beyond the fences. Do not apply blanket removal; use a log or "
+                    f"sqrt transform, or a robust scaler (e.g. RobustScaler, Huber regression)."
+                )
+            else:
+                suggestion = (
+                    f"Tukey’s 1.5×IQR fence is calibrated for normally distributed "
+                    f"data and flags only ~0.7 % of values there; {worst_pct:.0%} flags "
+                    f"signal separated natural sub-groups — the IQR collapses around one "
+                    f"cluster and over-flags members of the others. Segment the data by "
+                    f"natural group before applying any outlier treatment."
+                )
+            return [CriticFlag(
+                column=worst_col,
+                rule=self.name,
+                severity="LOW",
+                message=(
+                    f"{worst_pct:.1%} outliers (IQR) -- IQR fences unreliable"
+                    f" at this rate ({hint})"
+                ),
+                value=worst_pct,
+                suggestion=suggestion,
+            )]
+        return [CriticFlag(
+            column=worst_col,
+            rule=self.name,
+            severity="MEDIUM",
+            message=f"{worst_pct:.1%} outliers (IQR)",
+            value=worst_pct,
+            suggestion=(
+                "Consider outlier treatment (winsorization, capping, or removal) "
+                "depending on the downstream modeling objective."
+            ),
+        )]
 class SkewnessRule(CriticRule):
     """Comprehensive skewness analysis with context-aware reporting.
 

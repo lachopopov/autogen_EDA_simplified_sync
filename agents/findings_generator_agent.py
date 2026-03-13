@@ -117,6 +117,12 @@ RULES:
   TOP 3 HIGH-PROBABILITY problems). Omitting this field or providing less than
   ~200 characters will cause save_interpretations() to return an error requiring
   you to retry.
+- When a quality flag has rule=outliers_iqr and severity=LOW, the high outlier%
+  is a modality artefact (multiple natural sub-population clusters cause the IQR
+  to be narrow, mechanically flagging cluster members as outliers). Explicitly
+  note this caveat in your commentary: these are NOT true anomalies. Recommend
+  binning or segmentation rather than outlier removal. Do NOT list this flag
+  alongside HIGH/MEDIUM data quality concerns.
 Ground your answers only on data returned by your tools. If you do not have \
 the facts, state "No info available at this stage." Do NOT invent or fabricate \
 any statistics, numbers, or findings."""

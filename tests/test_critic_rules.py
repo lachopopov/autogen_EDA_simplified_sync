@@ -292,6 +292,133 @@ class TestOutlierRule:
 
 
 # ---------------------------------------------------------------------------
+# OutlierRule — modality-aware severity (W6)
+# ---------------------------------------------------------------------------
+
+class TestOutlierRuleModality:
+    """W6: multi-modal IQR outlier caveat.
+
+    Severity: >20% outlier rate -> LOW ("IQR fences unreliable").
+    5-20% -> MEDIUM (genuine anomaly signal).
+    _iqr_unreliability_hint() adds a kurtosis-based message explaining WHY:
+      - kurt < 0  -> platykurtic: equal-weight clusters / flat spread
+      - kurt > 0, |skew| > 1 -> heavy tail / skewed (leptokurtic)
+      - kurt > 0, |skew| <= 1 -> dominant spike with satellite sub-populations
+    """
+
+    def test_multimodal_downgraded_to_low(self):
+        """3-cluster distribution (dominant spike): 28% outlier rate -> LOW + spike hint."""
+        np.random.seed(42)
+        # Dominant cluster at 40 (narrow std=0.5) drives a tight IQR (~1).
+        # Clusters at 20 and 55 are far outside the fences, producing ~28%
+        # IQR-outliers.  Kurt > 0, |skew| ~0.56 -> fires "dominant spike" branch.
+        x = np.concatenate([
+            np.random.normal(20, 0.5, 100),   # left cluster -- below fence
+            np.random.normal(40, 0.5, 500),   # dominant mode -- sets narrow IQR
+            np.random.normal(55, 0.5, 100),   # right cluster -- above fence
+        ])
+        df = pd.DataFrame({"x": x})
+        flags = OutlierRule().check(df, {})
+        assert len(flags) == 1
+        flag = flags[0]
+        assert flag.severity == "LOW"
+        assert flag.rule == "outliers_iqr"
+        assert flag.value > 0.20
+        assert "spike" in flag.message
+
+    def test_hint_branches_covered_separately(self):
+        """Platykurtic equal clusters expand IQR to enclose all data -> 0% outliers,
+        rule never fires.  Hint branches are tested directly in TestIqrUnreliabilityHint."""
+        # Three equal-weight discrete clusters at 10 / 50 / 90 ->
+        # Q1=10, Q3=90, IQR=80, fences=[-110, 210] -> all values inside -> 0 flags.
+        x = np.array([10.0] * 250 + [50.0] * 250 + [90.0] * 250)
+        df = pd.DataFrame({"x": x})
+        flags = OutlierRule().check(df, {})
+        assert len(flags) == 0  # IQR wide enough to encompass all clusters
+
+    def test_unimodal_outliers_remain_medium(self):
+        """Unimodal + sparse extreme outliers (10% rate, <=20%) -> MEDIUM (unchanged)."""
+        np.random.seed(42)
+        # 90 obs in main cluster, 10 obs as extreme outliers.
+        # Outlier rate ~10% (well below the 20% threshold) -> MEDIUM.
+        x = np.concatenate([
+            np.random.normal(50, 3, 90),
+            np.random.normal(-90, 1, 5),    # extreme low
+            np.random.normal(190, 1, 5),    # extreme high
+        ])
+        df = pd.DataFrame({"x": x})
+        flags = OutlierRule().check(df, {})
+        assert len(flags) == 1
+        flag = flags[0]
+        assert flag.severity == "MEDIUM"
+        assert flag.rule == "outliers_iqr"
+        assert flag.value <= 0.20
+
+    def test_boundary_exactly_at_threshold_is_not_low(self):
+        """Outlier rate equal to the 20% threshold does NOT downgrade to LOW."""
+        np.random.seed(0)
+        # Q1=1, Q3=3, IQR=2, fences=[-2, 6]; 20 obs at 10 > 6 => exactly 20/100 = 20.0%
+        core = [1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3] * 7 + [1, 1, 1]  # 80 obs
+        outliers = [10] * 20  # 20 obs at 10 > 6
+        df = pd.DataFrame({"x": core + outliers})
+        flags = OutlierRule().check(df, {})
+        assert len(flags) == 1
+        # 20/100 = 20.0% which is NOT > 20%, so MEDIUM
+        assert flags[0].severity == "MEDIUM"
+
+
+# ---------------------------------------------------------------------------
+# _iqr_unreliability_hint — direct branch coverage
+# ---------------------------------------------------------------------------
+
+class TestIqrUnreliabilityHint:
+    """Direct tests for each kurtosis branch in _iqr_unreliability_hint.
+
+    Because platykurtic equal-cluster data has a wide IQR (0% outlier rate),
+    the platykurtic branch is unreachable through OutlierRule in practice.
+    Testing the helper directly gives precise branch coverage.
+    """
+
+    def test_platykurtic_branch(self):
+        """kurt < 0 -> 'platykurtic' hint."""
+        from tools.critic_rules import _iqr_unreliability_hint
+        # Three equal-weight clusters -> flat spread -> kurt < 0
+        x = pd.Series([10.0] * 250 + [50.0] * 250 + [90.0] * 250)
+        assert x.kurt() < 0
+        hint = _iqr_unreliability_hint(x)
+        assert "platykurtic" in hint or "clusters" in hint
+
+    def test_dominant_spike_branch(self):
+        """kurt > 0, |skew| <= 1 -> 'spike' hint."""
+        from tools.critic_rules import _iqr_unreliability_hint
+        np.random.seed(42)
+        # Dominant spike at 40 with small satellites
+        x = pd.Series(np.concatenate([
+            np.random.normal(20, 0.5, 100),
+            np.random.normal(40, 0.5, 500),
+            np.random.normal(55, 0.5, 100),
+        ]))
+        assert x.kurt() > 0 and abs(x.skew()) <= 1
+        hint = _iqr_unreliability_hint(x)
+        assert "spike" in hint
+
+    def test_heavy_tail_branch(self):
+        """kurt > 0, |skew| > 1 -> 'heavy tail' hint (leptokurtic)."""
+        from tools.critic_rules import _iqr_unreliability_hint
+        np.random.seed(42)
+        x = pd.Series(np.random.pareto(1.5, 1000) * 10 + 1)
+        assert x.kurt() > 0 and abs(x.skew()) > 1
+        hint = _iqr_unreliability_hint(x)
+        assert "heavy tail" in hint or "leptokurtic" in hint
+
+    def test_too_few_observations(self):
+        """< 8 obs -> fallback 'shape unclear' message."""
+        from tools.critic_rules import _iqr_unreliability_hint
+        hint = _iqr_unreliability_hint(pd.Series([1.0, 2.0, 3.0]))
+        assert "unclear" in hint
+
+
+# ---------------------------------------------------------------------------
 # SkewnessRule — comprehensive multi-column analysis
 # ---------------------------------------------------------------------------
 
