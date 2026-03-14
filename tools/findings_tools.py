@@ -261,11 +261,23 @@ def _build_target_section(target_analysis_data: dict) -> dict[str, Any]:
     }
 
 
-def _build_statistical_analysis_section(eda: EDAResults) -> dict[str, Any]:
+def _build_statistical_analysis_section(
+    eda: EDAResults,
+    critic: "CriticReport | None" = None,
+) -> dict[str, Any]:
     """Build an interpretive statistical analysis section.
 
     Analyses distribution shape, spread, and central-tendency insights
     derived deterministically from ``describe_stats`` output.
+
+    Args:
+        eda:    Populated EDAResults containing describe_stats output.
+        critic: Optional CriticReport.  When supplied, columns flagged LOW
+                by the ``outliers_iqr`` rule are separated from genuinely
+                outlier-affected columns so the emitted text does not
+                contradict the Data Quality Assessment section.
+                Defaults to None (backward-compatible: all columns that
+                breach IQR fences are reported uniformly).
     """
     describe = eda.describe
     if not describe:
@@ -335,12 +347,38 @@ def _build_statistical_analysis_section(eda: EDAResults) -> dict[str, Any]:
             f"and are candidates for removal (zero or near-zero variance)."
         )
 
-    if potential_outlier_cols:
+    # Cross-reference critic: columns the rule engine already rated LOW for
+    # outliers_iqr have an unreliable IQR (distribution shape artefact), NOT
+    # genuine outliers.  Separate them so the static text does not contradict
+    # the Data Quality Assessment section which says "do not remove".
+    iqr_unreliable: set[str] = set()
+    if critic is not None:
+        for flag in critic.flags:
+            if (
+                flag.rule == "outliers_iqr"
+                and flag.severity == "LOW"
+                and flag.column
+            ):
+                iqr_unreliable.add(flag.column)
+
+    genuine_outlier_cols = [c for c in potential_outlier_cols if c not in iqr_unreliable]
+    unreliable_iqr_cols  = [c for c in potential_outlier_cols if c in iqr_unreliable]
+
+    if genuine_outlier_cols:
         paragraphs.append(
             f"Potential outliers detected (values beyond 1.5×IQR fences) in: "
-            f"{', '.join(potential_outlier_cols)}. Outlier treatment "
+            f"{', '.join(genuine_outlier_cols)}. Outlier treatment "
             f"(winsorization, capping, or removal) should be considered depending "
             f"on the downstream modeling objective."
+        )
+
+    if unreliable_iqr_cols:
+        paragraphs.append(
+            f"IQR method unreliable for: {', '.join(unreliable_iqr_cols)} — "
+            f"the flagged rate exceeds 20%, which indicates a distribution-shape "
+            f"artefact rather than genuine outliers. "
+            f"See Data Quality Assessment for the full statistical explanation "
+            f"and recommended action."
         )
 
     # --- Categorical analysis ---
@@ -1516,7 +1554,7 @@ def assemble_findings(
         paired_plots=corr_heatmap_paths or None,
     )
     statistical = _enrich(
-        _build_statistical_analysis_section(eda), "statistical_analysis",
+        _build_statistical_analysis_section(eda, critic), "statistical_analysis",
         paired_plots=hist_paths or None,
     )
     quality = _enrich(

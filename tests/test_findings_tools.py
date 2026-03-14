@@ -298,6 +298,49 @@ class TestBuildStatisticalAnalysisSection:
         section = _build_statistical_analysis_section(eda)
         assert "standard distribution" in section["content"].lower() or "numerical feature" in section["content"].lower()
 
+    def test_critic_low_iqr_flag_suppresses_removal_advice(self):
+        """Column flagged LOW by outliers_iqr must NOT appear in the generic
+        'treatment should be considered' sentence — it should appear in the
+        IQR-unreliable sentence instead, with a pointer to Data Quality Assessment."""
+        eda = EDAResults(describe={
+            # hours: min=1 far below fence -> ends up in potential_outlier_cols
+            "hours": {"count": 1000, "mean": 40.0, "std": 5.0,
+                      "min": 1, "25%": 39, "50%": 40, "75%": 41, "max": 80},
+            # income: also has an outlier but NOT flagged LOW by critic
+            "income": {"count": 1000, "mean": 50.0, "std": 10.0,
+                       "min": -200, "25%": 45, "50%": 50, "75%": 55, "max": 500},
+        })
+        critic = CriticReport(flags=[
+            CriticFlag(column="hours", rule="outliers_iqr", severity="LOW",
+                       message="27% outliers -- IQR unreliable", value=0.277),
+        ])
+        section = _build_statistical_analysis_section(eda, critic)
+        content = section["content"]
+
+        # "hours" must NOT appear alongside "treatment should be considered"
+        assert "treatment" not in content.lower() or "hours" not in content.split("treatment")[0].split("in:")[-1]
+        # The IQR-unreliable sentence must be present and name the column
+        assert "IQR method unreliable" in content
+        assert "hours" in content
+        # "income" (no LOW flag) must still be in the generic outlier sentence
+        assert "income" in content
+        assert "treatment" in content.lower()
+        # The cross-reference pointer is present
+        assert "Data Quality Assessment" in content
+
+    def test_critic_none_behavior_unchanged(self):
+        """With critic=None the function behaves identically to passing no critic."""
+        eda = EDAResults(describe={
+            "skewed": {"count": 100, "mean": 10.0, "std": 5.0,
+                       "min": -50, "25%": 7, "50%": 10, "75%": 13, "max": 100},
+        })
+        section_default = _build_statistical_analysis_section(eda)
+        section_explicit_none = _build_statistical_analysis_section(eda, None)
+        assert section_default["content"] == section_explicit_none["content"]
+        # The original generic outlier sentence is emitted when no critic is given
+        assert "outlier" in section_default["content"].lower()
+        assert "treatment" in section_default["content"].lower()
+
 
 # ---------------------------------------------------------------------------
 # _build_conclusions_section
