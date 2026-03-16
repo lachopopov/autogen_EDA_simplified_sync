@@ -34,7 +34,14 @@ from typing import Annotated, Any
 import numpy as np
 import pandas as pd
 
-from eda_state import CriticReport, DataProfile, EDAResults, Findings, Interpretations
+from eda_state import (
+    CategoricalAnalysis,
+    CriticReport,
+    DataProfile,
+    EDAResults,
+    Findings,
+    Interpretations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +60,8 @@ def _build_overview_section(
     eda: EDAResults,
     shape: tuple[int, int] | None = None,
     duplicate_count: int = 0,
+    categorical_cols: list[str] | None = None,
+    numerical_cols: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the overview section from EDA describe stats.
 
@@ -62,6 +71,11 @@ def _build_overview_section(
             this is used directly instead of inferring from describe[col][count]
             which can be 0 when describe stats are sparsely populated (W1 fix).
         duplicate_count: Number of duplicate rows removed during loading (W8).
+        categorical_cols: Names of categorical columns from DataProfile.  When
+            supplied, the header states the column-type breakdown (W4 fix).
+        numerical_cols: Names of numerical columns from DataProfile.  When
+            supplied alongside categorical_cols, both type lists are named
+            explicitly so no column type is anonymous in the overview.
     """
     if shape is not None:
         row_count, num_columns = shape
@@ -76,6 +90,26 @@ def _build_overview_section(
         f"The dataset contains {row_count} rows and {num_columns} columns. "
         f"Descriptive statistics were computed for all columns."
     ]
+    if categorical_cols or numerical_cols:
+        n_cat = len(categorical_cols) if categorical_cols else (num_columns - len(numerical_cols or []))
+        n_num = len(numerical_cols) if numerical_cols else (num_columns - n_cat)
+        num_names = ", ".join(numerical_cols) if numerical_cols else ""
+        cat_names = ", ".join(categorical_cols) if categorical_cols else ""
+        if num_names and cat_names:
+            parts.append(
+                f"Column composition: {n_num} numerical ({num_names}); "
+                f"{n_cat} categorical ({cat_names})."
+            )
+        elif cat_names:
+            parts.append(
+                f"Column composition: {n_num} numerical, {n_cat} categorical "
+                f"({cat_names})."
+            )
+        else:
+            parts.append(
+                f"Column composition: {n_num} numerical ({num_names}), "
+                f"{n_cat} categorical."
+            )
     if duplicate_count > 0:
         dup_pct = duplicate_count / max(row_count + duplicate_count, 1) * 100
         parts.append(
@@ -788,6 +822,145 @@ def _collect_unresolved(critic: CriticReport) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Categorical analysis helpers (W4)
+# ---------------------------------------------------------------------------
+
+
+def _build_categorical_inventory(cat_analysis: CategoricalAnalysis) -> str:
+    """Render categorical distributions for the fact sheet.
+
+    Produces a text block with value counts, entropy, and target rates
+    per column — the categorical analogue of histogram bin data.
+    """
+    if not cat_analysis.columns:
+        return "  No categorical columns detected."
+    lines: list[str] = []
+    target_col = cat_analysis.target_column
+    for col, stats in cat_analysis.columns.items():
+        label = f" (TARGET)" if col == target_col else ""
+        lines.append(
+            f"\n{col}{label} — cardinality={stats.cardinality}, "
+            f"entropy={stats.entropy_bits:.4f} bits, "
+            f"rare_values(<0.5%)={stats.rare_count}"
+        )
+        for v in stats.top_values:
+            parts = [f"    '{v['value']}': {v['count']} ({v['pct']:.1f}%)"]
+            if v.get("is_rare"):
+                parts.append(" [RARE]")
+            if v.get("target_rates"):
+                rates = ", ".join(
+                    f"{k}={r:.1f}%" for k, r in v["target_rates"].items()
+                )
+                parts.append(f"  target_rates: {rates}")
+            lines.append("".join(parts))
+        if stats.more_values > 0:
+            lines.append(f"    ... and {stats.more_values} more value(s)")
+    return "\n".join(lines)
+
+
+def _build_categorical_section(
+    cat_analysis: CategoricalAnalysis,
+) -> dict[str, Any]:
+    """Build the Categorical Analysis report section (deterministic).
+
+    Produces summary sentences about cardinality, entropy, rare values,
+    and — when a classification target is present — discriminative
+    categories (highest variation in target rates).
+    """
+    if not cat_analysis.columns:
+        return {
+            "title": "Categorical Analysis",
+            "content": "No categorical columns detected in the dataset.",
+        }
+
+    paragraphs: list[str] = []
+    n_cols = len(cat_analysis.columns)
+    paragraphs.append(
+        f"Categorical analysis was performed on {n_cols} feature(s)."
+    )
+
+    # Cardinality summary
+    high_card = [(c, s.cardinality) for c, s in cat_analysis.columns.items()
+                 if s.cardinality > 20]
+    low_card = [(c, s.cardinality) for c, s in cat_analysis.columns.items()
+                if s.cardinality <= 2]
+    if high_card:
+        parts = [f"{c} ({n} values)" for c, n in
+                 sorted(high_card, key=lambda x: x[1], reverse=True)]
+        paragraphs.append(
+            f"High-cardinality feature(s): {', '.join(parts)}. "
+            f"One-hot encoding cost is significant; consider target-encoding, "
+            f"frequency-encoding, or grouping rare levels."
+        )
+    if low_card:
+        parts = [f"{c} ({n})" for c, n in low_card]
+        paragraphs.append(
+            f"Binary/low-cardinality feature(s): {', '.join(parts)}. "
+            f"Binary encoding is sufficient."
+        )
+
+    # Rare-value summary
+    cols_with_rare = [(c, s.rare_count) for c, s in cat_analysis.columns.items()
+                      if s.rare_count > 0]
+    if cols_with_rare:
+        parts = [f"{c} ({n} rare)" for c, n in
+                 sorted(cols_with_rare, key=lambda x: x[1], reverse=True)]
+        paragraphs.append(
+            f"Rare categories (<0.5% frequency) present in: {', '.join(parts)}. "
+            f"Consider grouping into 'Other' to reduce noise and encoding cost."
+        )
+
+    # Entropy summary (information content)
+    sorted_by_entropy = sorted(
+        cat_analysis.columns.items(), key=lambda x: x[1].entropy_bits,
+        reverse=True,
+    )
+    if sorted_by_entropy:
+        top_ent = sorted_by_entropy[0]
+        low_ent = sorted_by_entropy[-1]
+        if n_cols > 1:
+            paragraphs.append(
+                f"Highest information content: {top_ent[0]} "
+                f"(entropy={top_ent[1].entropy_bits:.2f} bits). "
+                f"Lowest: {low_ent[0]} "
+                f"(entropy={low_ent[1].entropy_bits:.2f} bits)."
+            )
+
+    # Target-rate variation (discriminative categories)
+    if cat_analysis.target_column:
+        discriminative: list[tuple[str, str, float, float]] = []
+        for col, stats in cat_analysis.columns.items():
+            if col == cat_analysis.target_column:
+                continue
+            # Find the first target class to measure rate variation
+            target_rates_all: list[float] = []
+            first_cls: str | None = None
+            for v in stats.top_values:
+                if v.get("target_rates"):
+                    if first_cls is None:
+                        first_cls = next(iter(v["target_rates"]))
+                    rate = v["target_rates"].get(first_cls, 0.0)
+                    target_rates_all.append(rate)
+            if target_rates_all and first_cls:
+                spread = max(target_rates_all) - min(target_rates_all)
+                discriminative.append((col, first_cls, spread, max(target_rates_all)))
+
+        if discriminative:
+            discriminative.sort(key=lambda x: x[2], reverse=True)
+            top_disc = discriminative[:3]
+            disc_parts = [
+                f"{c} ({spread:.1f}pp range on '{cls}')"
+                for c, cls, spread, _ in top_disc
+            ]
+            paragraphs.append(
+                f"Most discriminative feature(s) by target-rate variation: "
+                f"{', '.join(disc_parts)}."
+            )
+
+    return {"title": "Categorical Analysis", "content": " ".join(paragraphs)}
+
+
+# ---------------------------------------------------------------------------
 # Metadata-First Hybrid: Interpretation context + save
 # ---------------------------------------------------------------------------
 
@@ -842,6 +1015,18 @@ def _build_histogram_metadata(df: pd.DataFrame, num_cols: list[str]) -> str:
         ]
         if empty:
             lines.append(f"  Empty bins (gaps): {', '.join(empty)}")
+        # Zero-inflation annotation: exact row counts for zero-inflated columns.
+        # Provides grounding data so the LLM can cite precise non-zero counts
+        # rather than estimating from histogram bins (which may group 0+non-zeros
+        # in the first bin, leading to hallucinated figures).
+        zero_count = int((series == 0).sum())
+        nonzero_count = int(len(series) - zero_count)
+        zero_pct = zero_count / len(series) * 100 if len(series) > 0 else 0
+        if zero_pct >= 40:
+            lines.append(
+                f"  Zero-inflation: exact zero rows = {zero_count} ({zero_pct:.1f}%); "
+                f"non-zero rows = {nonzero_count} ({100 - zero_pct:.1f}%)"
+            )
     return "\n".join(lines)
 
 
@@ -1024,11 +1209,40 @@ def prepare_interpretation_context() -> str:
     # --- Build fact sheet ---
     sections: list[str] = ["=== INTERPRETATION CONTEXT (FACT SHEET) ==="]
 
-    # Dataset overview
-    num_cols = len(describe)
+    # Dataset overview — use DataProfile for authoritative total column count
+    # (len(describe) only counts *numerical* columns — describe_stats excludes
+    # categoricals, so the DATASET line would misleadingly say e.g. "6 columns"
+    # for a 15-column dataset, causing the LLM to omit categorical context).
     first_stats = next(iter(describe.values()), {})
     row_count = int(first_stats.get("count", 0))
-    sections.append(f"\nDATASET: {row_count} rows x {num_cols} columns")
+    _num_numerical = len(describe)
+    _num_categorical = 0
+    _total_cols = _num_numerical  # best-effort fallback
+    _dtypes_raw_fs = load_state("dtypes_json")
+    _schema_raw_fs = load_state("schema_json")
+    if _dtypes_raw_fs:
+        try:
+            from eda_state import DataProfile as _DataProfile
+            _dp_fs = _DataProfile.model_validate_json(_dtypes_raw_fs)
+            _total_cols = _dp_fs.shape[1]
+            _num_categorical = len(_dp_fs.categorical_cols)
+            if not row_count:
+                row_count = _dp_fs.shape[0]
+        except Exception:
+            pass
+    elif _schema_raw_fs:
+        try:
+            from eda_state import DataProfile as _DataProfile
+            _dp_fs = _DataProfile.model_validate_json(_schema_raw_fs)
+            _total_cols = _dp_fs.shape[1]
+            if not row_count:
+                row_count = _dp_fs.shape[0]
+        except Exception:
+            pass
+    sections.append(
+        f"\nDATASET: {row_count} rows x {_total_cols} columns "
+        f"({_num_numerical} numerical, {_num_categorical} categorical)"
+    )
     # Surface duplicate count in fact sheet (W8)
     dup_raw = load_state("duplicate_count")
     if dup_raw:
@@ -1070,6 +1284,19 @@ def prepare_interpretation_context() -> str:
     else:
         sections.append(
             "\nHISTOGRAM BIN DATA: raw data not available in artifact store."
+        )
+
+    # Categorical inventory (W4)
+    cat_raw = load_state("categorical_analysis")
+    if cat_raw:
+        cat_analysis = CategoricalAnalysis.model_validate_json(cat_raw)
+        sections.append(
+            "\nCATEGORICAL INVENTORY (value counts, entropy, target rates):"
+        )
+        sections.append(_build_categorical_inventory(cat_analysis))
+    else:
+        sections.append(
+            "\nCATEGORICAL INVENTORY: not yet available (analyze_categoricals not run)."
         )
 
     # Target variable analysis
@@ -1268,7 +1495,7 @@ def save_interpretations(
         str,
         "JSON string matching the Interpretations schema. "
         "Keys: overview, missing_values, correlation, statistical_analysis, "
-        "target_variable_analysis, "
+        "categorical_analysis, target_variable_analysis, "
         "quality_assessment (each with 'statistical', 'ds_ml', 'business' sub-keys), "
         "plot_commentaries (list of {plot_file, statistical, ds_ml, business}), "
         "conclusions (string), recommendations_and_business_implications (string).",
@@ -1327,6 +1554,7 @@ def save_interpretations(
             interp.missing_values,
             interp.correlation,
             interp.statistical_analysis,
+            interp.categorical_analysis,
             interp.target_variable_analysis,
             interp.quality_assessment,
         )
@@ -1407,18 +1635,36 @@ def assemble_findings(
         })
         logger.info("EDAResults composed from individual artifacts")
 
-        # Load DataProfile for the overview section — authoritative shape (W1)
-        # and duplicate_count (W8).
+        # Load DataProfile for the overview section — authoritative shape (W1),
+        # duplicate_count (W8), categorical_cols (W4), and numerical_cols.
         _shape: tuple[int, int] | None = None
         _duplicate_count: int = 0
+        _categorical_cols: list[str] | None = None
+        _numerical_cols: list[str] | None = None
         schema_raw = load_state("schema_json")
         if schema_raw:
             try:
                 _dp = DataProfile.model_validate_json(schema_raw)
                 _shape = _dp.shape
                 _duplicate_count = _dp.duplicate_count
+                if _dp.categorical_cols:
+                    _categorical_cols = _dp.categorical_cols
+                if _dp.numerical_cols:
+                    _numerical_cols = _dp.numerical_cols
             except Exception:
                 pass  # Non-critical — overview falls back to describe
+        # Fallback: try dtypes_json if schema_json omitted column lists
+        if _categorical_cols is None or _numerical_cols is None:
+            _dtypes_raw_af = load_state("dtypes_json")
+            if _dtypes_raw_af:
+                try:
+                    _dp2 = DataProfile.model_validate_json(_dtypes_raw_af)
+                    if _categorical_cols is None and _dp2.categorical_cols:
+                        _categorical_cols = _dp2.categorical_cols
+                    if _numerical_cols is None and _dp2.numerical_cols:
+                        _numerical_cols = _dp2.numerical_cols
+                except Exception:
+                    pass
 
         # --- Resolve critic_report_json ---
         try:
@@ -1465,6 +1711,8 @@ def assemble_findings(
         plot_paths = json.loads(plot_paths_json)
         _shape = None
         _duplicate_count = 0
+        _categorical_cols = None
+        _numerical_cols = None
 
     # Determine if this is the final iteration
     is_final = critic.status == "APPROVED" or critic.iteration >= 2
@@ -1542,7 +1790,11 @@ def assemble_findings(
 
     # Build sections in report order (Option A: plots inline in parent sections)
     overview = _enrich(
-        _build_overview_section(eda, shape=_shape, duplicate_count=_duplicate_count),
+        _build_overview_section(
+            eda, shape=_shape, duplicate_count=_duplicate_count,
+            categorical_cols=_categorical_cols,
+            numerical_cols=_numerical_cols,
+        ),
         "overview",
     )
     missing = _enrich(
@@ -1557,6 +1809,18 @@ def assemble_findings(
         _build_statistical_analysis_section(eda, critic), "statistical_analysis",
         paired_plots=hist_paths or None,
     )
+
+    # Categorical analysis section (W4) — between Statistical and Target
+    categorical_sec: dict[str, Any] | None = None
+    if is_active():
+        cat_raw = load_state("categorical_analysis")
+        if cat_raw:
+            cat_analysis = CategoricalAnalysis.model_validate_json(cat_raw)
+            categorical_sec = _enrich(
+                _build_categorical_section(cat_analysis),
+                "categorical_analysis",
+            )
+
     quality = _enrich(
         _build_quality_section(critic, is_final), "quality_assessment",
     )
@@ -1614,6 +1878,8 @@ def assemble_findings(
         correlation,
         statistical,
     ]
+    if categorical_sec is not None:
+        sections.append(categorical_sec)
     if target_sec is not None:
         sections.append(target_sec)
     sections.extend([

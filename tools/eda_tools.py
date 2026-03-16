@@ -27,7 +27,7 @@ from typing import Annotated
 
 import pandas as pd
 
-from eda_state import EDAResults, MissingInfo, TargetInfo
+from eda_state import CategoricalAnalysis, CategoricalStats, EDAResults, MissingInfo, TargetInfo
 
 logger = logging.getLogger(__name__)
 
@@ -307,5 +307,145 @@ def target_analysis(
         return (
             f"Target analysis complete for '{col}' ({target_info.problem_type}). "
             f"Reference: {STATE_REF_PREFIX}target_analysis"
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Categorical analysis (W4)
+# ---------------------------------------------------------------------------
+
+_RARE_THRESHOLD = 0.005  # < 0.5% — matches RareCategoryRule in critic_rules.py
+_TOP_N = 10
+
+
+def analyze_categoricals(
+    data_json: Annotated[str, "JSON string (records orientation) from load_data()"],
+    target_info_json: Annotated[str, "JSON string of TargetInfo from detect_target()"],
+) -> str:
+    """
+    AG2 tool entry point.
+    Compute categorical distributions: value counts (top-N), cardinality,
+    Shannon entropy, rare-category count (<0.5%), and target rate per
+    category (for classification targets).
+
+    Returns:
+        JSON string of a CategoricalAnalysis model.
+    """
+    import math
+
+    from tools._pipeline_state import is_active, resolve, load_state, save_state, STATE_REF_PREFIX
+    if is_active():
+        data_json = resolve(data_json, "data_json")
+        target_info_json = resolve(target_info_json, "target_info")
+
+    df = pd.DataFrame(json.loads(data_json))
+
+    # Determine target info
+    target_info = TargetInfo.model_validate_json(target_info_json)
+    target_col = target_info.column if target_info.column and target_info.column in df.columns else None
+    is_classification = target_col is not None and target_info.problem_type == "classification"
+
+    # Determine categorical columns — prefer DataProfile.categorical_cols.
+    # NOTE: infer_dtypes() saves under "dtypes_json" (not "schema_json");
+    # schema_json (validate_schema) does NOT populate categorical_cols.
+    cat_cols: list[str] | None = None
+    if is_active():
+        dtypes_raw = load_state("dtypes_json")
+        if dtypes_raw:
+            from eda_state import DataProfile
+            try:
+                dp = DataProfile.model_validate_json(dtypes_raw)
+                if dp.categorical_cols:          # only use if non-empty
+                    cat_cols = dp.categorical_cols
+            except Exception:
+                pass
+    if not cat_cols:                             # None OR empty list → fallback
+        cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+
+    if not cat_cols:
+        empty = CategoricalAnalysis(target_column=target_col, top_n=_TOP_N)
+        result = empty.model_dump_json()
+        if is_active():
+            save_state("categorical_analysis", result)
+            return (
+                f"No categorical columns detected. "
+                f"Reference: {STATE_REF_PREFIX}categorical_analysis"
+            )
+        return result
+
+    columns: dict[str, CategoricalStats] = {}
+    n_rows = len(df)
+
+    for col in cat_cols:
+        series = df[col].dropna()
+        if series.empty:
+            columns[col] = CategoricalStats()
+            continue
+
+        vc = series.value_counts()
+        cardinality = len(vc)
+
+        # Shannon entropy (bits)
+        probs = vc.values / vc.values.sum()
+        entropy_bits = float(-sum(p * math.log2(p) for p in probs if p > 0))
+
+        # Rare values (< 0.5%)
+        freq_pct = vc / len(series)
+        rare_mask = freq_pct < _RARE_THRESHOLD
+        rare_count = int(rare_mask.sum())
+
+        # Top-N value details
+        top_values: list[dict] = []
+        show_n = min(_TOP_N, cardinality)
+        for val in vc.index[:show_n]:
+            count = int(vc[val])
+            pct = round(count / len(series) * 100, 2)
+            is_rare = bool(freq_pct[val] < _RARE_THRESHOLD)
+            entry: dict = {
+                "value": str(val),
+                "count": count,
+                "pct": pct,
+                "is_rare": is_rare,
+            }
+            if is_classification:
+                target_rates: dict[str, float] = {}
+                mask = df[col] == val
+                grp = df.loc[mask, target_col].value_counts()
+                grp_total = int(grp.sum())
+                for cls_val, cls_cnt in grp.items():
+                    target_rates[str(cls_val)] = round(
+                        int(cls_cnt) / max(grp_total, 1) * 100, 2,
+                    )
+                entry["target_rates"] = target_rates
+            top_values.append(entry)
+
+        more_values = max(0, cardinality - show_n)
+
+        columns[col] = CategoricalStats(
+            cardinality=cardinality,
+            entropy_bits=round(entropy_bits, 4),
+            rare_count=rare_count,
+            top_values=top_values,
+            more_values=more_values,
+        )
+
+    analysis = CategoricalAnalysis(
+        columns=columns,
+        target_column=target_col,
+        top_n=_TOP_N,
+    )
+
+    logger.info(
+        "Categorical analysis complete: %d columns, target=%s",
+        len(columns), target_col or "none",
+    )
+    result = analysis.model_dump_json()
+
+    if is_active():
+        save_state("categorical_analysis", result)
+        return (
+            f"Categorical analysis complete for {len(columns)} columns. "
+            f"Reference: {STATE_REF_PREFIX}categorical_analysis"
         )
     return result

@@ -62,6 +62,24 @@ class DataProfile(BaseModel):
     duplicate_count: int = 0  # Rows removed by load_data() dedup (W8)
 
 
+class CategoricalStats(BaseModel):
+    """Per-column categorical distribution summary (W4)."""
+
+    cardinality: int = 0
+    entropy_bits: float = 0.0        # Shannon entropy in bits
+    rare_count: int = 0              # Values with freq < 0.5%
+    top_values: list[dict[str, Any]] = Field(default_factory=list)
+    more_values: int = 0             # Values beyond top-N not shown
+
+
+class CategoricalAnalysis(BaseModel):
+    """Full categorical inventory produced by analyze_categoricals() (W4)."""
+
+    columns: dict[str, CategoricalStats] = Field(default_factory=dict)
+    target_column: str | None = None
+    top_n: int = 10
+
+
 class MissingInfo(BaseModel):
     """Missing-value statistics produced by EDAAnalysisAgent's tools."""
 
@@ -128,6 +146,7 @@ class Interpretations(BaseModel):
     missing_values: Optional[dict[str, str]] = None
     correlation: Optional[dict[str, str]] = None
     statistical_analysis: Optional[dict[str, str]] = None
+    categorical_analysis: Optional[dict[str, str]] = None
     target_variable_analysis: Optional[dict[str, str]] = None
     quality_assessment: Optional[dict[str, str]] = None
     plot_commentaries: list[PlotCommentary] = Field(default_factory=list)

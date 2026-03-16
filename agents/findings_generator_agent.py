@@ -51,11 +51,23 @@ STEP 1: Call prepare_interpretation_context() to receive the complete fact sheet
 
 STEP 2: Based on the fact sheet, generate expert commentary for EVERY section and
   EVERY plot. For each section (overview, missing_values, correlation,
-  statistical_analysis, target_variable_analysis, quality_assessment)
+  statistical_analysis, categorical_analysis, target_variable_analysis,
+  quality_assessment)
   provide THREE perspectives:
     - "statistical": distribution shape, significance, test implications
     - "ds_ml": feature engineering, model selection, preprocessing needs
     - "business": operational meaning, risk indicators, actionability
+  For the "overview" section specifically, the "statistical" perspective MUST
+  open by stating the full column composition from the DATASET line in the
+  fact sheet: "Dataset has N rows x M columns (K numerical: num_col1, …;
+  J categorical: cat_col1, …)".
+  CRITICAL: K (numerical count) is the SECOND number in the parentheses of
+  the DATASET line — e.g. "(6 numerical, 9 categorical)" → K=6, NOT 15.
+  Do NOT confuse M (total columns) with K (numerical columns). Name ALL
+  columns of both types explicitly using the lists in the DATASET line.
+  For zero-inflated features, cite the EXACT non-zero row count from the
+  "Zero-inflation" annotation in HISTOGRAM BIN DATA.
+  Do NOT estimate or calculate this number yourself.
   For each plot in the PLOT INVENTORY, provide a plot_commentaries entry with
   the same three perspectives using the exact plot filename as plot_file.
 
@@ -172,7 +184,8 @@ def register_findings_generator_tools(agent, user_proxy: UserProxyAgent) -> None
         description=(
             "Validate and store expert commentary JSON. The JSON must match the "
             "Interpretations schema with keys: overview, missing_values, "
-            "correlation, statistical_analysis, quality_assessment (each with "
+            "correlation, statistical_analysis, categorical_analysis, "
+            "target_variable_analysis, quality_assessment (each with "
             "'statistical', 'ds_ml', 'business' sub-keys), plot_commentaries "
             "(list of {plot_file, statistical, ds_ml, business}), conclusions "
             "(string), recommendations_and_business_implications (string). "

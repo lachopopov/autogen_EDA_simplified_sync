@@ -71,7 +71,12 @@ OPENLIT_EVAL_MODEL: str = os.getenv("OPENLIT_EVAL_MODEL", "gpt-5")
 MAX_CRITIC_ITERATIONS: int = int(os.getenv("MAX_CRITIC_ITERATIONS", "2"))
 
 # --- GroupChat config ---
-MAX_ROUNDS: int = int(os.getenv("MAX_ROUNDS", "50"))
+MAX_ROUNDS: int = int(os.getenv("MAX_ROUNDS", "70"))
+# Raised from 50 → 70 to accommodate:
+#   - W4 (analyze_categoricals = 5th EDA tool, +2 rounds worst-case sequential)
+#   - Planned W7 (feature importance = 6th EDA tool, +2 more rounds)
+#   - 2 critic-loop retries (each retry = +10 rounds FindingsGenerator + Critic)
+#   - Total worst-case sequential path peaks ~55 rounds; 70 is a safe ceiling.
 
 # --- CSV / Excel missing-value sentinel tokens ---
 # These tokens are treated as NaN at load time (in addition to pandas defaults).

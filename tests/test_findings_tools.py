@@ -10,8 +10,19 @@ import json
 
 import pytest
 
-from eda_state import CriticFlag, CriticReport, DataProfile, EDAResults, Findings, MissingInfo
+from eda_state import (
+    CategoricalAnalysis,
+    CategoricalStats,
+    CriticFlag,
+    CriticReport,
+    DataProfile,
+    EDAResults,
+    Findings,
+    MissingInfo,
+)
 from tools.findings_tools import (
+    _build_categorical_inventory,
+    _build_categorical_section,
     _build_conclusions_section,
     _build_correlation_section,
     _build_missing_section,
@@ -1738,3 +1749,176 @@ class TestW1W2W3ArtifactComposition:
                 "Missing section must not be 'No missing values' (W3 regression)"
         finally:
             clear_session()
+
+
+# ---------------------------------------------------------------------------
+# _build_categorical_section / _build_categorical_inventory
+# ---------------------------------------------------------------------------
+
+class TestBuildCategoricalSection:
+    """Tests for _build_categorical_section() and _build_categorical_inventory()."""
+
+    @pytest.fixture()
+    def empty_analysis(self):
+        return CategoricalAnalysis(columns={})
+
+    @pytest.fixture()
+    def simple_analysis(self):
+        return CategoricalAnalysis(
+            columns={
+                "color": CategoricalStats(
+                    cardinality=3,
+                    entropy_bits=1.585,
+                    rare_count=0,
+                    top_values=[
+                        {"value": "red", "count": 40, "pct": 40.0},
+                        {"value": "blue", "count": 35, "pct": 35.0},
+                        {"value": "green", "count": 25, "pct": 25.0},
+                    ],
+                    more_values=0,
+                ),
+                "size": CategoricalStats(
+                    cardinality=2,
+                    entropy_bits=1.0,
+                    rare_count=0,
+                    top_values=[
+                        {"value": "S", "count": 50, "pct": 50.0},
+                        {"value": "L", "count": 50, "pct": 50.0},
+                    ],
+                    more_values=0,
+                ),
+            },
+            target_column=None,
+            top_n=10,
+        )
+
+    @pytest.fixture()
+    def classification_analysis(self):
+        return CategoricalAnalysis(
+            columns={
+                "color": CategoricalStats(
+                    cardinality=3,
+                    entropy_bits=1.585,
+                    rare_count=0,
+                    top_values=[
+                        {"value": "red", "count": 40, "pct": 40.0,
+                         "target_rates": {"yes": 60.0, "no": 40.0}},
+                        {"value": "blue", "count": 35, "pct": 35.0,
+                         "target_rates": {"yes": 20.0, "no": 80.0}},
+                        {"value": "green", "count": 25, "pct": 25.0,
+                         "target_rates": {"yes": 45.0, "no": 55.0}},
+                    ],
+                    more_values=0,
+                ),
+                "target": CategoricalStats(
+                    cardinality=2,
+                    entropy_bits=1.0,
+                    rare_count=0,
+                    top_values=[
+                        {"value": "yes", "count": 50, "pct": 50.0},
+                        {"value": "no", "count": 50, "pct": 50.0},
+                    ],
+                    more_values=0,
+                ),
+            },
+            target_column="target",
+            top_n=10,
+        )
+
+    @pytest.fixture()
+    def high_card_analysis(self):
+        return CategoricalAnalysis(
+            columns={
+                "city": CategoricalStats(
+                    cardinality=500,
+                    entropy_bits=8.96,
+                    rare_count=450,
+                    top_values=[
+                        {"value": f"city_{i}", "count": 2, "pct": 0.4, "is_rare": True}
+                        for i in range(10)
+                    ],
+                    more_values=490,
+                ),
+            },
+        )
+
+    # --- _build_categorical_section tests ---
+
+    def test_empty_returns_no_categoricals(self, empty_analysis):
+        section = _build_categorical_section(empty_analysis)
+        assert section["title"] == "Categorical Analysis"
+        assert "No categorical" in section["content"]
+
+    def test_returns_dict_with_title_and_content(self, simple_analysis):
+        section = _build_categorical_section(simple_analysis)
+        assert isinstance(section, dict)
+        assert "title" in section
+        assert "content" in section
+        assert section["title"] == "Categorical Analysis"
+
+    def test_feature_count_in_content(self, simple_analysis):
+        section = _build_categorical_section(simple_analysis)
+        assert "2 feature(s)" in section["content"]
+
+    def test_low_cardinality_mentioned(self, simple_analysis):
+        section = _build_categorical_section(simple_analysis)
+        assert "Binary/low-cardinality" in section["content"]
+        assert "size (2)" in section["content"]
+
+    def test_high_cardinality_mentioned(self, high_card_analysis):
+        section = _build_categorical_section(high_card_analysis)
+        assert "High-cardinality" in section["content"]
+        assert "city" in section["content"]
+        assert "500" in section["content"]
+
+    def test_rare_values_mentioned(self, high_card_analysis):
+        section = _build_categorical_section(high_card_analysis)
+        assert "Rare categories" in section["content"]
+
+    def test_entropy_summary(self, simple_analysis):
+        section = _build_categorical_section(simple_analysis)
+        assert "entropy" in section["content"].lower()
+
+    def test_discriminative_with_target(self, classification_analysis):
+        section = _build_categorical_section(classification_analysis)
+        assert "discriminative" in section["content"].lower()
+        assert "color" in section["content"]
+
+    def test_no_discriminative_without_target(self, simple_analysis):
+        section = _build_categorical_section(simple_analysis)
+        assert "discriminative" not in section["content"].lower()
+
+    # --- _build_categorical_inventory tests ---
+
+    def test_inventory_empty(self, empty_analysis):
+        inv = _build_categorical_inventory(empty_analysis)
+        assert "No categorical" in inv
+
+    def test_inventory_lists_columns(self, simple_analysis):
+        inv = _build_categorical_inventory(simple_analysis)
+        assert "color" in inv
+        assert "size" in inv
+        assert "cardinality=3" in inv
+        assert "cardinality=2" in inv
+
+    def test_inventory_shows_values(self, simple_analysis):
+        inv = _build_categorical_inventory(simple_analysis)
+        assert "'red'" in inv
+        assert "'S'" in inv
+
+    def test_inventory_marks_target(self, classification_analysis):
+        inv = _build_categorical_inventory(classification_analysis)
+        assert "(TARGET)" in inv
+
+    def test_inventory_shows_rare(self, high_card_analysis):
+        inv = _build_categorical_inventory(high_card_analysis)
+        assert "[RARE]" in inv
+
+    def test_inventory_shows_more_values(self, high_card_analysis):
+        inv = _build_categorical_inventory(high_card_analysis)
+        assert "490 more" in inv
+
+    def test_inventory_shows_target_rates(self, classification_analysis):
+        inv = _build_categorical_inventory(classification_analysis)
+        assert "target_rates" in inv
+        assert "yes=" in inv

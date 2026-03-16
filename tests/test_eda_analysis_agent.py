@@ -101,15 +101,15 @@ class TestCreateEDAAnalysisAgent:
 class TestToolRegistration:
     """Test that tools are properly wired to agent + proxy."""
 
-    def test_four_tools_on_agent(self, wired_pair):
+    def test_five_tools_on_agent(self, wired_pair):
         agent, _ = wired_pair
         tools = agent.llm_config.get("tools", [])
-        assert len(tools) == 4
+        assert len(tools) == 5
 
     def test_tool_names(self, wired_pair):
         agent, _ = wired_pair
         tool_names = {t["function"]["name"] for t in agent.llm_config["tools"]}
-        assert tool_names == {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis"}
+        assert tool_names == {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals"}
 
     def test_tool_descriptions(self, wired_pair):
         agent, _ = wired_pair
@@ -123,6 +123,7 @@ class TestToolRegistration:
         assert "missing_analysis" in proxy._function_map
         assert "correlation_matrix" in proxy._function_map
         assert "target_analysis" in proxy._function_map
+        assert "analyze_categoricals" in proxy._function_map
 
     def test_describe_stats_schema(self, wired_pair):
         agent, _ = wired_pair

@@ -4,8 +4,10 @@ agents/eda_analysis_agent.py — EDAAnalysisAgent factory + tool registration.
 Architecture Reference: architecture.md § 4.3, § 12.1, § 12.6
 
 Role: Perform descriptive statistical analysis on the loaded data.
-Tools: describe_stats(), missing_analysis(), correlation_matrix(), target_analysis()
+Tools: describe_stats(), missing_analysis(), correlation_matrix(), target_analysis(),
+       analyze_categoricals()
 Output: EDAResults (stats dict, missing dict, correlation dict) + target analysis
+       + categorical inventory
 
 Tool registration uses the AG2 canonical chained-decorator pattern:
   @agent.register_for_llm(description="...")
@@ -22,18 +24,27 @@ AG2 Version: 0.10.3
 from autogen import UserProxyAgent
 
 from agents import make_agent
-from tools.eda_tools import correlation_matrix, describe_stats, missing_analysis, target_analysis
+from tools.eda_tools import (
+    analyze_categoricals,
+    correlation_matrix,
+    describe_stats,
+    missing_analysis,
+    target_analysis,
+)
 
 # System message matches architecture.md § 4.3.
 # Explicit "Do NOT use TERMINATE" prevents accidental pipeline short-circuit
 # (only ReportExporterAgent is allowed to emit TERMINATE — architecture.md § 4.7, § 5).
 EDA_ANALYSIS_SYSTEM_MESSAGE = """\
 Perform descriptive statistical analysis on the loaded data.
-Call all four tools in a SINGLE parallel tool_calls message:
-  describe_stats(), missing_analysis(), correlation_matrix(), target_analysis().
+Call all five tools in a SINGLE parallel tool_calls message:
+  describe_stats(), missing_analysis(), correlation_matrix(), target_analysis(),
+  analyze_categoricals().
 Pass the data reference from load_data() directly to each tool. Do NOT copy large JSON.
-target_analysis() also requires target_info_json — load it from artifact store (STATE_REF:target_info).
-If no target_info artifact exists, skip target_analysis().
+target_analysis() and analyze_categoricals() also require target_info_json — load it
+from artifact store (STATE_REF:target_info).
+If no target_info artifact exists, skip target_analysis() and still call
+analyze_categoricals() (pass an empty TargetInfo JSON: {}).
 When a tool returns a confirmation message with "Reference: STATE_REF:...", the tool has SUCCEEDED.
 Do NOT re-call the same tool. After receiving results, emit a brief text summary and advance.
 Keep your text summary under 3 sentences. Do not offer options or next-step suggestions — the pipeline advances automatically.
@@ -84,3 +95,12 @@ def register_eda_analysis_tools(agent, user_proxy: UserProxyAgent) -> None:
     agent.register_for_llm(
         description="Analyse target variable: class distribution, imbalance ratio, per-class feature stats (classification) or target correlations (regression). Requires target_info_json from artifact store."
     )(user_proxy.register_for_execution()(target_analysis))
+
+    # --- analyze_categoricals (W4) ---
+    agent.register_for_llm(
+        description=(
+            "Compute categorical distributions: value counts (top-10), cardinality, "
+            "Shannon entropy, rare-category count, and target rate per category "
+            "(classification). Requires target_info_json from artifact store."
+        )
+    )(user_proxy.register_for_execution()(analyze_categoricals))
