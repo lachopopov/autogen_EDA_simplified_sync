@@ -101,6 +101,21 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
     - Close with a concrete next-step checklist (bullet or numbered)
 
   PART 2 — BUSINESS PROBLEM CATALOGUE (grounded in assembled findings + fact sheet):
+    PROVENANCE CHECK (do this before writing any business problems):
+      Assess whether the dataset is operational/commercial (produced by a live business
+      process — e.g. CRM exports, transaction logs, sensor readings) or academic/survey/
+      benchmark (e.g. UCI repository, census survey, government administrative data,
+      Kaggle competition dataset). Use the filename, column naming conventions
+      (e.g. government-style labels like "education-num", "native-country"), and domain
+      context as signals.
+      If the dataset is academic, survey, or benchmark in origin, you MUST open PART 2
+      with this exact verbatim prefix (copy it word for word):
+        "NOTE: This is an academic/survey dataset. The following business problems are
+         illustrative hypotheticals, not operational use cases."
+      For non-commercial datasets, do NOT fabricate dollar-value ROI estimates. State
+      qualitative value drivers instead (e.g. "reduces manual review hours by ~30%",
+      "improves model precision by ~N pp based on feature signal strength"). Never invent
+      a dollar figure when the data has no verified commercial origin.
     a) Identify ALL realistic business problems (5-8 max) this dataset could solve.
        Start each with a BUSINESS QUESTION.
        Classify each by solution probability: High / Med / Low, with a one-sentence
@@ -112,6 +127,8 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
        - BUSINESS IMPACT: ROI quantified using fact-sheet numbers (e.g., "$XM annual saving").
          If ROI cannot be derived from the fact sheet, state the value driver
          (e.g., "reduces manual review hours by ~30%") without inventing dollar figures.
+         For academic/survey datasets, omit dollar-value ROI entirely — state qualitative
+         impact only.
     Ground ONLY in the fact sheet / assembled findings. Do NOT invent statistics.
     Cap at 8 problems to avoid dilution.
 
@@ -143,6 +160,13 @@ RULES:
   note this caveat in your commentary: these are NOT true anomalies. Recommend
   binning or segmentation rather than outlier removal. Do NOT list this flag
   alongside HIGH/MEDIUM data quality concerns.
+- PROVENANCE RULE (PART 2): Before generating PART 2, determine from filename,
+  column names, and domain context whether the dataset is operational/commercial
+  or academic/survey/benchmark. If academic/survey/benchmark, open PART 2 with
+  the verbatim disclaimer: "NOTE: This is an academic/survey dataset. The following
+  business problems are illustrative hypotheticals, not operational use cases."
+  Do NOT fabricate dollar-value ROI for non-commercial datasets under any
+  circumstances — qualitative value drivers only.
 Ground your answers only on data returned by your tools. If you do not have \
 the facts, state "No info available at this stage." Do NOT invent or fabricate \
 any statistics, numbers, or findings."""
