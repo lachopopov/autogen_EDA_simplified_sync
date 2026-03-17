@@ -51,8 +51,8 @@ STEP 1: Call prepare_interpretation_context() to receive the complete fact sheet
 
 STEP 2: Based on the fact sheet, generate expert commentary for EVERY section and
   EVERY plot. For each section (overview, missing_values, correlation,
-  statistical_analysis, categorical_analysis, target_variable_analysis,
-  quality_assessment)
+  statistical_analysis, categorical_analysis, feature_associations,
+  target_variable_analysis, quality_assessment)
   provide THREE perspectives:
     - "statistical": distribution shape, significance, test implications
     - "ds_ml": feature engineering, model selection, preprocessing needs
@@ -68,6 +68,14 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
   For zero-inflated features, cite the EXACT non-zero row count from the
   "Zero-inflation" annotation in HISTOGRAM BIN DATA.
   Do NOT estimate or calculate this number yourself.
+  For the "feature_associations" section, use ONLY values from the
+  FEATURE–TARGET ASSOCIATIONS table in the fact sheet. For each of the
+  top-3 features state: Borda score, MI score, effect size value + type +
+  label (weak/moderate/strong). In the "ds_ml" perspective, identify which
+  features show lens divergence (MI rank vs effect size rank differ >5) and
+  explain the implication. In the "business" perspective, translate the
+  top-ranked features into actionable signals (e.g. which features are most
+  worth collecting at data entry time).
   For each plot in the PLOT INVENTORY, provide a plot_commentaries entry with
   the same three perspectives using the exact plot filename as plot_file.
 
@@ -185,6 +193,7 @@ def register_findings_generator_tools(agent, user_proxy: UserProxyAgent) -> None
             "Validate and store expert commentary JSON. The JSON must match the "
             "Interpretations schema with keys: overview, missing_values, "
             "correlation, statistical_analysis, categorical_analysis, "
+            "feature_associations, "
             "target_variable_analysis, quality_assessment (each with "
             "'statistical', 'ds_ml', 'business' sub-keys), plot_commentaries "
             "(list of {plot_file, statistical, ds_ml, business}), conclusions "

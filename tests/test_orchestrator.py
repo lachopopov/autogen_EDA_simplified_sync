@@ -511,14 +511,14 @@ class TestToolRegistration:
         assert len(user_proxy._function_map) == 0
 
     def test_total_tool_count_across_executors(self, group_chat_components):
-        """19 total tools distributed across 6 executors."""
+        """20 total tools distributed across 6 executors."""
         _, _, _, _, executors_dict, _ = group_chat_components
         total = sum(len(e._function_map) for e in executors_dict.values())
-        assert total == 19
+        assert total == 20
 
     @pytest.mark.parametrize("executor_name,expected_tools", [
         ("DataPrepExecutor", {"load_data", "validate_schema", "infer_dtypes"}),
-        ("EDAAnalysisExecutor", {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals"}),
+        ("EDAAnalysisExecutor", {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals", "compute_feature_target_associations"}),
         ("VisualizationExecutor", {"plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap", "plot_class_distribution"}),
         ("CriticExecutor", {"run_critic_rules"}),
         ("FindingsGeneratorExecutor", {"assemble_findings", "prepare_interpretation_context", "save_interpretations"}),
@@ -560,7 +560,7 @@ class TestAgentLLMConfig:
     def test_eda_analysis_has_5_tools(self, group_chat_components):
         _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["EDAAnalysisAgent"])
-        assert names == {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals"}
+        assert names == {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals", "compute_feature_target_associations"}
 
     def test_visualization_has_4_tools(self, group_chat_components):
         _, _, _, agents, _, _ = group_chat_components

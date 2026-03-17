@@ -104,12 +104,12 @@ class TestToolRegistration:
     def test_five_tools_on_agent(self, wired_pair):
         agent, _ = wired_pair
         tools = agent.llm_config.get("tools", [])
-        assert len(tools) == 5
+        assert len(tools) == 6
 
     def test_tool_names(self, wired_pair):
         agent, _ = wired_pair
         tool_names = {t["function"]["name"] for t in agent.llm_config["tools"]}
-        assert tool_names == {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals"}
+        assert tool_names == {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals", "compute_feature_target_associations"}
 
     def test_tool_descriptions(self, wired_pair):
         agent, _ = wired_pair
@@ -124,6 +124,7 @@ class TestToolRegistration:
         assert "correlation_matrix" in proxy._function_map
         assert "target_analysis" in proxy._function_map
         assert "analyze_categoricals" in proxy._function_map
+        assert "compute_feature_target_associations" in proxy._function_map
 
     def test_describe_stats_schema(self, wired_pair):
         agent, _ = wired_pair

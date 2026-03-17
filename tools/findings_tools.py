@@ -39,6 +39,7 @@ from eda_state import (
     CriticReport,
     DataProfile,
     EDAResults,
+    FeatureAssociations,
     Findings,
     Interpretations,
 )
@@ -837,7 +838,7 @@ def _build_categorical_inventory(cat_analysis: CategoricalAnalysis) -> str:
     lines: list[str] = []
     target_col = cat_analysis.target_column
     for col, stats in cat_analysis.columns.items():
-        label = f" (TARGET)" if col == target_col else ""
+        label = " (TARGET)" if col == target_col else ""
         lines.append(
             f"\n{col}{label} — cardinality={stats.cardinality}, "
             f"entropy={stats.entropy_bits:.4f} bits, "
@@ -961,8 +962,131 @@ def _build_categorical_section(
 
 
 # ---------------------------------------------------------------------------
-# Metadata-First Hybrid: Interpretation context + save
+# Feature–target association helpers (W7)
 # ---------------------------------------------------------------------------
+
+
+def _build_feature_associations_fact_block(fa: FeatureAssociations) -> str:
+    """Render the FEATURE–TARGET ASSOCIATIONS block for the fact sheet.
+
+    Produces a compact table so the LLM has exact MI scores, effect sizes,
+    and Borda ranks to cite precisely — no estimation or fabrication needed.
+    """
+    if not fa.rows:
+        return "  No feature–target associations available (no target column or tool not run)."
+
+    lines: list[str] = [
+        f"  Target: {fa.target_col!r}  |  Task: {fa.task_type}  "
+        f"|  Features analysed: {fa.total_features}"
+    ]
+    if fa.mi_sample_note:
+        lines.append(f"  NOTE: {fa.mi_sample_note}")
+
+    header = (
+        f"  {'#':<3}  {'Feature':<24}  {'Type':<12}  "
+        f"{'MI':>8}  {'MI_rank':>7}  "
+        f"{'EffectSize':>10}  {'ES_type':<10}  {'ES_label':<9}  {'ES_rank':>7}  "
+        f"{'Borda':>5}  {'p_value':>9}"
+    )
+    lines.append("")
+    lines.append(header)
+    lines.append("  " + "-" * (len(header) - 2))
+
+    for i, row in enumerate(fa.rows, start=1):
+        lines.append(
+            f"  {i:<3}  {row.feature:<24}  {row.feature_type:<12}  "
+            f"{row.mi_score:>8.5f}  {row.mi_rank:>7}  "
+            f"{row.effect_size:>10.4f}  {row.effect_size_type:<10}  "
+            f"{row.effect_size_label:<9}  {row.effect_size_rank:>7}  "
+            f"{row.borda_score:>5}  {row.p_value:>9.6f}"
+        )
+    return "\n".join(lines)
+
+
+def _build_feature_associations_section(
+    fa: FeatureAssociations,
+) -> dict[str, Any]:
+    """Build the Feature–Target Associations report section (deterministic).
+
+    Presents the Borda-ranked top-N features with MI and effect size lenses,
+    effect size labels (weak/moderate/strong), and a sampling note when MI
+    was estimated on a subsample.
+    """
+    if not fa.rows:
+        return {
+            "title": "Feature–Target Associations",
+            "content": (
+                "No feature–target associations computed "
+                "(no supervised target detected or tool not called)."
+            ),
+        }
+
+    paragraphs: list[str] = []
+    paragraphs.append(
+        f"Univariate feature–target associations were computed for "
+        f"{fa.total_features} feature(s) against target '{fa.target_col}' "
+        f"({fa.task_type}). "
+        f"Top {len(fa.rows)} features ranked by Borda score "
+        f"(borda = MI rank + effect size rank; lower = more important)."
+    )
+
+    if fa.mi_sample_note:
+        paragraphs.append(fa.mi_sample_note)
+
+    # Determine effect size label distribution
+    label_counts: dict[str, list[str]] = {"strong": [], "moderate": [], "weak": []}
+    for row in fa.rows:
+        lbl = row.effect_size_label
+        if lbl in label_counts:
+            label_counts[lbl].append(row.feature)
+
+    # Report top-3 by Borda
+    top3 = fa.rows[:3]
+    top3_parts = []
+    for row in top3:
+        top3_parts.append(
+            f"{row.feature} (Borda={row.borda_score}, "
+            f"MI={row.mi_score:.4f}, "
+            f"{row.effect_size_type}={row.effect_size:.4f} [{row.effect_size_label}])"
+        )
+    paragraphs.append(f"Top features: {'; '.join(top3_parts)}.")
+
+    # Strong effect size summary
+    if label_counts["strong"]:
+        paragraphs.append(
+            f"Strong effect size (practical significance): "
+            f"{', '.join(label_counts['strong'][:5])}."
+        )
+    if label_counts["moderate"]:
+        paragraphs.append(
+            f"Moderate effect size: {', '.join(label_counts['moderate'][:5])}."
+        )
+    if label_counts["weak"]:
+        paragraphs.append(
+            f"Weak effect size (low practical impact): "
+            f"{', '.join(label_counts['weak'][:5])}."
+        )
+
+    # Lensing divergence: features where MI rank and effect size rank diverge > 5 positions
+    divergent = [
+        r for r in fa.rows if abs(r.mi_rank - r.effect_size_rank) > 5
+    ]
+    if divergent:
+        div_parts = [
+            f"{r.feature} (MI rank {r.mi_rank} vs effect size rank {r.effect_size_rank})"
+            for r in divergent[:3]
+        ]
+        paragraphs.append(
+            f"Lens divergence detected (MI rank vs effect size rank differ >5 positions): "
+            f"{'; '.join(div_parts)}. "
+            f"Possible non-linear signal (high MI, low effect size) or "
+            f"strong linear signal missed by MI sampling (high effect size, low MI)."
+        )
+
+    return {
+        "title": "Feature–Target Associations",
+        "content": " ".join(paragraphs),
+    }
 
 
 def _build_histogram_metadata(df: pd.DataFrame, num_cols: list[str]) -> str:
@@ -1297,6 +1421,39 @@ def prepare_interpretation_context() -> str:
     else:
         sections.append(
             "\nCATEGORICAL INVENTORY: not yet available (analyze_categoricals not run)."
+        )
+
+    # Feature–target associations (W7): MI + effect size
+    # Fallback: compute deterministically if the LLM skipped calling the tool
+    # (mirrors the _compute_target_analysis_fallback pattern).
+    fa_raw = load_state("feature_associations")
+    if not fa_raw:
+        _fa_data_raw = load_state("data_json")
+        _fa_ti_raw = load_state("target_info")
+        if _fa_data_raw and _fa_ti_raw:
+            try:
+                from tools.eda_tools import (  # noqa: PLC0415
+                    compute_feature_target_associations as _fa_fn,
+                )
+                _fa_fn(_fa_data_raw, _fa_ti_raw)
+                fa_raw = load_state("feature_associations")
+                logger.info(
+                    "feature_associations computed via fallback in context builder"
+                )
+            except Exception:
+                logger.warning(
+                    "feature_associations fallback failed", exc_info=True
+                )
+    if fa_raw:
+        fa = FeatureAssociations.model_validate_json(fa_raw)
+        sections.append(
+            "\nFEATURE–TARGET ASSOCIATIONS (MI + effect size, Borda ranked):"
+        )
+        sections.append(_build_feature_associations_fact_block(fa))
+    else:
+        sections.append(
+            "\nFEATURE–TARGET ASSOCIATIONS: not yet available "
+            "(compute_feature_target_associations not run)."
         )
 
     # Target variable analysis
@@ -1821,6 +1978,36 @@ def assemble_findings(
                 "categorical_analysis",
             )
 
+    # Feature–target associations section (W7) — after categorical, before target
+    # Fallback: if prepare_interpretation_context() somehow ran without the
+    # artifact (e.g. direct assemble call), compute it deterministically here.
+    feature_assoc_sec: dict[str, Any] | None = None
+    if is_active():
+        fa_raw = load_state("feature_associations")
+        if not fa_raw:
+            _fa_d = load_state("data_json")
+            _fa_t = load_state("target_info")
+            if _fa_d and _fa_t:
+                try:
+                    from tools.eda_tools import (  # noqa: PLC0415
+                        compute_feature_target_associations as _fa_fn2,
+                    )
+                    _fa_fn2(_fa_d, _fa_t)
+                    fa_raw = load_state("feature_associations")
+                    logger.info(
+                        "feature_associations computed via fallback in assemble_findings"
+                    )
+                except Exception:
+                    logger.warning(
+                        "feature_associations fallback (assemble) failed", exc_info=True
+                    )
+        if fa_raw:
+            fa = FeatureAssociations.model_validate_json(fa_raw)
+            feature_assoc_sec = _enrich(
+                _build_feature_associations_section(fa),
+                "feature_associations",
+            )
+
     quality = _enrich(
         _build_quality_section(critic, is_final), "quality_assessment",
     )
@@ -1880,6 +2067,8 @@ def assemble_findings(
     ]
     if categorical_sec is not None:
         sections.append(categorical_sec)
+    if feature_assoc_sec is not None:
+        sections.append(feature_assoc_sec)
     if target_sec is not None:
         sections.append(target_sec)
     sections.extend([
