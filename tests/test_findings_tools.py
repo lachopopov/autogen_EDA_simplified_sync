@@ -1888,6 +1888,22 @@ class TestBuildCategoricalSection:
         section = _build_categorical_section(simple_analysis)
         assert "discriminative" not in section["content"].lower()
 
+    def test_per_category_rates_shown_for_top_discriminative(self, classification_analysis):
+        section = _build_categorical_section(classification_analysis)
+        content = section["content"]
+        # The per-category block fires for classification with a target column set.
+        assert "Per-category target rates" in content
+        # The most discriminative column (color, 40pp spread) must appear.
+        assert "color" in content
+        # A specific category value and its rates must be rendered.
+        assert "red" in content
+        assert "yes: 60.0%" in content
+        assert "no: 40.0%" in content
+
+    def test_per_category_rates_absent_without_target(self, simple_analysis):
+        section = _build_categorical_section(simple_analysis)
+        assert "Per-category target rates" not in section["content"]
+
     # --- _build_categorical_inventory tests ---
 
     def test_inventory_empty(self, empty_analysis):

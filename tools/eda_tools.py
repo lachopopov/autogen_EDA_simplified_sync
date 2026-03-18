@@ -349,8 +349,21 @@ def analyze_categoricals(
 
     df = pd.DataFrame(json.loads(data_json))
 
-    # Determine target info
+    # Determine target info.
+    # Guard: the LLM may pass '{}' (the documented fallback for missing
+    # target_info) even when the artifact actually exists in state.  '{}' is
+    # valid JSON so resolve() Tier-2 returns it as-is without hitting Tier-3.
+    # If target_column ends up empty after normal resolve AND a session is
+    # active, try loading the real artifact directly so that target rates and
+    # the discriminative-category summary are properly computed (W4 fix).
     target_info = TargetInfo.model_validate_json(target_info_json)
+    if is_active() and not target_info.column:
+        _ti_raw = load_state("target_info")
+        if _ti_raw:
+            try:
+                target_info = TargetInfo.model_validate_json(_ti_raw)
+            except Exception:
+                pass
     target_col = target_info.column if target_info.column and target_info.column in df.columns else None
     is_classification = target_col is not None and target_info.problem_type == "classification"
 
@@ -382,10 +395,49 @@ def analyze_categoricals(
             )
         return result
 
+    # ------------------------------------------------------------------
+    # MISSINGNESS STRATEGY (mirrors compute_feature_target_associations)
+    # Strategy B (retained_frac < 0.80): fill categorical NaN → "__MISSING__"
+    # so that the missing level surfaces in per-category stats / target rates.
+    # Both functions use the same threshold and the same column scope so the
+    # Strategy A/B decision is always consistent between the two tools.
+    # ------------------------------------------------------------------
+    _numerical_cols_strat: list[str] = []
+    if is_active():
+        _dtypes_raw_strat = load_state("dtypes_json")
+        if _dtypes_raw_strat:
+            from eda_state import DataProfile
+            try:
+                _dp_strat = DataProfile.model_validate_json(_dtypes_raw_strat)
+                _numerical_cols_strat = [
+                    c for c in _dp_strat.numerical_cols if c in df.columns
+                ]
+            except Exception:
+                pass
+    if not _numerical_cols_strat:
+        _numerical_cols_strat = df.select_dtypes(include="number").columns.tolist()
+    # Deduplicate while preserving order (target_col may overlap cat_cols)
+    _strat_cols = list(
+        dict.fromkeys(cat_cols + _numerical_cols_strat + ([target_col] if target_col else []))
+    )
+    _n_complete_strat = df[_strat_cols].dropna().shape[0]
+    _retained_frac_strat = _n_complete_strat / max(len(df), 1)
+
+    work_df = df.copy()
+    if _retained_frac_strat < 0.80:
+        for _c in cat_cols:
+            if _c in work_df.columns:
+                work_df[_c] = work_df[_c].fillna("__MISSING__")
+        logger.info(
+            "analyze_categoricals: Strategy B fired (retained_frac=%.2f < 0.80) — "
+            "categorical NaN → '__MISSING__'",
+            _retained_frac_strat,
+        )
+
     columns: dict[str, CategoricalStats] = {}
 
     for col in cat_cols:
-        series = df[col].dropna()
+        series = work_df[col].dropna()
         if series.empty:
             columns[col] = CategoricalStats()
             continue
@@ -417,8 +469,8 @@ def analyze_categoricals(
             }
             if is_classification:
                 target_rates: dict[str, float] = {}
-                mask = df[col] == val
-                grp = df.loc[mask, target_col].value_counts()
+                mask = work_df[col] == val
+                grp = work_df.loc[mask, target_col].value_counts()
                 grp_total = int(grp.sum())
                 for cls_val, cls_cnt in grp.items():
                     target_rates[str(cls_val)] = round(
@@ -679,14 +731,68 @@ def compute_feature_target_associations(
     n_total = len(df)
 
     # -----------------------------------------------------------------------
-    # MUTUAL INFORMATION (kNN) — sample if n > _MAX_ROWS_FOR_MI
-    # Effect sizes always use full df (O(n), n-invariant).
+    # MISSINGNESS STRATEGY — build a single consistent analysis_df so that
+    # both MI and effect-size are computed on the same rows (Borda validity).
+    #
+    # Strategy A (retained_frac >= 0.80): complete-case — drop any row with
+    #   a NaN in any of the analysis columns.
+    # Strategy B (retained_frac < 0.80): impute — categorical NaN → the
+    #   explicit "__MISSING__" level (preserves missingness signal in MI and
+    #   Cramér's V); numeric NaN → column mean (conservative attenuation);
+    #   then drop rows where the TARGET is still NaN.
+    #
+    # The retained_frac check is scoped to analysis columns only (not all df
+    # columns) to avoid the wide-dataset curse of dimensionality.
+    # -----------------------------------------------------------------------
+    relevant_cols = all_feature_cols + [target_col]
+    n_complete = df[relevant_cols].dropna().shape[0]
+    retained_frac = n_complete / max(n_total, 1)
+    missingness_strategy: str
+
+    if retained_frac >= 0.80:
+        analysis_df = df[relevant_cols].dropna().reset_index(drop=True)
+        missingness_strategy = (
+            f"complete-case (N={len(analysis_df):,}, "
+            f"{retained_frac * 100:.1f}% retained)"
+        )
+        logger.info(
+            "Missingness strategy: complete-case — %.1f%% rows retained (%d/%d)",
+            retained_frac * 100, len(analysis_df), n_total,
+        )
+    else:
+        analysis_df = df[relevant_cols].copy()
+        for _col in categorical_cols:
+            if _col in analysis_df.columns:
+                analysis_df[_col] = analysis_df[_col].fillna("__MISSING__")
+        for _col in numerical_cols:
+            if _col in analysis_df.columns:
+                _mean = analysis_df[_col].mean()
+                analysis_df[_col] = analysis_df[_col].fillna(
+                    _mean if not np.isnan(_mean) else 0.0
+                )
+        analysis_df = analysis_df.dropna(subset=[target_col]).reset_index(drop=True)
+        missingness_strategy = (
+            f"imputed (__MISSING__+mean, N={len(analysis_df):,}, "
+            f"{len(analysis_df) / max(n_total, 1) * 100:.1f}% retained)"
+        )
+        logger.info(
+            "Missingness strategy: imputation — retained_frac=%.2f < 0.80, "
+            "categorical NaN → '__MISSING__', numeric NaN → mean",
+            retained_frac,
+        )
+
+    n_analysis = len(analysis_df)
+
+    # -----------------------------------------------------------------------
+    # MUTUAL INFORMATION (kNN) — sample if analysis_df > _MAX_ROWS_FOR_MI.
+    # Effect sizes use full analysis_df (O(n), no sampling needed).
+    # Both MI and effect-size operate on analysis_df — same rows, Borda valid.
     # -----------------------------------------------------------------------
     mi_sample_size: int | None = None
     mi_sample_note: str = ""
-    df_mi = df  # default: full dataset
+    analysis_df_mi = analysis_df  # default: full analysis dataset
 
-    if n_total > _MAX_ROWS_FOR_MI:
+    if n_analysis > _MAX_ROWS_FOR_MI:
         mi_sample_size = _MAX_ROWS_FOR_MI
         if task_type == "classification":
             # Stratified sample: preserve class proportions
@@ -695,27 +801,35 @@ def compute_feature_target_associations(
                 n_splits=1, train_size=_MAX_ROWS_FOR_MI, random_state=42
             )
             try:
-                idx, _ = next(sss.split(df, df[target_col]))
-                df_mi = df.iloc[idx].reset_index(drop=True)
+                idx, _ = next(sss.split(analysis_df, analysis_df[target_col]))
+                analysis_df_mi = analysis_df.iloc[idx].reset_index(drop=True)
             except Exception:
-                df_mi = df.sample(n=_MAX_ROWS_FOR_MI, random_state=42).reset_index(drop=True)
+                analysis_df_mi = analysis_df.sample(
+                    n=_MAX_ROWS_FOR_MI, random_state=42
+                ).reset_index(drop=True)
         else:
-            df_mi = df.sample(n=_MAX_ROWS_FOR_MI, random_state=42).reset_index(drop=True)
+            analysis_df_mi = analysis_df.sample(
+                n=_MAX_ROWS_FOR_MI, random_state=42
+            ).reset_index(drop=True)
 
         mi_sample_note = (
             f"MI estimated on stratified sample of {_MAX_ROWS_FOR_MI:,} rows "
-            f"(full n={n_total:,}); effect sizes computed on full dataset."
+            f"(analysis N={n_analysis:,}); effect sizes on full analysis dataset."
         )
-        logger.info("MI sampling: %d → %d rows (%s)", n_total, _MAX_ROWS_FOR_MI, task_type)
+        logger.info(
+            "MI sampling: %d → %d rows (%s)", n_analysis, _MAX_ROWS_FOR_MI, task_type
+        )
 
-    # Build MI feature matrix (label-encode categoricals for sklearn)
-    mi_rows = df_mi[all_feature_cols].copy()
+    # Build MI feature matrix (label-encode categoricals for sklearn).
+    # analysis_df_mi is already clean: Strategy A has no NaN; Strategy B has
+    # "__MISSING__" strings which get valid Categorical codes (never -1).
+    mi_rows = analysis_df_mi[all_feature_cols].copy()
     for col in categorical_cols:
         if col in mi_rows.columns:
             mi_rows[col] = pd.Categorical(mi_rows[col]).codes.astype(float)
             mi_rows[col] = mi_rows[col].replace(-1, float("nan"))
 
-    mi_target = df_mi[target_col].copy()
+    mi_target = analysis_df_mi[target_col].copy()
     if task_type == "classification":
         mi_target_enc = pd.Categorical(mi_target).codes
     else:
@@ -751,15 +865,16 @@ def compute_feature_target_associations(
             logger.warning("MI computation failed — using zero scores", exc_info=True)
 
     # -----------------------------------------------------------------------
-    # EFFECT SIZE — full dataset, O(n), no sampling
+    # EFFECT SIZE — full analysis_df, O(n), no sampling.
+    # analysis_df is already complete (no NaN in features/target) so the
+    # internal .dropna() in each helper is a harmless no-op.
     # -----------------------------------------------------------------------
     effect_results: dict[str, tuple[float, str, float, float]] = {}
     # returns (effect_size, es_type, stat_supplementary, p_value)
 
     for col in numerical_cols:
-        aligned = df[[col, target_col]].dropna()
-        feat_s = aligned[col]
-        tgt_s = aligned[target_col]
+        feat_s = analysis_df[col]
+        tgt_s = analysis_df[target_col]
 
         if task_type == "classification":
             es, f_stat, p_val = _compute_eta_squared(feat_s, tgt_s)
@@ -769,9 +884,8 @@ def compute_feature_target_associations(
             effect_results[col] = (es, "pearson_r", r_raw, p_val)
 
     for col in categorical_cols:
-        aligned = df[[col, target_col]].dropna()
-        feat_s = aligned[col]
-        tgt_s = aligned[target_col]
+        feat_s = analysis_df[col]
+        tgt_s = analysis_df[target_col]
 
         if task_type == "classification":
             es, chi2, p_val = _compute_cramers_v(feat_s, tgt_s)
@@ -835,6 +949,7 @@ def compute_feature_target_associations(
         total_features=len(all_feature_cols),
         mi_sample_size=mi_sample_size,
         mi_sample_note=mi_sample_note,
+        missingness_strategy=missingness_strategy,
     )
 
     logger.info(

@@ -958,6 +958,26 @@ def _build_categorical_section(
                 f"{', '.join(disc_parts)}."
             )
 
+            # Per-category target rates for the top-3 most discriminative columns.
+            # Cap at 5 values per column to keep output bounded regardless of
+            # cardinality; all classes are shown so no information is suppressed.
+            for col, _cls, _spread, _ in top_disc:
+                col_stats = cat_analysis.columns[col]
+                row_parts = []
+                for v in col_stats.top_values[:5]:
+                    rates = v.get("target_rates")
+                    if not rates:
+                        continue
+                    rate_str = ", ".join(
+                        f"{cls}: {r:.1f}%" for cls, r in rates.items()
+                    )
+                    row_parts.append(f"{v['value']} ({rate_str})")
+                if row_parts:
+                    paragraphs.append(
+                        f"Per-category target rates — {col}: "
+                        f"{'; '.join(row_parts)}."
+                    )
+
     return {"title": "Categorical Analysis", "content": " ".join(paragraphs)}
 
 
@@ -979,6 +999,8 @@ def _build_feature_associations_fact_block(fa: FeatureAssociations) -> str:
         f"  Target: {fa.target_col!r}  |  Task: {fa.task_type}  "
         f"|  Features analysed: {fa.total_features}"
     ]
+    if fa.missingness_strategy:
+        lines.append(f"  Missingness strategy: {fa.missingness_strategy}")
     if fa.mi_sample_note:
         lines.append(f"  NOTE: {fa.mi_sample_note}")
 
@@ -1030,8 +1052,20 @@ def _build_feature_associations_section(
         f"(borda = MI rank + effect size rank; lower = more important)."
     )
 
+    if fa.missingness_strategy:
+        paragraphs.append(
+            f"Missingness handling: associations computed on "
+            f"{fa.missingness_strategy}."
+        )
+
     if fa.mi_sample_note:
         paragraphs.append(fa.mi_sample_note)
+
+    paragraphs.append(
+        "NOTE: MI and effect-size estimates assume missingness is MCAR or MAR. "
+        "Features with informative non-response (MNAR) may yield attenuated "
+        "or biased association scores."
+    )
 
     # Determine effect size label distribution
     label_counts: dict[str, list[str]] = {"strong": [], "moderate": [], "weak": []}
@@ -1350,8 +1384,7 @@ def prepare_interpretation_context() -> str:
             _dp_fs = _DataProfile.model_validate_json(_dtypes_raw_fs)
             _total_cols = _dp_fs.shape[1]
             _num_categorical = len(_dp_fs.categorical_cols)
-            if not row_count:
-                row_count = _dp_fs.shape[0]
+            row_count = _dp_fs.shape[0]  # always wins — authoritative raw shape (Strategy C)
         except Exception:
             pass
     elif _schema_raw_fs:
@@ -1359,13 +1392,19 @@ def prepare_interpretation_context() -> str:
             from eda_state import DataProfile as _DataProfile
             _dp_fs = _DataProfile.model_validate_json(_schema_raw_fs)
             _total_cols = _dp_fs.shape[1]
-            if not row_count:
-                row_count = _dp_fs.shape[0]
+            row_count = _dp_fs.shape[0]  # always wins — authoritative raw shape (Strategy C)
         except Exception:
             pass
     sections.append(
         f"\nDATASET: {row_count} rows x {_total_cols} columns "
         f"({_num_numerical} numerical, {_num_categorical} categorical)"
+    )
+    # Strategy B — explicit numerical anchor so the LLM cannot confuse per-column
+    # non-null counts (e.g. 89 complete-case rows) with the full dataset size.
+    sections.append(
+        f"AUTHORITATIVE_ROW_COUNT = {row_count}  "
+        f"\u2190 Use this number verbatim for dataset size in ALL commentary. "
+        f"Do NOT subtract missing-row counts to derive a smaller N."
     )
     # Surface duplicate count in fact sheet (W8)
     dup_raw = load_state("duplicate_count")

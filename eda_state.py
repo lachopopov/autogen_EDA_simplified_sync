@@ -135,6 +135,7 @@ class FeatureAssociations(BaseModel):
     total_features: int = 0
     mi_sample_size: int | None = None   # None = full dataset used for MI
     mi_sample_note: str = ""            # set when sampling occurred
+    missingness_strategy: str = ""      # "complete-case (...)" or "imputed (...)"
 
 
 class MissingInfo(BaseModel):

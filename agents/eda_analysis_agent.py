@@ -43,10 +43,12 @@ Call all six tools in a SINGLE parallel tool_calls message:
   analyze_categoricals(), compute_feature_target_associations().
 Pass the data reference from load_data() directly to each tool. Do NOT copy large JSON.
 target_analysis(), analyze_categoricals(), and compute_feature_target_associations()
-also require target_info_json — load it from artifact store (STATE_REF:target_info).
+also require target_info_json — pass STATE_REF:target_info for all three.
 If no target_info artifact exists, skip target_analysis() and
-compute_feature_target_associations(), but still call analyze_categoricals()
-(pass an empty TargetInfo JSON: {}).
+compute_feature_target_associations(); still call analyze_categoricals() but
+pass target_info_json="{}" ONLY when the artifact is genuinely absent.
+If STATE_REF:target_info exists, always use it — never substitute {} when
+the real artifact is available.
 When a tool returns a confirmation message with "Reference: STATE_REF:...", the tool has SUCCEEDED.
 Do NOT re-call the same tool. After receiving results, emit a brief text summary and advance.
 Keep your text summary under 3 sentences. Do not offer options or next-step suggestions — the pipeline advances automatically.

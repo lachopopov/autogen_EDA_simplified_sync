@@ -61,13 +61,31 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
   open by stating the full column composition from the DATASET line in the
   fact sheet: "Dataset has N rows x M columns (K numerical: num_col1, …;
   J categorical: cat_col1, …)".
-  CRITICAL: K (numerical count) is the SECOND number in the parentheses of
-  the DATASET line — e.g. "(6 numerical, 9 categorical)" → K=6, NOT 15.
-  Do NOT confuse M (total columns) with K (numerical columns). Name ALL
-  columns of both types explicitly using the lists in the DATASET line.
+  CRITICAL — column counts: The DATASET line has the form
+    "N rows x M columns (K numerical, J categorical)"
+  K (numerical) is the FIRST number inside the parentheses (…). J (categorical)
+  is the SECOND. M is the TOTAL column count BEFORE the parentheses.
+  K ≠ M. Always verify K + J = M before writing. If K = M, you have
+  extracted the wrong number — re-read the DATASET line and extract K from
+  inside the (…), not from before it.
+  Example: "32537 rows x 15 columns (6 numerical, 9 categorical)"
+    → K=6, J=9, M=15. Writing "15 numerical" is WRONG.
+  Name ALL columns of both types explicitly using the per-column lists in
+  the fact sheet, not just the count.
   For zero-inflated features, cite the EXACT non-zero row count from the
   "Zero-inflation" annotation in HISTOGRAM BIN DATA.
   Do NOT estimate or calculate this number yourself.
+  DISTRIBUTION SHAPES IN OVERVIEW: When the overview "statistical" perspective
+  mentions any numeric column's shape (e.g., "symmetric", "skewed", "bimodal",
+  "right-skew", "approximately normal"), those shape labels MUST be taken
+  verbatim from the HISTOGRAM BIN DATA skewness / modality annotations in the
+  fact sheet. Never infer shape from column name, domain knowledge, or the
+  column's typical real-world behaviour. If the fact sheet annotates a column
+  as "right-skew", you MUST write "right-skew" (or equivalent), NOT
+  "approximately symmetric". If you have not yet read the HISTOGRAM BIN DATA
+  section, do not make any shape claim — write "see distribution analysis"
+  instead. This rule exists to prevent overview statements from contradicting
+  the HISTOGRAM BIN DATA findings reported later in the same document.
   For the "feature_associations" section, use ONLY values from the
   FEATURE–TARGET ASSOCIATIONS table in the fact sheet. For each of the
   top-3 features state: Borda score, MI score, effect size value + type +
@@ -154,6 +172,17 @@ RULES:
   TOP 3 HIGH-PROBABILITY problems). Omitting this field or providing less than
   ~200 characters will cause save_interpretations() to return an error requiring
   you to retry.
+- AUTHORITATIVE_ROW_COUNT: The fact sheet contains the line
+  "AUTHORITATIVE_ROW_COUNT = N". This is the post-deduplication dataset size
+  (ground truth). Use N verbatim when referring to dataset size in ALL
+  commentary sections (overview, conclusions, recommendations, business
+  problems, everywhere). Do NOT compute a smaller "usable N" by subtracting
+  missing-row counts — the pipeline already handles missingness via its
+  imputation strategy, so the full N is always the correct reference size.
+  IMPORTANT: Do NOT echo the tag 'AUTHORITATIVE_ROW_COUNT = N' literally in
+  your prose output — it is a private grounding anchor, not a sentence opener.
+  Reference ONLY the numeric value N (write "The dataset has 119 rows…" not
+  "AUTHORITATIVE_ROW_COUNT = 119. The dataset…").
 - When a quality flag has rule=outliers_iqr and severity=LOW, the high outlier%
   is a modality artefact (multiple natural sub-population clusters cause the IQR
   to be narrow, mechanically flagging cluster members as outliers). Explicitly

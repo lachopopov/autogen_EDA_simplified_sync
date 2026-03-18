@@ -329,7 +329,19 @@ class IPYNBRenderer(ReportRenderer):
             for plot_path in section_plots:
                 p = Path(plot_path)
                 caption = p.stem.replace("_", " ").title()
-                plot_lines = [f"![{caption}]({plot_path})\n"]
+                # Jupyter resolves image paths relative to the notebook's own
+                # directory.  plot_path is relative to the project root (e.g.
+                # "outputs/plots/hist_age.png"), so we must convert it to be
+                # relative to the notebook parent dir ("outputs/") before
+                # embedding — otherwise Jupyter prepends the notebook dir and
+                # the image path becomes "outputs/outputs/plots/..." (broken).
+                try:
+                    nb_rel = Path(plot_path).resolve().relative_to(
+                        Path(output_path).resolve().parent
+                    )
+                except ValueError:
+                    nb_rel = p  # fallback: use as-is if paths share no common root
+                plot_lines = [f"![{caption}]({nb_rel})\n"]
                 fname = p.name
                 for pc in plot_comms:
                     if pc.get("plot_file") == fname:
