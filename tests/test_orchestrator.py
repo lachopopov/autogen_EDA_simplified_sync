@@ -511,10 +511,10 @@ class TestToolRegistration:
         assert len(user_proxy._function_map) == 0
 
     def test_total_tool_count_across_executors(self, group_chat_components):
-        """20 total tools distributed across 6 executors."""
+        """19 total tools distributed across 6 executors (render_ipynb excluded when IPYNB_EXPORT=false)."""
         _, _, _, _, executors_dict, _ = group_chat_components
         total = sum(len(e._function_map) for e in executors_dict.values())
-        assert total == 20
+        assert total == 19
 
     @pytest.mark.parametrize("executor_name,expected_tools", [
         ("DataPrepExecutor", {"load_data", "validate_schema", "infer_dtypes"}),
@@ -522,7 +522,7 @@ class TestToolRegistration:
         ("VisualizationExecutor", {"plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap", "plot_class_distribution"}),
         ("CriticExecutor", {"run_critic_rules"}),
         ("FindingsGeneratorExecutor", {"assemble_findings", "prepare_interpretation_context", "save_interpretations"}),
-        ("ReportExporterExecutor", {"render_pdf", "render_markdown", "render_ipynb"}),
+        ("ReportExporterExecutor", {"render_pdf", "render_markdown"}),  # render_ipynb excluded when IPYNB_EXPORT=false
     ])
     def test_executor_has_correct_tools(self, group_chat_components,
                                          executor_name, expected_tools):
@@ -577,10 +577,11 @@ class TestAgentLLMConfig:
         names = self._get_tool_names(agents["FindingsGeneratorAgent"])
         assert names == {"assemble_findings", "prepare_interpretation_context", "save_interpretations"}
 
-    def test_report_has_3_tools(self, group_chat_components):
+    def test_report_has_2_tools(self, group_chat_components):
+        """When IPYNB_EXPORT=false (default), ReportExporterAgent has 2 tools."""
         _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["ReportExporterAgent"])
-        assert names == {"render_pdf", "render_markdown", "render_ipynb"}
+        assert names == {"render_pdf", "render_markdown"}
 
 
 # ---------------------------------------------------------------------------

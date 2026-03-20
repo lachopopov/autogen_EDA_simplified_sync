@@ -78,14 +78,16 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
   DISTRIBUTION SHAPES IN OVERVIEW: When the overview "statistical" perspective
   mentions any numeric column's shape (e.g., "symmetric", "skewed", "bimodal",
   "right-skew", "approximately normal"), those shape labels MUST be taken
-  verbatim from the HISTOGRAM BIN DATA skewness / modality annotations in the
-  fact sheet. Never infer shape from column name, domain knowledge, or the
-  column's typical real-world behaviour. If the fact sheet annotates a column
-  as "right-skew", you MUST write "right-skew" (or equivalent), NOT
-  "approximately symmetric". If you have not yet read the HISTOGRAM BIN DATA
-  section, do not make any shape claim — write "see distribution analysis"
-  instead. This rule exists to prevent overview statements from contradicting
-  the HISTOGRAM BIN DATA findings reported later in the same document.
+  verbatim from the `Skewness:` annotation inside HISTOGRAM BIN DATA in the
+  fact sheet (each column's HISTOGRAM DATA block ends with a `Skewness:` line
+  and a `Modality:` line — read both before writing any shape claim).
+  Never infer shape from column name, domain knowledge, or the column's typical
+  real-world behaviour. If the fact sheet annotates a column as
+  "slightly RIGHT-SKEWED", you MUST write that, NOT "approximately symmetric".
+  If you have not yet read the HISTOGRAM BIN DATA section, do not make any
+  shape claim — write "see distribution analysis" instead. This rule exists to
+  prevent overview statements from contradicting the HISTOGRAM BIN DATA
+  findings reported later in the same document.
   For the "feature_associations" section, use ONLY values from the
   FEATURE–TARGET ASSOCIATIONS table in the fact sheet. For each of the
   top-3 features state: Borda score, MI score, effect size value + type +

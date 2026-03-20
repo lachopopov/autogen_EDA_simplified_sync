@@ -73,6 +73,24 @@ def describe_stats(
     # pandas to_json handles NaN → null correctly
     desc_dict = json.loads(desc_df.to_json())
 
+    # Augment each numeric column with scipy skewness (Fisher G1, bias-corrected).
+    # Motivation: df.describe() produces only mean/median, so the downstream
+    # _build_column_stats_block() previously used a ±5% mean/median ratio proxy
+    # which is too lenient — e.g. age (actual scipy skew ≈ 0.56, "moderate" by
+    # Bulmer 1979) was labelled "approximately symmetric" because ratio ≈ 1.04.
+    # By injecting skewness_scipy here, the column stats block can use the
+    # scientifically accepted 0.5 / 1.0 thresholds (Bulmer 1979; Hair 2010).
+    # Guards:
+    #   len(s) >= 3 : pandas skew() returns NaN for N<3; json.dumps(nan) raises.
+    #   pd.isna()   : constant columns (zero variance) also produce NaN skew.
+    for col in df.select_dtypes("number").columns:
+        if col in desc_dict:
+            s = df[col].dropna()
+            skew_raw = s.skew() if len(s) >= 3 else float("nan")
+            desc_dict[col]["skewness_scipy"] = (
+                round(float(skew_raw), 4) if not pd.isna(skew_raw) else None
+            )
+
     # Validate structure through Pydantic sub-model
     EDAResults(describe=desc_dict)
 

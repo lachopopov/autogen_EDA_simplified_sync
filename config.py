@@ -42,7 +42,7 @@ LLM_CONFIG_DEV: dict = {
 LLM_CONFIG_FINAL: dict = {
     "config_list": [{
         **_BASE,
-        "model": "gpt-5-mini",
+        "model": "gpt-5",
         "price": [0.0025, 0.015],  # $2.5/$15.00 per 1M tokens
     }],
 }

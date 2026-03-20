@@ -52,6 +52,23 @@ logger = logging.getLogger(__name__)
 # artifact store.
 _eval_cost_info: dict[str, Any] = {}
 
+# Peak detection constants used in _build_histogram_metadata().
+# Named constants make the algorithm self-documenting and unit-testable.
+#
+#   PEAK_SIGMA_THRESHOLD : A local-maximum must exceed its taller neighbour by
+#       this many Poisson standard deviations to count as a genuine peak.
+#       Poisson 1σ for a bin of expected size avg_bin = n_total/n_bins is
+#       sqrt(avg_bin); 3.0 σ rejects ≈99.7% of random noise regardless of N.
+#       Validated on iris.csv (N=150, threshold≈6.7) and adult.csv (N=32537).
+#
+#   PEAK_MASS_FRACTION   : A peak bin must also hold at least this fraction of
+#       total observations.  Guards high-N datasets where the 3σ floor is met
+#       by bins that still represent only a negligible fraction of the data.
+#       At 1% the floor is 325 obs for adult age — larger than typical
+#       decade-mark micro-oscillations (≈50–200 obs prominence).
+PEAK_SIGMA_THRESHOLD: float = 3.0
+PEAK_MASS_FRACTION: float = 0.01
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -853,6 +870,20 @@ def _build_categorical_inventory(cat_analysis: CategoricalAnalysis) -> str:
                     f"{k}={r:.1f}%" for k, r in v["target_rates"].items()
                 )
                 parts.append(f"  target_rates: {rates}")
+                # Wilson CI reliability annotation (W-D fix).
+                # Maximum 95% CI half-width at p=0.5 (conservative bound):
+                #   margin = 1.96 * sqrt(0.25 / n)  [in percentage points]
+                # This flags rare-category rate estimates that look precise but
+                # carry high uncertainty — e.g. Germany n=21: ±21pp means the
+                # true rate could plausibly range over a 42pp window.
+                # Scoped to n < 100 only; n >= 100 produces no annotation to
+                # keep the fact sheet clean for high-frequency categories.
+                n_cat = int(v.get("count", 0))
+                if 0 < n_cat < 100:
+                    margin = round(1.96 * np.sqrt(0.25 / n_cat) * 100, 0)
+                    level = "VERY_LOW_N" if n_cat < 30 else "LOW_N"
+                    caution = "rates unreliable" if n_cat < 30 else "interpret with caution"
+                    parts.append(f"  [{level}: n={n_cat}, ±{margin:.0f}pp CI — {caution}]")
             lines.append("".join(parts))
         if stats.more_values > 0:
             lines.append(f"    ... and {stats.more_values} more value(s)")
@@ -1141,30 +1172,82 @@ def _build_histogram_metadata(df: pd.DataFrame, num_cols: list[str]) -> str:
             lines.append(
                 f"  [{edges[i]:.4f}, {edges[i + 1]:.4f}): {int(count)}"
             )
-        # Peak / modality detection
+        # Peak / modality detection with dataset-agnostic prominence filter.
+        # Design rationale (W-B fix):
+        #   avg_bin = expected observations per bin under a uniform distribution.
+        #   3σ Poisson floor = sqrt(avg_bin) * PEAK_SIGMA_THRESHOLD:
+        #     a peak must rise this high above its taller neighbour to clear
+        #     random Poisson noise.  Scales as √N — correct regardless of N.
+        #   1% mass floor = n_total * PEAK_MASS_FRACTION:
+        #     a peak bin must also represent at least 1% of all observations to
+        #     qualify as a meaningful mode (not just a sampling ripple in high-N
+        #     datasets where the 3σ bar alone would be numerically small).
+        #   max(..., 1.0): degenerate guard so the threshold is ≥ 1 for tiny N.
+        #   Prominence of a candidate peak = peak_count − max(left, right):
+        #     using the taller neighbour gives a conservative measure of how
+        #     much the peak stands above its immediate surroundings.
+        n_total = int(counts.sum())
+        avg_bin = n_total / max(len(counts), 1)
+        prominence_threshold = max(
+            np.sqrt(avg_bin) * PEAK_SIGMA_THRESHOLD,
+            n_total * PEAK_MASS_FRACTION,
+            1.0,
+        )
         peaks: list[dict[str, Any]] = []
         for i in range(1, len(counts) - 1):
             if counts[i] > counts[i - 1] and counts[i] > counts[i + 1]:
-                peaks.append({
-                    "bin": f"[{edges[i]:.4f}, {edges[i + 1]:.4f})",
-                    "count": int(counts[i]),
-                })
-        # Edge peaks (first / last bin)
+                prominence = int(counts[i]) - max(int(counts[i - 1]), int(counts[i + 1]))
+                if prominence >= prominence_threshold:
+                    peaks.append({
+                        "bin": f"[{edges[i]:.4f}, {edges[i + 1]:.4f})",
+                        "count": int(counts[i]),
+                    })
+        # Edge peaks (first / last bin) — one-sided prominence
         if len(counts) > 1:
             if counts[0] > counts[1]:
-                peaks.insert(0, {
-                    "bin": f"[{edges[0]:.4f}, {edges[1]:.4f})",
-                    "count": int(counts[0]),
-                })
+                prominence = int(counts[0]) - int(counts[1])
+                if prominence >= prominence_threshold:
+                    peaks.insert(0, {
+                        "bin": f"[{edges[0]:.4f}, {edges[1]:.4f})",
+                        "count": int(counts[0]),
+                    })
             if counts[-1] > counts[-2]:
-                peaks.append({
-                    "bin": f"[{edges[-2]:.4f}, {edges[-1]:.4f})",
-                    "count": int(counts[-1]),
-                })
+                prominence = int(counts[-1]) - int(counts[-2])
+                if prominence >= prominence_threshold:
+                    peaks.append({
+                        "bin": f"[{edges[-2]:.4f}, {edges[-1]:.4f})",
+                        "count": int(counts[-1]),
+                    })
         modality = "unimodal" if len(peaks) <= 1 else f"{len(peaks)}-modal"
-        lines.append(f"  Modality: {modality} ({len(peaks)} peak(s))")
+        lines.append(
+            f"  Modality: {modality} ({len(peaks)} peak(s); "
+            f"prominence ≥ {prominence_threshold:.0f} obs "
+            f"[3\u03c3 Poisson + 1% mass floor, n={n_total}])"
+        )
         for p in peaks:
             lines.append(f"  Peak: {p['bin']} at {p['count']} obs")
+        # Skewness annotation (W-C fix): provides the LLM with a direct scipy-
+        # based distribution shape label inside HISTOGRAM BIN DATA, fulfilling
+        # the DISTRIBUTION SHAPES rule in the system message which already
+        # references 'skewness / modality annotations' in this block.
+        # Thresholds mirror _build_column_stats_block() (Bulmer 1979 / Hair 2010)
+        # for consistency: both fact-sheet locations report the same label family.
+        # Guards:
+        #   series.std() == 0 → constant column → skew is undefined (NaN)
+        #   pd.isna(skew_val) → NaN from any other degenerate case
+        skew_val = float(series.skew())
+        if pd.isna(skew_val) or series.std() == 0:
+            skew_label = "undetermined (constant or insufficient data)"
+        else:
+            abs_s = abs(skew_val)
+            direction = "RIGHT" if skew_val > 0 else "LEFT"
+            if abs_s < 0.5:
+                skew_label = f"approximately symmetric (scipy skewness = {skew_val:.2f})"
+            elif abs_s < 1.0:
+                skew_label = f"slightly {direction}-SKEWED (scipy skewness = {skew_val:.2f})"
+            else:
+                skew_label = f"{direction}-SKEWED (scipy skewness = {skew_val:.2f})"
+        lines.append(f"  Skewness: {skew_label}")
         # Empty bins (gaps)
         empty = [
             f"[{edges[i]:.4f}, {edges[i + 1]:.4f})"
@@ -1206,8 +1289,27 @@ def _build_column_stats_block(describe: dict[str, Any]) -> str:
             cv = abs(std / mean) if mean and mean != 0 else 0
             lower_fence = (q25 or 0) - 1.5 * iqr
             upper_fence = (q75 or 0) + 1.5 * iqr
-            # Skew direction from mean vs median
-            if median and median != 0:
+            # Skew direction from scipy skewness (Fisher G1, bias-corrected).
+            # Thresholds follow Bulmer (1979) and Hair et al. (2010):
+            #   |skew| < 0.5  → approximately symmetric
+            #   |skew| < 1.0  → slightly skewed (moderate)
+            #   |skew| >= 1.0 → highly skewed
+            # The transparency suffix "(skewness=X.XX)" is preserved so the LLM
+            # fact sheet always shows a numeric value, not just a label.
+            # Falls back to the mean/median heuristic only when skewness_scipy is
+            # absent (e.g. manually constructed test dicts from older code paths)
+            # to preserve backward compatibility without hiding the old bug.
+            skewness_scipy = stats.get("skewness_scipy")
+            if skewness_scipy is not None:
+                abs_s = abs(skewness_scipy)
+                direction = "RIGHT" if skewness_scipy > 0 else "LEFT"
+                if abs_s < 0.5:
+                    skew_dir = f"approximately symmetric (skewness={skewness_scipy:.2f})"
+                elif abs_s < 1.0:
+                    skew_dir = f"slightly {direction}-SKEWED (skewness={skewness_scipy:.2f})"
+                else:
+                    skew_dir = f"{direction}-SKEWED (skewness={skewness_scipy:.2f})"
+            elif median and median != 0:
                 ratio = mean / median
                 if ratio > 1.05:
                     skew_dir = "RIGHT-SKEWED"
