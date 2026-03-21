@@ -5,12 +5,12 @@ Architecture Reference: architecture.md § 9
 AG2 Version: 0.10.3
 
 Models:
-  - gpt-5-nano  ($0.05 / $0.40 per 1M tokens) — dev & iteration
-  - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) — final validation only
+  - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) — dev & iteration
+  - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) and gpt-5  ($2.50 / $15.00 per 1M tokens) for FindingsGeneratorAgent only — final validation only
 
 Usage:
-  EDA_MODE=dev   → gpt-5-nano  (default)
-  EDA_MODE=final → gpt-5-mini
+  EDA_MODE=dev   → gpt-5-mini  (default)
+  EDA_MODE=final → gpt-5-mini + gpt-5 for FindingsGeneratorAgent
 """
 
 import os
@@ -34,11 +34,12 @@ _BASE: dict = {
 LLM_CONFIG_DEV: dict = {
     "config_list": [{
         **_BASE,
-        "model": "gpt-5-nano",
-        "price": [0.00005, 0.0004],  # $0.05/$0.40 per 1M tokens
+        "model": "gpt-5-mini",
+        "price": [0.00025, 0.002],  # $0.25/$2.00 per 1M tokens
     }],
 }
 
+#sets the config of FindingsGeneratorAgent to use gpt-5 instead of gpt-5-mini, while keeping the rest of the agents on gpt-5-mini. 
 LLM_CONFIG_FINAL: dict = {
     "config_list": [{
         **_BASE,
@@ -46,10 +47,18 @@ LLM_CONFIG_FINAL: dict = {
         "price": [0.0025, 0.015],  # $2.5/$15.00 per 1M tokens
     }],
 }
+# For cost control during final validation, only the FindingsGeneratorAgent uses gpt-5; all other agents remain on gpt-5-mini. This allows us to validate the critical findings generation step with the more powerful model while keeping overall costs manageable.
 
+LLM_CONFIG_FINAL_REST: dict = {
+    "config_list": [{
+        **_BASE,
+        "model": "gpt-5-mini",
+        "price": [0.0025, 0.015],  # $2.5/$15.00 per 1M tokens
+    }],
+}
 # --- Active configuration (selected via EDA_MODE environment variable) ---
 LLM_CONFIG: dict = (
-    LLM_CONFIG_FINAL if os.getenv("EDA_MODE") == "final" else LLM_CONFIG_DEV
+    LLM_CONFIG_FINAL_REST if os.getenv("EDA_MODE") == "final" else LLM_CONFIG_DEV
 )
 
 # --- Project paths ---

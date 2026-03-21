@@ -419,11 +419,11 @@ class TestCostTracking:
         mock_gather.return_value = {
             "usage_including_cached_inference": {
                 "total_cost": 0.04,
-                "gpt-5-nano": {"cost": 0.04, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
+                "gpt-5-mini": {"cost": 0.04, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
             },
             "usage_excluding_cached_inference": {
                 "total_cost": 0.04,
-                "gpt-5-nano": {"cost": 0.04, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
+                "gpt-5-mini": {"cost": 0.04, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
             },
         }
 
@@ -451,7 +451,7 @@ class TestCostTracking:
         agent_a = MagicMock()
         agent_a.name = "DataPrepAgent"
         agent_a.get_total_usage.return_value = {
-            "gpt-5-nano": {"cost": 0.001, "prompt_tokens": 500, "completion_tokens": 100},
+            "gpt-5-mini": {"cost": 0.001, "prompt_tokens": 500, "completion_tokens": 100},
         }
         agent_b = MagicMock()
         agent_b.name = "FindingsGeneratorAgent"
@@ -469,7 +469,7 @@ class TestCostTracking:
         content = (out / "cost_summary.txt").read_text(encoding="utf-8")
         assert "DataPrepAgent" in content
         assert "FindingsGeneratorAgent" in content
-        assert "gpt-5-nano" in content
+        assert "gpt-5-mini" in content
         assert "gpt-5-mini" in content
 
     @patch("autogen.gather_usage_summary")
@@ -548,7 +548,7 @@ class TestCostTracking:
         agent_with_usage = MagicMock()
         agent_with_usage.name = "EDAAnalysisAgent"
         agent_with_usage.get_total_usage.return_value = {
-            "gpt-5-nano": {"cost": 0.002, "prompt_tokens": 1000, "completion_tokens": 300},
+            "gpt-5-mini": {"cost": 0.002, "prompt_tokens": 1000, "completion_tokens": 300},
         }
         agent_no_usage = MagicMock()
         agent_no_usage.name = "SkippedAgent"
@@ -580,7 +580,7 @@ class TestCostTracking:
         agent_a = MagicMock()
         agent_a.name = "DataPrepAgent"
         agent_a.get_total_usage.return_value = {
-            "gpt-5-nano": {"cost": 0.001, "prompt_tokens": 500, "completion_tokens": 100},
+            "gpt-5-mini": {"cost": 0.001, "prompt_tokens": 500, "completion_tokens": 100},
         }
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent_a])
         mock_gather.return_value = {
@@ -615,12 +615,12 @@ class TestCostTracking:
         agent_a = MagicMock()
         agent_a.name = "TestAgent"
         agent_a.get_total_usage.return_value = {
-            "gpt-5-nano": {"cost": 0.01, "prompt_tokens": 1000, "completion_tokens": 200},
+            "gpt-5-mini": {"cost": 0.01, "prompt_tokens": 1000, "completion_tokens": 200},
         }
         usage_dict = {
             "usage_including_cached_inference": {
                 "total_cost": 0.01,
-                "gpt-5-nano": {"cost": 0.01, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
+                "gpt-5-mini": {"cost": 0.01, "prompt_tokens": 1000, "completion_tokens": 200, "total_tokens": 1200},
             },
         }
         eval_cost = {

@@ -12,8 +12,8 @@ Tools:
   - save_interpretations(json)       → validate & store LLM commentary
   - assemble_findings(...)           → merge facts + commentary into sections
 
-Model: gpt-5-mini (LLM_CONFIG_FINAL) — upgraded for interpretation quality.
-       All other agents use gpt-5-nano.
+Model: gpt-5 (LLM_CONFIG_FINAL) — upgraded for interpretation quality.
+       All other agents use gpt-5-mini.
 
 Tool registration uses the AG2 canonical chained-decorator pattern:
   @agent.register_for_llm(description="...")

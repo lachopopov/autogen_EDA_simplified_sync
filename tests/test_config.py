@@ -6,13 +6,13 @@ project paths, and feature toggles.
 """
 
 class TestLLMConfigDev:
-    """Default (dev) mode uses gpt-5-nano."""
+    """Default (dev) mode uses gpt-5-mini."""
 
     def test_dev_model_name(self):
         import config
 
         model = config.LLM_CONFIG_DEV["config_list"][0]["model"]
-        assert model == "gpt-5-nano"
+        assert model == "gpt-5-mini"
 
     def test_dev_no_temperature_key(self):
         import config
@@ -45,19 +45,19 @@ class TestLLMConfigDev:
         import config
 
         price = config.LLM_CONFIG_DEV["config_list"][0]["price"]
-        # gpt-5-nano: $0.05/1M prompt, $0.40/1M completion → per 1K
-        assert price[0] == 0.00005
-        assert price[1] == 0.0004
+        # gpt-5-mini: $0.25/1M prompt, $2.00/1M completion → per 1K
+        assert price[0] == 0.00025
+        assert price[1] == 0.002
 
 
 class TestLLMConfigFinal:
-    """Final mode uses gpt-5-mini."""
+    """Final mode uses gpt-5."""
 
     def test_final_model_name(self):
         import config
 
         model = config.LLM_CONFIG_FINAL["config_list"][0]["model"]
-        assert model == "gpt-5-mini"
+        assert model == "gpt-5"
 
     def test_final_no_temperature_key(self):
         import config
@@ -83,9 +83,9 @@ class TestLLMConfigFinal:
         import config
 
         price = config.LLM_CONFIG_FINAL["config_list"][0]["price"]
-        # gpt-5-mini: $0.25/1M prompt, $2.00/1M completion → per 1K
-        assert price[0] == 0.00025
-        assert price[1] == 0.002
+        # gpt-5: $2.50/1M prompt, $15.00/1M completion → per 1K
+        assert price[0] == 0.0025
+        assert price[1] == 0.015
 
 
 class TestEDAModeSwitch:
@@ -98,7 +98,7 @@ class TestEDAModeSwitch:
         import config
 
         importlib.reload(config)
-        assert config.LLM_CONFIG["config_list"][0]["model"] == "gpt-5-nano"
+        assert config.LLM_CONFIG["config_list"][0]["model"] == "gpt-5-mini"
 
     def test_final_mode_selects_mini(self, monkeypatch):
         monkeypatch.setenv("EDA_MODE", "final")
@@ -114,7 +114,7 @@ class TestEDAModeSwitch:
         import config
 
         importlib.reload(config)
-        assert config.LLM_CONFIG["config_list"][0]["model"] == "gpt-5-nano"
+        assert config.LLM_CONFIG["config_list"][0]["model"] == "gpt-5-mini"
 
 
 class TestProjectPaths:
@@ -185,7 +185,7 @@ class TestFeatureToggles:
         import config
 
         importlib.reload(config)
-        assert config.MAX_ROUNDS == 50
+        assert config.MAX_ROUNDS == 70
 
     def test_max_rounds_override(self, monkeypatch):
         monkeypatch.setenv("MAX_ROUNDS", "30")
