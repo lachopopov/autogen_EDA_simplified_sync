@@ -32,7 +32,7 @@ from typing import Annotated
 
 import pandas as pd
 
-from eda_state import DataProfile, TargetInfo
+from eda_state import DataProfile, EncodedCategoricalSuspect, TargetInfo
 
 logger = logging.getLogger(__name__)
 
@@ -214,12 +214,63 @@ def infer_dtypes(
     numerical_cols = df.select_dtypes(include="number").columns.tolist()
     categorical_cols = df.select_dtypes(exclude="number").columns.tolist()
 
+    # Apply pre-pipeline reclassification (if user confirmed encoded categoricals).
+    # Moves confirmed columns from numerical_cols → categorical_cols and records
+    # them in encoded_categorical_cols for traceability.
+    encoded_categorical_cols: list[str] = []
+    if is_active():
+        from tools._pipeline_state import load_state
+        reclass_raw = load_state("reclassified_categoricals")
+        if reclass_raw:
+            try:
+                reclass_list = json.loads(reclass_raw)
+                for col in reclass_list:
+                    if col in numerical_cols:
+                        numerical_cols.remove(col)
+                        categorical_cols.append(col)
+                        encoded_categorical_cols.append(col)
+                if encoded_categorical_cols:
+                    logger.info(
+                        "Reclassified %d encoded categorical(s): %s",
+                        len(encoded_categorical_cols), encoded_categorical_cols,
+                    )
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    # PHYSICAL DTYPE CAST — convert reclassified columns from numeric
+    # (int64/float64) to string (object) in the DataFrame itself.
+    # Why: every downstream function that calls df.select_dtypes("number")
+    # will now correctly *exclude* these columns; string dtype survives the
+    # JSON round-trip (artifact store) because JSON strings → pandas object.
+    if encoded_categorical_cols:
+        for col in encoded_categorical_cols:
+            s = df[col]
+            non_null = s.dropna()
+            # NaN-safe int → str: avoid "1.0" by casting to int first
+            # when all non-null values are integer-valued.
+            if len(non_null) > 0 and (non_null == non_null.astype(int)).all():
+                df[col] = non_null.astype(int).astype(str).reindex(s.index)
+            else:
+                mask = s.isna()
+                df[col] = s.astype(str)
+                df.loc[mask, col] = None
+        # Overwrite data_json in artifact store so every downstream tool
+        # (describe_stats, correlation_matrix, critic_rules, plot_histograms,
+        # _build_column_stats_block, …) receives the corrected dtypes.
+        save_state("data_json", df.to_json(orient="records"))
+        logger.info(
+            "Cast %d encoded categorical column(s) to string dtype "
+            "in artifact store: %s",
+            len(encoded_categorical_cols), encoded_categorical_cols,
+        )
+
     profile = DataProfile(
         shape=(df.shape[0], df.shape[1]),
         memory_mb=round(df.memory_usage(deep=True).sum() / 1e6, 3),
         dtypes={str(col): str(dtype) for col, dtype in df.dtypes.items()},
         numerical_cols=numerical_cols,
         categorical_cols=categorical_cols,
+        encoded_categorical_cols=encoded_categorical_cols,
     )
     logger.info("Inferred dtypes: %d numerical, %d categorical",
                 len(numerical_cols), len(categorical_cols))
@@ -378,3 +429,145 @@ def detect_target(data_json: str) -> str:
     )
     logger.info("No target candidate detected — unsupervised")
     return info.model_dump_json()
+
+
+# ---------------------------------------------------------------------------
+# Encoded-categorical detection (pre-pipeline, called from main.py)
+# ---------------------------------------------------------------------------
+
+# Pre-filter: only columns with nunique ≤ this are sent to the LLM.
+# Columns above this cardinality are almost certainly continuous numerics.
+_MAX_PROFILED_CARDINALITY: int = 30
+
+
+def _build_column_profiles(df: pd.DataFrame) -> list[dict]:
+    """Build compact profiles for numeric columns suitable for LLM classification.
+
+    Only columns with nunique ≤ _MAX_PROFILED_CARDINALITY are included (the
+    rest are unambiguously continuous).  This keeps the LLM prompt small.
+
+    Returns:
+        List of dicts, each with keys: name, dtype, nunique, n_rows,
+        sample_values, min, max, is_all_integer.
+    """
+    profiles: list[dict] = []
+    num_cols = df.select_dtypes(include="number").columns
+    for col in num_cols:
+        series = df[col].dropna()
+        nunique = int(series.nunique())
+        if nunique > _MAX_PROFILED_CARDINALITY:
+            continue
+        # Sample values: sorted unique values (up to 15 for readability)
+        unique_vals = sorted(series.unique().tolist())
+        sample = unique_vals[:15]
+        is_all_int = bool((series == series.astype(int)).all()) if len(series) > 0 else False
+        profiles.append({
+            "name": str(col),
+            "dtype": str(series.dtype),
+            "nunique": nunique,
+            "n_rows": len(df),
+            "sample_values": sample,
+            "min": float(series.min()) if len(series) > 0 else 0.0,
+            "max": float(series.max()) if len(series) > 0 else 0.0,
+            "is_all_integer": is_all_int,
+        })
+    return profiles
+
+
+_LLM_SYSTEM_PROMPT = """\
+You are a senior data scientist. Given column profiles from a dataset, identify \
+which numeric columns are actually encoded categorical variables (e.g., SEX \
+encoded as 1/2, EDUCATION as 1/2/3/4, repayment status codes like -2,-1,0,1,...8).
+
+For each suspected column, provide:
+- column: the exact column name
+- reason: one sentence explaining why (mention name semantics + value pattern)
+- subtype: "nominal" or "ordinal"
+
+Rules:
+- Only flag columns you are confident about.
+- Do NOT flag true continuous numerics (age, salary, amounts, balances, counts).
+- Do NOT flag ID/index columns.
+- Do NOT flag binary targets (0/1 class labels) — those are handled separately.
+- When in doubt, do NOT flag the column.
+
+Return valid JSON: {"suspects": [{"column": "...", "reason": "...", "subtype": "..."}]}
+If no columns are suspected, return: {"suspects": []}"""
+
+
+def detect_encoded_categoricals(
+    df: pd.DataFrame,
+    *,
+    target_column: str | None = None,
+) -> list[EncodedCategoricalSuspect]:
+    """Detect numeric columns that are likely encoded categoricals via an LLM call.
+
+    Pre-pipeline function called from main.py (same pattern as detect_target).
+    Returns a list of suspects with reasoning; the caller handles user confirmation.
+
+    Args:
+        df: The loaded (deduplicated) DataFrame.
+        target_column: If set, excluded from profiling (handled by target detection).
+
+    Returns:
+        List of EncodedCategoricalSuspect (may be empty).
+    """
+    profiles = _build_column_profiles(df)
+    # Exclude target column from candidates (already classified by detect_target)
+    if target_column:
+        profiles = [p for p in profiles if p["name"] != target_column]
+    if not profiles:
+        logger.info("No low-cardinality numeric columns to evaluate for reclassification")
+        return []
+
+    # Build user prompt
+    profile_text = json.dumps(profiles, indent=2)
+    user_prompt = (
+        f"Dataset has {len(df)} rows and {len(df.columns)} columns.\n"
+        f"Column profiles for low-cardinality numeric columns:\n{profile_text}"
+    )
+
+    try:
+        from openai import OpenAI
+        from config import RECLASSIFY_MODEL
+        client = OpenAI()
+        resp = client.chat.completions.create(
+            model=RECLASSIFY_MODEL,
+            messages=[
+                {"role": "system", "content": _LLM_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content or "{}"
+        result = json.loads(raw)
+    except Exception:
+        logger.warning(
+            "Encoded-categorical LLM detection failed — skipping reclassification",
+            exc_info=True,
+        )
+        return []
+
+    suspects: list[EncodedCategoricalSuspect] = []
+    profile_map = {p["name"]: p for p in profiles}
+    for s in result.get("suspects", []):
+        col_name = s.get("column", "")
+        if col_name not in profile_map:
+            continue  # LLM hallucinated a column name — skip
+        p = profile_map[col_name]
+        suspects.append(EncodedCategoricalSuspect(
+            column=col_name,
+            nunique=p["nunique"],
+            sample_values=p["sample_values"],
+            min_val=p["min"],
+            max_val=p["max"],
+            is_all_integer=p["is_all_integer"],
+            reason=s.get("reason", ""),
+            subtype=s.get("subtype", "nominal"),
+        ))
+
+    logger.info(
+        "Encoded-categorical detection: %d suspect(s) from %d profiled columns",
+        len(suspects), len(profiles),
+    )
+    return suspects

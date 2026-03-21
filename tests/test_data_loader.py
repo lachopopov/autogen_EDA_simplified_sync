@@ -16,9 +16,12 @@ from tools.data_loader import (
     ExcelLoader,
     ParquetLoader,
     _LOADERS,
+    _MAX_PROFILED_CARDINALITY,
+    _build_column_profiles,
     _get_loader,
     _has_datetime_column,
     _classify_target,
+    detect_encoded_categoricals,
     detect_target,
     infer_dtypes,
     load_data,
@@ -512,5 +515,386 @@ class TestDuplicateCountArtifact:
             validate_schema(data_json)
             profile_json = json.loads(load_state("schema_json"))
             assert profile_json.get("duplicate_count", -1) == 0
+        finally:
+            clear_session()
+
+
+# ---------------------------------------------------------------------------
+# _build_column_profiles()
+# ---------------------------------------------------------------------------
+
+class TestBuildColumnProfiles:
+    """Tests for the column profiling function used by LLM detection."""
+
+    @pytest.fixture()
+    def encoded_df(self):
+        """DataFrame with encoded categoricals + continuous columns."""
+        return pd.DataFrame({
+            "SEX": [1, 2, 1, 2, 1, 2] * 10,
+            "EDUCATION": [1, 2, 3, 4, 1, 2] * 10,
+            "AGE": list(range(22, 82)),
+            "SALARY": [50000 + i * 1000 for i in range(60)],
+            "name": ["alice"] * 60,
+        })
+
+    def test_returns_list_of_dicts(self, encoded_df):
+        profiles = _build_column_profiles(encoded_df)
+        assert isinstance(profiles, list)
+        for p in profiles:
+            assert isinstance(p, dict)
+
+    def test_includes_low_cardinality_numeric(self, encoded_df):
+        profiles = _build_column_profiles(encoded_df)
+        names = [p["name"] for p in profiles]
+        assert "SEX" in names
+        assert "EDUCATION" in names
+
+    def test_excludes_high_cardinality_numeric(self, encoded_df):
+        profiles = _build_column_profiles(encoded_df)
+        names = [p["name"] for p in profiles]
+        assert "AGE" not in names
+        assert "SALARY" not in names
+
+    def test_excludes_non_numeric(self, encoded_df):
+        profiles = _build_column_profiles(encoded_df)
+        names = [p["name"] for p in profiles]
+        assert "name" not in names
+
+    def test_profile_keys(self, encoded_df):
+        profiles = _build_column_profiles(encoded_df)
+        expected_keys = {"name", "dtype", "nunique", "n_rows", "sample_values",
+                         "min", "max", "is_all_integer"}
+        for p in profiles:
+            assert set(p.keys()) == expected_keys
+
+    def test_is_all_integer_true_for_int_cols(self, encoded_df):
+        profiles = _build_column_profiles(encoded_df)
+        sex_profile = next(p for p in profiles if p["name"] == "SEX")
+        assert sex_profile["is_all_integer"] is True
+
+    def test_nunique_correct(self, encoded_df):
+        profiles = _build_column_profiles(encoded_df)
+        sex_profile = next(p for p in profiles if p["name"] == "SEX")
+        assert sex_profile["nunique"] == 2
+
+    def test_empty_dataframe(self):
+        df = pd.DataFrame()
+        profiles = _build_column_profiles(df)
+        assert profiles == []
+
+    def test_all_high_cardinality(self):
+        df = pd.DataFrame({"x": list(range(100))})
+        profiles = _build_column_profiles(df)
+        assert profiles == []
+
+
+# ---------------------------------------------------------------------------
+# detect_encoded_categoricals() — mocked LLM
+# ---------------------------------------------------------------------------
+
+class TestDetectEncodedCategoricals:
+    """Tests for the LLM-based encoded categorical detection (mocked API)."""
+
+    @pytest.fixture()
+    def encoded_df(self):
+        return pd.DataFrame({
+            "SEX": [1, 2, 1, 2, 1, 2] * 10,
+            "EDUCATION": [1, 2, 3, 4, 1, 2] * 10,
+            "AGE": list(range(22, 82)),
+            "target": [0, 1] * 30,
+        })
+
+    def _mock_openai_response(self, suspects_json):
+        """Create a mock OpenAI response object."""
+        from unittest.mock import MagicMock
+        mock_message = MagicMock()
+        mock_message.content = json.dumps(suspects_json)
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_resp = MagicMock()
+        mock_resp.choices = [mock_choice]
+        return mock_resp
+
+    def test_returns_suspects_from_llm(self, encoded_df):
+        from unittest.mock import MagicMock, patch
+        resp = self._mock_openai_response({
+            "suspects": [
+                {"column": "SEX", "reason": "Binary gender code", "subtype": "nominal"},
+                {"column": "EDUCATION", "reason": "Education level codes", "subtype": "ordinal"},
+            ]
+        })
+        mock_client = MagicMock()
+        mock_client.return_value.chat.completions.create.return_value = resp
+        with patch("openai.OpenAI", mock_client):
+            suspects = detect_encoded_categoricals(encoded_df, target_column="target")
+        assert len(suspects) == 2
+        names = [s.column for s in suspects]
+        assert "SEX" in names
+        assert "EDUCATION" in names
+
+    def test_excludes_target_column(self, encoded_df):
+        from unittest.mock import MagicMock, patch
+        resp = self._mock_openai_response({
+            "suspects": [
+                {"column": "target", "reason": "should be filtered", "subtype": "nominal"},
+                {"column": "SEX", "reason": "gender code", "subtype": "nominal"},
+            ]
+        })
+        mock_client = MagicMock()
+        mock_client.return_value.chat.completions.create.return_value = resp
+        with patch("openai.OpenAI", mock_client):
+            suspects = detect_encoded_categoricals(encoded_df, target_column="target")
+        # "target" should be excluded from profiles, so LLM's suggestion is filtered
+        names = [s.column for s in suspects]
+        assert "target" not in names
+
+    def test_ignores_hallucinated_columns(self, encoded_df):
+        from unittest.mock import MagicMock, patch
+        resp = self._mock_openai_response({
+            "suspects": [
+                {"column": "NONEXISTENT", "reason": "hallucinated", "subtype": "nominal"},
+                {"column": "SEX", "reason": "gender code", "subtype": "nominal"},
+            ]
+        })
+        mock_client = MagicMock()
+        mock_client.return_value.chat.completions.create.return_value = resp
+        with patch("openai.OpenAI", mock_client):
+            suspects = detect_encoded_categoricals(encoded_df, target_column="target")
+        assert len(suspects) == 1
+        assert suspects[0].column == "SEX"
+
+    def test_empty_suspects(self, encoded_df):
+        from unittest.mock import MagicMock, patch
+        resp = self._mock_openai_response({"suspects": []})
+        mock_client = MagicMock()
+        mock_client.return_value.chat.completions.create.return_value = resp
+        with patch("openai.OpenAI", mock_client):
+            suspects = detect_encoded_categoricals(encoded_df, target_column="target")
+        assert suspects == []
+
+    def test_llm_failure_returns_empty(self, encoded_df):
+        from unittest.mock import MagicMock, patch
+        mock_client = MagicMock()
+        mock_client.return_value.chat.completions.create.side_effect = RuntimeError("API error")
+        with patch("openai.OpenAI", mock_client):
+            suspects = detect_encoded_categoricals(encoded_df, target_column="target")
+        assert suspects == []
+
+    def test_no_low_cardinality_returns_empty(self):
+        df = pd.DataFrame({"x": list(range(100)), "y": list(range(100, 200))})
+        # No columns with nunique ≤ 30, so no LLM call needed
+        suspects = detect_encoded_categoricals(df)
+        assert suspects == []
+
+    def test_suspect_has_correct_fields(self, encoded_df):
+        from unittest.mock import MagicMock, patch
+        resp = self._mock_openai_response({
+            "suspects": [
+                {"column": "SEX", "reason": "Binary gender code", "subtype": "nominal"},
+            ]
+        })
+        mock_client = MagicMock()
+        mock_client.return_value.chat.completions.create.return_value = resp
+        with patch("openai.OpenAI", mock_client):
+            suspects = detect_encoded_categoricals(encoded_df, target_column="target")
+        s = suspects[0]
+        assert s.column == "SEX"
+        assert s.nunique == 2
+        assert s.is_all_integer is True
+        assert s.reason == "Binary gender code"
+        assert s.subtype == "nominal"
+        assert 1 in s.sample_values
+        assert 2 in s.sample_values
+
+
+# ---------------------------------------------------------------------------
+# infer_dtypes() — reclassification via artifact store
+# ---------------------------------------------------------------------------
+
+class TestInferDtypesReclassification:
+    """Test that infer_dtypes() applies reclassification from the artifact store."""
+
+    def test_reclassified_columns_move_to_categorical(self):
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({
+            "SEX": [1, 2, 1, 2],
+            "AGE": [25, 30, 35, 40],
+            "name": ["a", "b", "c", "d"],
+        })
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            save_state("reclassified_categoricals", json.dumps(["SEX"]))
+            infer_dtypes(data_json)
+            result = json.loads(load_state("dtypes_json"))
+            # SEX should be in categorical, not numerical
+            assert "SEX" in result["categorical_cols"]
+            assert "SEX" not in result["numerical_cols"]
+            # AGE remains numerical
+            assert "AGE" in result["numerical_cols"]
+        finally:
+            clear_session()
+
+    def test_encoded_categorical_cols_populated(self):
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({
+            "SEX": [1, 2, 1, 2],
+            "EDUCATION": [1, 2, 3, 4],
+            "AGE": [25, 30, 35, 40],
+        })
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            save_state("reclassified_categoricals", json.dumps(["SEX", "EDUCATION"]))
+            infer_dtypes(data_json)
+            result = json.loads(load_state("dtypes_json"))
+            assert set(result["encoded_categorical_cols"]) == {"SEX", "EDUCATION"}
+        finally:
+            clear_session()
+
+    def test_no_reclassification_without_artifact(self):
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({"SEX": [1, 2], "name": ["a", "b"]})
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            # No reclassified_categoricals artifact saved
+            infer_dtypes(data_json)
+            result = json.loads(load_state("dtypes_json"))
+            assert "SEX" in result["numerical_cols"]
+            assert result["encoded_categorical_cols"] == []
+        finally:
+            clear_session()
+
+    def test_invalid_column_in_artifact_ignored(self):
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({"SEX": [1, 2], "name": ["a", "b"]})
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            save_state("reclassified_categoricals", json.dumps(["NONEXISTENT"]))
+            infer_dtypes(data_json)
+            result = json.loads(load_state("dtypes_json"))
+            # NONEXISTENT should be silently ignored
+            assert result["encoded_categorical_cols"] == []
+            assert "SEX" in result["numerical_cols"]
+        finally:
+            clear_session()
+
+
+class TestInferDtypesStringCasting:
+    """Verify that reclassified columns are physically cast to str in the artifact store."""
+
+    def test_artifact_data_json_has_string_values(self):
+        """After casting, the data_json artifact should contain string values."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({
+            "SEX": [1, 2, 1, 2],
+            "AGE": [25, 30, 35, 40],
+            "name": ["a", "b", "c", "d"],
+        })
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            save_state("reclassified_categoricals", json.dumps(["SEX"]))
+            infer_dtypes(data_json)
+            # Re-read data_json from artifact store and verify dtype
+            stored = load_state("data_json")
+            df_after = pd.DataFrame(json.loads(stored))
+            assert df_after["SEX"].dtype == object
+            assert df_after["SEX"].tolist() == ["1", "2", "1", "2"]
+            # AGE remains numeric
+            assert pd.api.types.is_numeric_dtype(df_after["AGE"])
+        finally:
+            clear_session()
+
+    def test_select_dtypes_excludes_cast_columns(self):
+        """Downstream select_dtypes('number') must not include cast columns."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({
+            "SEX": [1, 2, 1, 2],
+            "EDUCATION": [1, 2, 3, 4],
+            "AGE": [25, 30, 35, 40],
+        })
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            save_state("reclassified_categoricals", json.dumps(["SEX", "EDUCATION"]))
+            infer_dtypes(data_json)
+            stored = load_state("data_json")
+            df_after = pd.DataFrame(json.loads(stored))
+            num_cols = df_after.select_dtypes(include="number").columns.tolist()
+            obj_cols = df_after.select_dtypes(include="object").columns.tolist()
+            assert "SEX" not in num_cols
+            assert "EDUCATION" not in num_cols
+            assert "AGE" in num_cols
+            assert "SEX" in obj_cols
+            assert "EDUCATION" in obj_cols
+        finally:
+            clear_session()
+
+    def test_nan_preserved_through_cast(self):
+        """NaN values must survive the int→str cast (not become the string 'nan')."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({
+            "SEX": [1, 2, None, 1],
+            "AGE": [25, 30, 35, 40],
+        })
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            save_state("reclassified_categoricals", json.dumps(["SEX"]))
+            infer_dtypes(data_json)
+            stored = load_state("data_json")
+            df_after = pd.DataFrame(json.loads(stored))
+            assert df_after["SEX"].dtype == object
+            # Non-null values are clean strings (no ".0" suffix)
+            assert df_after.loc[0, "SEX"] == "1"
+            assert df_after.loc[1, "SEX"] == "2"
+            # NaN preserved as actual NaN (not the string "nan")
+            assert pd.isna(df_after.loc[2, "SEX"])
+            assert df_after.loc[3, "SEX"] == "1"
+        finally:
+            clear_session()
+
+    def test_dataprofile_dtypes_reflect_object(self):
+        """DataProfile.dtypes dict should show 'object' for cast columns."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({
+            "SEX": [1, 2, 1, 2],
+            "AGE": [25, 30, 35, 40],
+        })
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            save_state("reclassified_categoricals", json.dumps(["SEX"]))
+            infer_dtypes(data_json)
+            profile = json.loads(load_state("dtypes_json"))
+            assert profile["dtypes"]["SEX"] == "object"
+            assert profile["dtypes"]["AGE"] == "int64"
+        finally:
+            clear_session()
+
+    def test_no_cast_without_reclassification(self):
+        """When no columns are reclassified, data_json remains unmodified."""
+        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        df = pd.DataFrame({"SEX": [1, 2], "AGE": [25, 30]})
+        data_json = df.to_json(orient="records")
+        try:
+            init_session()
+            save_state("data_json", data_json)
+            # No reclassified_categoricals artifact
+            infer_dtypes(data_json)
+            stored = load_state("data_json")
+            # data_json unchanged — still the original
+            assert stored == data_json
         finally:
             clear_session()

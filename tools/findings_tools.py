@@ -80,6 +80,7 @@ def _build_overview_section(
     duplicate_count: int = 0,
     categorical_cols: list[str] | None = None,
     numerical_cols: list[str] | None = None,
+    encoded_categorical_cols: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the overview section from EDA describe stats.
 
@@ -94,6 +95,8 @@ def _build_overview_section(
         numerical_cols: Names of numerical columns from DataProfile.  When
             supplied alongside categorical_cols, both type lists are named
             explicitly so no column type is anonymous in the overview.
+        encoded_categorical_cols: Columns reclassified from numerical to categorical
+            (subset of categorical_cols).  When present, a transparency note is added.
     """
     if shape is not None:
         row_count, num_columns = shape
@@ -113,21 +116,34 @@ def _build_overview_section(
         n_num = len(numerical_cols) if numerical_cols else (num_columns - n_cat)
         num_names = ", ".join(numerical_cols) if numerical_cols else ""
         cat_names = ", ".join(categorical_cols) if categorical_cols else ""
+        # Add encoded-categorical annotation to the composition line
+        enc_note = ""
+        if encoded_categorical_cols:
+            enc_names = ", ".join(encoded_categorical_cols)
+            enc_note = (
+                f" ({len(encoded_categorical_cols)} encoded as integers: {enc_names})"
+            )
         if num_names and cat_names:
             parts.append(
                 f"Column composition: {n_num} numerical ({num_names}); "
-                f"{n_cat} categorical ({cat_names})."
+                f"{n_cat} categorical{enc_note} ({cat_names})."
             )
         elif cat_names:
             parts.append(
-                f"Column composition: {n_num} numerical, {n_cat} categorical "
+                f"Column composition: {n_num} numerical, {n_cat} categorical{enc_note} "
                 f"({cat_names})."
             )
         else:
             parts.append(
                 f"Column composition: {n_num} numerical ({num_names}), "
-                f"{n_cat} categorical."
+                f"{n_cat} categorical{enc_note}."
             )
+    if encoded_categorical_cols:
+        enc_names = ", ".join(encoded_categorical_cols)
+        parts.append(
+            f"Note: {enc_names} {'are' if len(encoded_categorical_cols) > 1 else 'is'} "
+            f"numerically encoded but reclassified as categorical for analysis."
+        )
     if duplicate_count > 0:
         dup_pct = duplicate_count / max(row_count + duplicate_count, 1) * 100
         parts.append(
@@ -1939,6 +1955,7 @@ def assemble_findings(
         _duplicate_count: int = 0
         _categorical_cols: list[str] | None = None
         _numerical_cols: list[str] | None = None
+        _encoded_categorical_cols: list[str] | None = None
         schema_raw = load_state("schema_json")
         if schema_raw:
             try:
@@ -1949,6 +1966,8 @@ def assemble_findings(
                     _categorical_cols = _dp.categorical_cols
                 if _dp.numerical_cols:
                     _numerical_cols = _dp.numerical_cols
+                if _dp.encoded_categorical_cols:
+                    _encoded_categorical_cols = _dp.encoded_categorical_cols
             except Exception:
                 pass  # Non-critical — overview falls back to describe
         # Fallback: try dtypes_json if schema_json omitted column lists
@@ -1961,6 +1980,8 @@ def assemble_findings(
                         _categorical_cols = _dp2.categorical_cols
                     if _numerical_cols is None and _dp2.numerical_cols:
                         _numerical_cols = _dp2.numerical_cols
+                    if _encoded_categorical_cols is None and _dp2.encoded_categorical_cols:
+                        _encoded_categorical_cols = _dp2.encoded_categorical_cols
                 except Exception:
                     pass
 
@@ -2011,6 +2032,7 @@ def assemble_findings(
         _duplicate_count = 0
         _categorical_cols = None
         _numerical_cols = None
+        _encoded_categorical_cols = None
 
     # Determine if this is the final iteration
     is_final = critic.status == "APPROVED" or critic.iteration >= 2
@@ -2092,6 +2114,7 @@ def assemble_findings(
             eda, shape=_shape, duplicate_count=_duplicate_count,
             categorical_cols=_categorical_cols,
             numerical_cols=_numerical_cols,
+            encoded_categorical_cols=_encoded_categorical_cols,
         ),
         "overview",
     )

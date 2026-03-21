@@ -1938,3 +1938,93 @@ class TestBuildCategoricalSection:
         inv = _build_categorical_inventory(classification_analysis)
         assert "target_rates" in inv
         assert "yes=" in inv
+
+
+# ---------------------------------------------------------------------------
+# _build_overview_section — encoded_categorical_cols parameter
+# ---------------------------------------------------------------------------
+
+
+class TestBuildOverviewSectionEncodedCategoricals:
+    """Tests for the encoded_categorical_cols parameter in overview section."""
+
+    @pytest.fixture()
+    def eda_basic(self):
+        return EDAResults(describe={
+            "age": {"count": 100, "mean": 35.0, "std": 10.0, "min": 18.0,
+                    "max": 65.0, "25%": 25.0, "50%": 35.0, "75%": 45.0},
+            "sex": {"count": 100, "mean": 1.5, "std": 0.5, "min": 1.0,
+                    "max": 2.0, "25%": 1.0, "50%": 1.5, "75%": 2.0},
+        })
+
+    def test_encoded_note_in_content(self, eda_basic):
+        """When encoded_categorical_cols is provided, a reclassification note appears."""
+        section = _build_overview_section(
+            eda_basic, shape=(100, 3),
+            categorical_cols=["sex", "name"],
+            numerical_cols=["age"],
+            encoded_categorical_cols=["sex"],
+        )
+        assert "reclassified as categorical" in section["content"]
+        assert "sex" in section["content"]
+
+    def test_encoded_count_in_composition(self, eda_basic):
+        """The composition line shows the encoded count annotation."""
+        section = _build_overview_section(
+            eda_basic, shape=(100, 3),
+            categorical_cols=["sex", "name"],
+            numerical_cols=["age"],
+            encoded_categorical_cols=["sex"],
+        )
+        assert "1 encoded as integers" in section["content"]
+
+    def test_multiple_encoded_columns(self, eda_basic):
+        section = _build_overview_section(
+            eda_basic, shape=(100, 4),
+            categorical_cols=["sex", "education", "name"],
+            numerical_cols=["age"],
+            encoded_categorical_cols=["sex", "education"],
+        )
+        assert "2 encoded as integers" in section["content"]
+        assert "sex" in section["content"]
+        assert "education" in section["content"]
+
+    def test_no_encoded_no_note(self, eda_basic):
+        """When encoded_categorical_cols is None, no reclassification note."""
+        section = _build_overview_section(
+            eda_basic, shape=(100, 3),
+            categorical_cols=["name"],
+            numerical_cols=["age", "sex"],
+        )
+        assert "reclassified" not in section["content"]
+        assert "encoded" not in section["content"]
+
+    def test_empty_encoded_no_note(self, eda_basic):
+        """When encoded_categorical_cols is empty list, no note."""
+        section = _build_overview_section(
+            eda_basic, shape=(100, 3),
+            categorical_cols=["name"],
+            numerical_cols=["age", "sex"],
+            encoded_categorical_cols=[],
+        )
+        assert "reclassified" not in section["content"]
+
+    def test_singular_grammar(self, eda_basic):
+        """Single encoded column uses 'is' not 'are'."""
+        section = _build_overview_section(
+            eda_basic, shape=(100, 3),
+            categorical_cols=["sex", "name"],
+            numerical_cols=["age"],
+            encoded_categorical_cols=["sex"],
+        )
+        assert "sex is numerically encoded" in section["content"]
+
+    def test_plural_grammar(self, eda_basic):
+        """Multiple encoded columns use 'are' not 'is'."""
+        section = _build_overview_section(
+            eda_basic, shape=(100, 4),
+            categorical_cols=["sex", "education", "name"],
+            numerical_cols=["age"],
+            encoded_categorical_cols=["sex", "education"],
+        )
+        assert "are numerically encoded" in section["content"]

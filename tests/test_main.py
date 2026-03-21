@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from main import ensure_output_dirs, main, parse_args, run_pipeline, _resolve_target, _build_target_info, _init_openlit, _shutdown_openlit
+from main import ensure_output_dirs, main, parse_args, run_pipeline, _resolve_target, _build_target_info, _init_openlit, _shutdown_openlit, _confirm_reclassify_interactive, _resolve_reclassification
 
 
 # ---------------------------------------------------------------------------
@@ -941,3 +941,139 @@ class TestShutdownOpenlit:
             _shutdown_openlit()  # should not raise
         # Meter provider should still be flushed even though trace provider failed
         mock_meter_provider.force_flush.assert_called_once_with(timeout_millis=10_000)
+
+
+# ===================================================================
+# TestParseArgs — Encoded categorical CLI flags
+# ===================================================================
+
+
+class TestParseArgsCategoricals:
+    """Tests for --categoricals and --no-reclassify CLI flags."""
+
+    def test_categoricals_flag(self):
+        args = parse_args(["--categoricals", "SEX,EDUCATION", "data.csv"])
+        assert args.categoricals == "SEX,EDUCATION"
+        assert args.no_reclassify is False
+
+    def test_no_reclassify_flag(self):
+        args = parse_args(["--no-reclassify", "data.csv"])
+        assert args.no_reclassify is True
+        assert args.categoricals is None
+
+    def test_categoricals_and_no_reclassify_mutually_exclusive(self):
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args(["--categoricals", "SEX", "--no-reclassify", "data.csv"])
+        assert exc_info.value.code == 2
+
+    def test_default_no_categorical_flags(self):
+        args = parse_args(["data.csv"])
+        assert args.categoricals is None
+        assert args.no_reclassify is False
+
+
+# ===================================================================
+# TestConfirmReclassifyInteractive
+# ===================================================================
+
+
+class TestConfirmReclassifyInteractive:
+    """Tests for the interactive per-column reclassification prompt."""
+
+    @pytest.fixture()
+    def suspects(self):
+        from eda_state import EncodedCategoricalSuspect
+        return [
+            EncodedCategoricalSuspect(
+                column="SEX", nunique=2, sample_values=[1, 2],
+                min_val=1.0, max_val=2.0, is_all_integer=True,
+                reason="Binary gender code", subtype="nominal",
+            ),
+            EncodedCategoricalSuspect(
+                column="EDUCATION", nunique=4, sample_values=[1, 2, 3, 4],
+                min_val=1.0, max_val=4.0, is_all_integer=True,
+                reason="Education level codes 1-4", subtype="ordinal",
+            ),
+        ]
+
+    def test_accept_all(self, suspects):
+        # Empty string = accept
+        with patch("builtins.input", side_effect=["", ""]):
+            result = _confirm_reclassify_interactive(suspects)
+        assert result == ["SEX", "EDUCATION"]
+
+    def test_reject_all(self, suspects):
+        with patch("builtins.input", side_effect=["n", "n"]):
+            result = _confirm_reclassify_interactive(suspects)
+        assert result == []
+
+    def test_partial_accept(self, suspects):
+        with patch("builtins.input", side_effect=["", "n"]):
+            result = _confirm_reclassify_interactive(suspects)
+        assert result == ["SEX"]
+
+    def test_empty_suspects(self):
+        result = _confirm_reclassify_interactive([])
+        assert result == []
+
+
+# ===================================================================
+# TestResolveReclassification
+# ===================================================================
+
+
+class TestResolveReclassification:
+    """Tests for _resolve_reclassification() — various code paths."""
+
+    @pytest.fixture()
+    def df(self):
+        import pandas as pd
+        return pd.DataFrame({
+            "SEX": [1, 2, 1, 2],
+            "EDUCATION": [1, 2, 3, 4],
+            "AGE": [25, 30, 35, 40],
+        })
+
+    def test_no_reclassify_flag(self, df):
+        result = _resolve_reclassification(
+            df, target_column=None,
+            categoricals_flag=None, no_reclassify_flag=True,
+        )
+        assert result == []
+
+    def test_explicit_categoricals_flag(self, df):
+        result = _resolve_reclassification(
+            df, target_column=None,
+            categoricals_flag="SEX,EDUCATION", no_reclassify_flag=False,
+        )
+        assert set(result) == {"SEX", "EDUCATION"}
+
+    def test_explicit_categoricals_invalid_columns_filtered(self, df):
+        result = _resolve_reclassification(
+            df, target_column=None,
+            categoricals_flag="SEX,NONEXISTENT", no_reclassify_flag=False,
+        )
+        assert result == ["SEX"]
+
+    def test_llm_detection_non_tty_auto_accept(self, df):
+        """Non-TTY mode auto-accepts all LLM suspects."""
+        from eda_state import EncodedCategoricalSuspect
+        suspects = [
+            EncodedCategoricalSuspect(column="SEX", nunique=2, reason="code"),
+        ]
+        with patch("tools.data_loader.detect_encoded_categoricals", return_value=suspects), \
+             patch("sys.stdin") as mock_stdin:
+            mock_stdin.isatty.return_value = False
+            result = _resolve_reclassification(
+                df, target_column=None,
+                categoricals_flag=None, no_reclassify_flag=False,
+            )
+        assert result == ["SEX"]
+
+    def test_llm_detection_no_suspects(self, df):
+        with patch("tools.data_loader.detect_encoded_categoricals", return_value=[]):
+            result = _resolve_reclassification(
+                df, target_column=None,
+                categoricals_flag=None, no_reclassify_flag=False,
+            )
+        assert result == []

@@ -440,3 +440,69 @@ class TestRemovedSymbols:
         assert not hasattr(eda_state, "_try_parse_critic_report"), (
             "_try_parse_critic_report JSON parser should be removed"
         )
+
+
+# ===================================================================
+# EncodedCategoricalSuspect — model validation
+# ===================================================================
+
+
+class TestEncodedCategoricalSuspect:
+    """Tests for the EncodedCategoricalSuspect Pydantic model."""
+
+    def test_minimal_construction(self):
+        from eda_state import EncodedCategoricalSuspect
+        s = EncodedCategoricalSuspect(column="SEX", nunique=2)
+        assert s.column == "SEX"
+        assert s.nunique == 2
+        assert s.sample_values == []
+        assert s.reason == ""
+
+    def test_full_construction(self):
+        from eda_state import EncodedCategoricalSuspect
+        s = EncodedCategoricalSuspect(
+            column="EDUCATION",
+            nunique=4,
+            sample_values=[1, 2, 3, 4],
+            min_val=1.0,
+            max_val=4.0,
+            is_all_integer=True,
+            reason="Name suggests education level, values 1-4 are ordinal codes",
+            subtype="ordinal",
+        )
+        assert s.is_all_integer is True
+        assert s.subtype == "ordinal"
+        assert len(s.sample_values) == 4
+
+    def test_serialisation_round_trip(self):
+        from eda_state import EncodedCategoricalSuspect
+        s = EncodedCategoricalSuspect(column="SEX", nunique=2, reason="binary code")
+        data = s.model_dump_json()
+        s2 = EncodedCategoricalSuspect.model_validate_json(data)
+        assert s2.column == "SEX"
+        assert s2.reason == "binary code"
+
+
+class TestDataProfileEncodedCategoricalCols:
+    """Tests for the encoded_categorical_cols field on DataProfile."""
+
+    def test_default_empty(self):
+        from eda_state import DataProfile
+        dp = DataProfile()
+        assert dp.encoded_categorical_cols == []
+
+    def test_populated(self):
+        from eda_state import DataProfile
+        dp = DataProfile(encoded_categorical_cols=["SEX", "EDUCATION"])
+        assert dp.encoded_categorical_cols == ["SEX", "EDUCATION"]
+
+    def test_serialisation_round_trip(self):
+        from eda_state import DataProfile
+        dp = DataProfile(
+            shape=(100, 5),
+            encoded_categorical_cols=["SEX"],
+            categorical_cols=["SEX", "name"],
+            numerical_cols=["age", "salary"],
+        )
+        dp2 = DataProfile.model_validate_json(dp.model_dump_json())
+        assert dp2.encoded_categorical_cols == ["SEX"]

@@ -79,6 +79,11 @@ OPENLIT_EVAL_MODEL: str = os.getenv("OPENLIT_EVAL_MODEL", "gpt-5")
 # --- Critic config ---
 MAX_CRITIC_ITERATIONS: int = int(os.getenv("MAX_CRITIC_ITERATIONS", "2"))
 
+# --- Encoded-categorical detection ---
+# Model used for the single pre-pipeline LLM call that identifies numerically
+# encoded categoricals.  Defaults to gpt-5-mini (cheap, sufficient for this task).
+RECLASSIFY_MODEL: str = os.getenv("RECLASSIFY_MODEL", "gpt-5-mini")
+
 # --- GroupChat config ---
 MAX_ROUNDS: int = int(os.getenv("MAX_ROUNDS", "70"))
 # Raised from 50 → 70 to accommodate:
