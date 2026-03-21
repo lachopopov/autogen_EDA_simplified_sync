@@ -78,7 +78,7 @@ class TestMakeAgent:
 
     def test_max_consecutive_auto_reply(self):
         a = make_agent("FooAgent", "msg")
-        assert a._max_consecutive_auto_reply == 5
+        assert a._max_consecutive_auto_reply == 10
 
     def test_termination_guard(self):
         a = make_agent("FooAgent", "msg")

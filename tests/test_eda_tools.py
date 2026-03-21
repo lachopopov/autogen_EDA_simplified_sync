@@ -11,8 +11,14 @@ import json
 import pandas as pd
 import pytest
 
-from eda_state import EDAResults, MissingInfo
-from tools.eda_tools import correlation_matrix, describe_stats, missing_analysis
+from eda_state import CategoricalAnalysis, CategoricalStats, EDAResults, MissingInfo, TargetInfo
+from tools.eda_tools import (
+    analyze_categoricals,
+    correlation_matrix,
+    describe_stats,
+    missing_analysis,
+    target_analysis,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -355,3 +361,372 @@ class TestEndToEnd:
         assert len(eda.describe) == 3
         assert eda.missing.total_pct == 20.0
         assert "age" in eda.correlation
+
+
+# ---------------------------------------------------------------------------
+# target_analysis()
+# ---------------------------------------------------------------------------
+
+
+class TestTargetAnalysis:
+    """Test target_analysis() for classification, regression, unsupervised."""
+
+    @pytest.fixture()
+    def classification_df_json(self):
+        df = pd.DataFrame({
+            "feat_a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "feat_b": [10, 20, 30, 40, 50, 60],
+            "species": ["setosa", "setosa", "versicolor", "versicolor", "virginica", "virginica"],
+        })
+        return df.to_json(orient="records")
+
+    @pytest.fixture()
+    def regression_df_json(self):
+        df = pd.DataFrame({
+            "size": list(range(50)),
+            "rooms": [x % 5 + 1 for x in range(50)],
+            "price": [x * 1000.0 for x in range(50)],
+        })
+        return df.to_json(orient="records")
+
+    @pytest.fixture()
+    def classification_target_info_json(self):
+        ti = TargetInfo(
+            column="species",
+            problem_type="classification",
+            n_classes=3,
+            class_counts={"setosa": 2, "versicolor": 2, "virginica": 2},
+            imbalance_ratio=1.0,
+            detection_method="name_heuristic",
+        )
+        return ti.model_dump_json()
+
+    @pytest.fixture()
+    def regression_target_info_json(self):
+        ti = TargetInfo(
+            column="price",
+            problem_type="regression",
+            n_classes=0,
+            detection_method="name_heuristic",
+        )
+        return ti.model_dump_json()
+
+    @pytest.fixture()
+    def unsupervised_target_info_json(self):
+        ti = TargetInfo(
+            column=None,
+            problem_type="unsupervised",
+            detection_method="none",
+        )
+        return ti.model_dump_json()
+
+    def test_classification_returns_valid_json(self, classification_df_json, classification_target_info_json):
+        result = json.loads(target_analysis(classification_df_json, classification_target_info_json))
+        assert result["problem_type"] == "classification"
+        assert result["column"] == "species"
+
+    def test_classification_class_distribution(self, classification_df_json, classification_target_info_json):
+        result = json.loads(target_analysis(classification_df_json, classification_target_info_json))
+        dist = result["class_distribution"]
+        assert len(dist) == 3
+        for cls_val in dist.values():
+            assert "count" in cls_val
+            assert "pct" in cls_val
+
+    def test_classification_per_class_stats(self, classification_df_json, classification_target_info_json):
+        result = json.loads(target_analysis(classification_df_json, classification_target_info_json))
+        assert "per_class_feature_stats" in result
+        per_class = result["per_class_feature_stats"]
+        assert "setosa" in per_class
+        assert "feat_a" in per_class["setosa"]
+        assert "mean" in per_class["setosa"]["feat_a"]
+
+    def test_regression_returns_valid_json(self, regression_df_json, regression_target_info_json):
+        result = json.loads(target_analysis(regression_df_json, regression_target_info_json))
+        assert result["problem_type"] == "regression"
+        assert result["column"] == "price"
+
+    def test_regression_target_stats(self, regression_df_json, regression_target_info_json):
+        result = json.loads(target_analysis(regression_df_json, regression_target_info_json))
+        stats = result["target_stats"]
+        for key in ("mean", "median", "std", "skewness", "kurtosis", "min", "max"):
+            assert key in stats
+
+    def test_regression_correlations(self, regression_df_json, regression_target_info_json):
+        result = json.loads(target_analysis(regression_df_json, regression_target_info_json))
+        assert "feature_target_correlations" in result
+        assert "top_correlated_features" in result
+        assert len(result["top_correlated_features"]) <= 3
+
+    def test_unsupervised_returns_empty(self, classification_df_json, unsupervised_target_info_json):
+        result = json.loads(target_analysis(classification_df_json, unsupervised_target_info_json))
+        assert result["problem_type"] == "unsupervised"
+
+    def test_missing_column_treated_as_unsupervised(self, classification_df_json):
+        ti = TargetInfo(column="nonexistent", problem_type="classification")
+        result = json.loads(target_analysis(classification_df_json, ti.model_dump_json()))
+        assert result["problem_type"] == "unsupervised"
+
+
+# ---------------------------------------------------------------------------
+# analyze_categoricals()
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeCategoricals:
+    """Test analyze_categoricals() function (W4)."""
+
+    @pytest.fixture()
+    def mixed_df_json(self):
+        """DataFrame with categoricals + numerics + a classification target."""
+        df = pd.DataFrame({
+            "color": ["red", "blue", "red", "green", "blue",
+                       "red", "blue", "red", "green", "blue"] * 10,
+            "size": ["S", "M", "L", "S", "M",
+                      "S", "M", "L", "S", "M"] * 10,
+            "price": [10.0, 20.0, 30.0, 40.0, 50.0,
+                       10.0, 20.0, 30.0, 40.0, 50.0] * 10,
+            "target": ["yes", "no", "yes", "no", "yes",
+                        "no", "yes", "no", "yes", "no"] * 10,
+        })
+        return df.to_json(orient="records")
+
+    @pytest.fixture()
+    def classification_ti_json(self):
+        return TargetInfo(
+            column="target", problem_type="classification",
+            n_classes=2, imbalance_ratio=1.0,
+        ).model_dump_json()
+
+    @pytest.fixture()
+    def unsupervised_ti_json(self):
+        return TargetInfo().model_dump_json()
+
+    def test_returns_valid_json(self, mixed_df_json, classification_ti_json):
+        result = analyze_categoricals(mixed_df_json, classification_ti_json)
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
+
+    def test_validates_via_pydantic(self, mixed_df_json, classification_ti_json):
+        result = analyze_categoricals(mixed_df_json, classification_ti_json)
+        ca = CategoricalAnalysis.model_validate_json(result)
+        assert isinstance(ca, CategoricalAnalysis)
+
+    def test_detects_categorical_columns(self, mixed_df_json, classification_ti_json):
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(mixed_df_json, classification_ti_json)
+        )
+        # color, size, target are categorical (object dtype)
+        assert "color" in ca.columns
+        assert "size" in ca.columns
+        assert "target" in ca.columns
+        # price is numeric — should NOT be in columns
+        assert "price" not in ca.columns
+
+    def test_cardinality(self, mixed_df_json, classification_ti_json):
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(mixed_df_json, classification_ti_json)
+        )
+        assert ca.columns["color"].cardinality == 3
+        assert ca.columns["size"].cardinality == 3
+        assert ca.columns["target"].cardinality == 2
+
+    def test_entropy_positive(self, mixed_df_json, classification_ti_json):
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(mixed_df_json, classification_ti_json)
+        )
+        for col in ("color", "size", "target"):
+            assert ca.columns[col].entropy_bits > 0
+
+    def test_top_values_populated(self, mixed_df_json, classification_ti_json):
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(mixed_df_json, classification_ti_json)
+        )
+        for col in ("color", "size"):
+            assert len(ca.columns[col].top_values) > 0
+            for v in ca.columns[col].top_values:
+                assert "value" in v
+                assert "count" in v
+                assert "pct" in v
+
+    def test_target_rates_present_for_classification(self, mixed_df_json, classification_ti_json):
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(mixed_df_json, classification_ti_json)
+        )
+        assert ca.target_column == "target"
+        # Non-target categorical should have target_rates
+        for v in ca.columns["color"].top_values:
+            assert "target_rates" in v
+            assert "yes" in v["target_rates"] or "no" in v["target_rates"]
+
+    def test_no_target_rates_for_unsupervised(self, mixed_df_json, unsupervised_ti_json):
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(mixed_df_json, unsupervised_ti_json)
+        )
+        assert ca.target_column is None
+        for v in ca.columns["color"].top_values:
+            assert "target_rates" not in v
+
+    def test_top_n_cap(self, classification_ti_json):
+        """High-cardinality column should be capped at top-10."""
+        df = pd.DataFrame({
+            "city": [f"city_{i}" for i in range(500)],
+            "target": ["yes", "no"] * 250,
+        })
+        data_json = df.to_json(orient="records")
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(data_json, classification_ti_json)
+        )
+        assert len(ca.columns["city"].top_values) <= 10
+        assert ca.columns["city"].more_values == 500 - 10
+
+    def test_rare_count(self):
+        """Values below 0.5% threshold should be counted as rare."""
+        # 200 rows: 199 are 'A', 1 is 'B' → B is 0.5%, just at boundary
+        # Use 201 rows: 200 are 'A', 1 is 'B' → B is ~0.497% < 0.5% — rare
+        df = pd.DataFrame({
+            "x": ["A"] * 200 + ["B"],
+        })
+        ti = TargetInfo().model_dump_json()
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(df.to_json(orient="records"), ti)
+        )
+        assert ca.columns["x"].rare_count == 1
+
+    def test_empty_categorical(self):
+        """DataFrame with only numeric columns → empty columns dict."""
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+        ti = TargetInfo().model_dump_json()
+        ca = CategoricalAnalysis.model_validate_json(
+            analyze_categoricals(df.to_json(orient="records"), ti)
+        )
+        assert len(ca.columns) == 0
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: analyze_categoricals() with active pipeline session
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeCategoricalsIntegration:
+    """Verify the is_active() artifact-store path (the production path).
+
+    Pass 4 of the root-cause analysis showed that unit tests never exercise
+    the pipeline-active branch, which reads DataProfile from the store.
+    These tests ensure the correct artifact key ('dtypes_json') is used and
+    that an empty categorical_cols falls back to select_dtypes.
+    """
+
+    @pytest.fixture()
+    def mixed_df(self):
+        return pd.DataFrame({
+            "color": ["red", "blue", "green"] * 34,
+            "size": ["S", "M", "L"] * 34,
+            "price": [10.0, 20.0, 30.0] * 34,
+            "target": ["yes", "no", "yes"] * 34,
+        })
+
+    def _setup_dtypes_json(self, save_state, df):
+        """Save a DataProfile with categorical_cols populated under dtypes_json."""
+        from eda_state import DataProfile
+        cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+        num_cols = df.select_dtypes(include="number").columns.tolist()
+        profile = DataProfile(
+            shape=(df.shape[0], df.shape[1]),
+            memory_mb=1.0,
+            dtypes={c: str(df[c].dtype) for c in df.columns},
+            numerical_cols=num_cols,
+            categorical_cols=cat_cols,
+        )
+        save_state("dtypes_json", profile.model_dump_json())
+
+    def _setup_schema_json_only(self, save_state, df):
+        """Save a DataProfile WITHOUT categorical_cols under schema_json only.
+
+        Simulates validate_schema() output — categorical_cols stays [].
+        """
+        from eda_state import DataProfile
+        profile = DataProfile(
+            shape=(df.shape[0], df.shape[1]),
+            memory_mb=1.0,
+            dtypes={c: str(df[c].dtype) for c in df.columns},
+        )
+        save_state("schema_json", profile.model_dump_json())
+
+    def test_uses_dtypes_json_when_available(self, mixed_df):
+        """Pipeline path reads categorical_cols from dtypes_json artifact."""
+        from tools._pipeline_state import init_session, clear_session, save_state
+        try:
+            init_session()
+            data_json = mixed_df.to_json(orient="records")
+            save_state("data_json", data_json)
+            self._setup_dtypes_json(save_state, mixed_df)
+            ti = TargetInfo().model_dump_json()
+            save_state("target_info", ti)
+
+            result = analyze_categoricals("STATE_REF:data_json", "STATE_REF:target_info")
+            assert "STATE_REF:categorical_analysis" in result
+
+            from tools._pipeline_state import load_state
+            ca = CategoricalAnalysis.model_validate_json(load_state("categorical_analysis"))
+            assert "color" in ca.columns
+            assert "size" in ca.columns
+            assert "target" in ca.columns
+            assert "price" not in ca.columns
+        finally:
+            clear_session()
+
+    def test_schema_json_without_categorical_cols_falls_back_to_dataframe(self, mixed_df):
+        """Regression: schema_json has empty categorical_cols → must fall back to select_dtypes.
+
+        This is the exact bug from the production run: validate_schema() saves
+        schema_json with categorical_cols=[] and the old code returned 0 columns.
+        """
+        from tools._pipeline_state import init_session, clear_session, save_state
+        try:
+            init_session()
+            data_json = mixed_df.to_json(orient="records")
+            save_state("data_json", data_json)
+            # Only schema_json present (no dtypes_json) — as in validate_schema only
+            self._setup_schema_json_only(save_state, mixed_df)
+            ti = TargetInfo().model_dump_json()
+            save_state("target_info", ti)
+
+            result = analyze_categoricals("STATE_REF:data_json", "STATE_REF:target_info")
+
+            from tools._pipeline_state import load_state
+            ca = CategoricalAnalysis.model_validate_json(load_state("categorical_analysis"))
+            # Fallback to select_dtypes must find color, size, target
+            assert len(ca.columns) > 0, (
+                "Bug regression: categorical_cols must not be empty when schema_json "
+                "has categorical_cols=[] — fallback to select_dtypes must fire."
+            )
+            assert "color" in ca.columns
+        finally:
+            clear_session()
+
+    def test_empty_dtypes_json_categorical_cols_falls_back(self, mixed_df):
+        """dtypes_json exists but has empty categorical_cols → fallback fires."""
+        from tools._pipeline_state import init_session, clear_session, save_state
+        from eda_state import DataProfile
+        try:
+            init_session()
+            data_json = mixed_df.to_json(orient="records")
+            save_state("data_json", data_json)
+            # DataProfile with explicitly empty categorical_cols
+            profile = DataProfile(
+                shape=(mixed_df.shape[0], mixed_df.shape[1]),
+                memory_mb=1.0,
+                dtypes={c: str(mixed_df[c].dtype) for c in mixed_df.columns},
+                categorical_cols=[],     # intentionally empty
+            )
+            save_state("dtypes_json", profile.model_dump_json())
+            ti = TargetInfo().model_dump_json()
+            save_state("target_info", ti)
+
+            result = analyze_categoricals("STATE_REF:data_json", "STATE_REF:target_info")
+
+            from tools._pipeline_state import load_state
+            ca = CategoricalAnalysis.model_validate_json(load_state("categorical_analysis"))
+            assert "color" in ca.columns, "select_dtypes fallback must populate columns"
+        finally:
+            clear_session()

@@ -29,6 +29,7 @@ import matplotlib
 matplotlib.use("Agg")  # Force non-interactive backend before any pyplot import
 
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import seaborn as sns  # noqa: E402
 
@@ -217,5 +218,129 @@ def plot_missing_heatmap(
         return (
             f"Saved missing-values heatmap to {file_path}. "
             f"Reference: {STATE_REF_PREFIX}plot_missing_heatmap"
+        )
+    return result
+
+
+def plot_class_distribution(
+    data_json: Annotated[str, "JSON string (records orientation) from load_data()"],
+    target_info_json: Annotated[str, "JSON string of TargetInfo from detect_target()"],
+    output_dir: Annotated[str, "Directory path where PNG file will be saved"],
+) -> str:
+    """
+    AG2 tool entry point.
+    Plot target variable distribution and save as PNG.
+
+    For classification: horizontal bar chart of class counts + percentages.
+    For regression:     histogram + KDE of target distribution.
+    For unsupervised:   returns empty list (no plot generated).
+
+    Returns:
+        JSON list of saved file paths (0 or 1 element).
+    """
+    from eda_state import TargetInfo
+
+    # Artifact store: resolve inputs
+    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    if is_active():
+        data_json = resolve(data_json, "data_json")
+        target_info_json = resolve(target_info_json, "target_info")
+
+    df = pd.DataFrame(json.loads(data_json))
+    target_info = TargetInfo.model_validate_json(target_info_json)
+
+    if target_info.column is None or target_info.column not in df.columns:
+        logger.info("No target variable — skipping class distribution plot")
+        result = json.dumps([])
+        if is_active():
+            save_state("plot_class_distribution", result)
+            return (
+                f"No target variable — class distribution plot skipped. "
+                f"Reference: {STATE_REF_PREFIX}plot_class_distribution"
+            )
+        return result
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    col = target_info.column
+
+    if target_info.problem_type == "classification":
+        counts = df[col].value_counts()
+        total = len(df)
+
+        fig, ax = plt.subplots(figsize=(8, max(4, len(counts) * 0.6)))
+        bars = ax.barh(
+            [str(c) for c in counts.index],
+            counts.values,
+            color=plt.cm.Set2(np.linspace(0, 1, len(counts))),
+            edgecolor="black",
+            alpha=0.85,
+        )
+
+        # Annotate with count + percentage
+        for bar, cnt in zip(bars, counts.values):
+            pct = cnt / total * 100
+            ax.text(
+                bar.get_width() + max(counts.values) * 0.02,
+                bar.get_y() + bar.get_height() / 2,
+                f"{cnt} ({pct:.1f}%)",
+                va="center",
+                fontsize=10,
+            )
+
+        ax.set_title(f"Class Distribution — {col}")
+        ax.set_xlabel("Count")
+        ax.set_ylabel(col)
+        ax.set_xlim(0, max(counts.values) * 1.25)
+
+        file_path = out / "class_distribution.png"
+        fig.savefig(file_path, dpi=100, bbox_inches="tight")
+        plt.close(fig)
+
+        logger.info("Saved class distribution plot: %s", file_path)
+        result = json.dumps([str(file_path)])
+
+    elif target_info.problem_type == "regression":
+        target_data = df[col].dropna()
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.hist(target_data, bins=30, edgecolor="black", alpha=0.7, density=True)
+
+        # KDE overlay
+        try:
+            from scipy.stats import gaussian_kde
+            kde = gaussian_kde(target_data)
+            x_vals = np.linspace(target_data.min(), target_data.max(), 200)
+            ax.plot(x_vals, kde(x_vals), color="red", linewidth=2, label="KDE")
+            ax.legend()
+        except (ImportError, np.linalg.LinAlgError):
+            pass  # scipy not available or singular data
+
+        ax.set_title(f"Target Distribution — {col}")
+        ax.set_xlabel(col)
+        ax.set_ylabel("Density")
+
+        file_path = out / "target_distribution.png"
+        fig.savefig(file_path, dpi=100, bbox_inches="tight")
+        plt.close(fig)
+
+        logger.info("Saved target distribution plot: %s", file_path)
+        result = json.dumps([str(file_path)])
+
+    else:
+        result = json.dumps([])
+
+    if is_active():
+        save_state("plot_class_distribution", result)
+        paths = json.loads(result)
+        if paths:
+            return (
+                f"Saved target distribution plot to {paths[0]}. "
+                f"Reference: {STATE_REF_PREFIX}plot_class_distribution"
+            )
+        return (
+            f"No target distribution plot generated. "
+            f"Reference: {STATE_REF_PREFIX}plot_class_distribution"
         )
     return result

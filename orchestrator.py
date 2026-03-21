@@ -95,7 +95,7 @@ def _create_executor(name: str) -> UserProxyAgent:
     return UserProxyAgent(
         name=name,
         human_input_mode="NEVER",
-        max_consecutive_auto_reply=10,
+        max_consecutive_auto_reply=20,
         is_termination_msg=lambda x: "TERMINATE" in (x.get("content") or ""),
         code_execution_config=False,
     )
@@ -250,15 +250,17 @@ def build_group_chat() -> tuple[
     UserProxyAgent,
     dict[str, AssistantAgent],
     dict[str, UserProxyAgent],
+    list[AssistantAgent],
 ]:
     """
     Wire all agents, register all tools, and build the GroupChat.
 
     Returns:
-        (groupchat, manager, user_proxy, agents_dict, executors_dict)
+        (groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list)
 
         agents_dict maps AssistantAgent names to instances.
         executors_dict maps executor names to their UserProxyAgent instances.
+        agents_list is a list of all AssistantAgent instances (for cost tracking).
 
     Architecture References:
       - § 4.1: UserProxyAgent config
@@ -365,4 +367,14 @@ def build_group_chat() -> tuple[
         MAX_ROUNDS,
     )
 
-    return groupchat, manager, user_proxy, agents_dict, executors_dict
+    # Build agents_list for cost tracking (AssistantAgents only, not executors)
+    agents_list = [
+        data_prep,
+        eda_analysis,
+        visualization,
+        critic,
+        findings,
+        report_exporter,
+    ]
+
+    return groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list

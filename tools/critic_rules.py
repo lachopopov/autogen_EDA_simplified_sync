@@ -14,16 +14,19 @@ Design:
   - Zero AG2 imports. Pure Python.
 
 Rules implemented (from architecture.md § 8 — V1 Critic Ruleset):
-  1. MissingValueRule       — per-column missing: >50% BLOCKER, 30-50% HIGH, 5-30% MEDIUM
-  2. DatasetMissingnessRule  — dataset-level: >30% total cells → HIGH
-  3. DuplicateRowsRule       — >1% duplicate rows → MEDIUM
-  4. OutlierRule             — IQR method, >5% flagged in worst column → MEDIUM
-  5. SkewnessRule            — |skew|>2 HIGH, 1<|skew|≤2 MEDIUM
-  6. ZeroVarianceRule        — std==0 → HIGH
-  7. NearZeroVarianceRule    — std < 0.01×|mean| → LOW
+  1. MissingValueRule          — per-column missing: >50% BLOCKER, 30-50% HIGH, 5-30% MEDIUM
+  2. DatasetMissingnessRule    — dataset-level: >30% total cells → HIGH
+  3. DuplicateRowsRule         — >1% duplicate rows → HIGH, >0.1% → MEDIUM
+  4. OutlierRule               — IQR method, >5% flagged in worst column → MEDIUM
+  5. SkewnessRule              — |skew|>2 HIGH, 1<|skew|≤2 MEDIUM
+  6. ZeroVarianceRule          — std==0 → HIGH
+  7. NearZeroVarianceRule      — std < 0.01×|mean| → LOW
   8. NearPerfectCorrelationRule — |r|>0.95 HIGH, 0.85<|r|≤0.95 MEDIUM
-  9. AllUniqueColumnRule     — nunique==n_rows → LOW (likely ID)
+  9. AllUniqueColumnRule       — nunique==n_rows → LOW (likely ID)
   10. SingleValueCategoricalRule — nunique==1 for non-numeric → HIGH
+  11. HighCardinalityRule              — >50 unique values → HIGH, >20 → MEDIUM (W9)
+  12. RareCategoryRule                 — any level < 0.5% frequency → LOW per column (W9)
+  13. CategoricalNumericRedundancyRule — eta²>0.95 between cat+num column pair → HIGH (W5)
 
 AG2 Version: 0.10.3
 """
@@ -68,7 +71,7 @@ class CriticRule(ABC):
 class MissingValueRule(CriticRule):
     """Per-column missing values: >50% BLOCKER, 30–50% HIGH, 5–30% MEDIUM.
 
-    Reports the worst (highest missing %) column only.
+    Reports ALL columns that cross a threshold (not only the worst).
     """
 
     name = "missing_values"
@@ -79,18 +82,21 @@ class MissingValueRule(CriticRule):
         missing_pct = df.isnull().mean()
         if missing_pct.max() == 0.0:
             return []
-        worst_col = str(missing_pct.idxmax())
-        pct = float(missing_pct[worst_col])
-        if pct > 0.50:
-            return [CriticFlag(column=worst_col, rule=self.name, severity="BLOCKER",
-                              message=f"{pct:.0%} missing", value=pct)]
-        if pct > 0.30:
-            return [CriticFlag(column=worst_col, rule=self.name, severity="HIGH",
-                              message=f"{pct:.0%} missing", value=pct)]
-        if pct > 0.05:
-            return [CriticFlag(column=worst_col, rule=self.name, severity="MEDIUM",
-                              message=f"{pct:.0%} missing", value=pct)]
-        return []
+        flags: list[CriticFlag] = []
+        for col, pct in missing_pct.items():
+            pct = float(pct)
+            if pct > 0.50:
+                flags.append(CriticFlag(column=str(col), rule=self.name, severity="BLOCKER",
+                                        message=f"{pct:.0%} missing", value=pct))
+            elif pct > 0.30:
+                flags.append(CriticFlag(column=str(col), rule=self.name, severity="HIGH",
+                                        message=f"{pct:.0%} missing", value=pct))
+            elif pct > 0.05:
+                flags.append(CriticFlag(column=str(col), rule=self.name, severity="MEDIUM",
+                                        message=f"{pct:.0%} missing", value=pct))
+        # Sort: highest missing % first so the report reads in priority order
+        flags.sort(key=lambda f: f.value, reverse=True)
+        return flags
 
 
 class DatasetMissingnessRule(CriticRule):
@@ -110,32 +116,132 @@ class DatasetMissingnessRule(CriticRule):
 
 
 class DuplicateRowsRule(CriticRule):
-    """Duplicate rows: >1% of rows → MEDIUM."""
+    """Duplicate rows: >1% → HIGH, >0.1% → MEDIUM.
+
+    In pipeline mode the data passed to run_critic_rules() has already been
+    deduplicated by load_data().  This rule therefore first tries to load the
+    original duplicate count from the artifact store (saved before dedup).
+    When the artifact is absent (unit-test / non-pipeline mode) it falls back
+    to computing directly on the DataFrame.
+    """
 
     name = "duplicate_rows"
 
     def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
         if df.empty:
             return []
+
+        dup_pct: float | None = None
+        dup_count: int = 0
+
+        # --- Pipeline mode: load pre-dedup count from artifact store ---
         try:
-            dup_pct = float(df.duplicated().mean())
-        except TypeError:
-            # Unhashable columns (dicts/lists) — stringify before hashing
-            dup_pct = float(df.astype(str).duplicated().mean())
+            from tools._pipeline_state import is_active, load_state
+            if is_active():
+                raw = load_state("duplicate_count")
+                if raw is not None:
+                    dup_count = int(raw)
+                    original_rows = df.shape[0] + dup_count
+                    dup_pct = dup_count / max(original_rows, 1)
+        except Exception:
+            pass
+
+        # --- Fallback: compute directly (unit-test / non-pipeline mode) ---
+        if dup_pct is None:
+            try:
+                dup_pct = float(df.duplicated().mean())
+                dup_count = int(df.duplicated().sum())
+            except TypeError:
+                dup_pct = float(df.astype(str).duplicated().mean())
+                dup_count = int(df.astype(str).duplicated().sum())
+
         if dup_pct > 0.01:
-            return [CriticFlag(column=None, rule=self.name, severity="MEDIUM",
-                              message=f"{dup_pct:.1%} duplicate rows", value=dup_pct)]
+            return [CriticFlag(
+                column=None, rule=self.name, severity="HIGH",
+                message=f"{dup_pct:.1%} duplicate rows ({dup_count} rows)",
+                value=dup_pct,
+                suggestion="Investigate data pipeline for unintended row duplication",
+            )]
+        if dup_pct > 0.001:
+            return [CriticFlag(
+                column=None, rule=self.name, severity="MEDIUM",
+                message=f"{dup_pct:.1%} duplicate rows ({dup_count} rows)",
+                value=dup_pct,
+                suggestion="Verify duplicate rows are expected or investigate upstream",
+            )]
         return []
 
 
-class OutlierRule(CriticRule):
-    """Outliers (IQR method): >5% of rows flagged in worst column → MEDIUM.
 
-    For each numerical column, values outside [Q1 − 1.5·IQR, Q3 + 1.5·IQR]
-    are counted as outliers. Reports the worst column only.
+def _iqr_unreliability_hint(series: "pd.Series") -> str:
+    """Return a distribution-shape hint explaining WHY the IQR outlier rate is high.
+
+    Uses excess kurtosis as a cheap, dependency-free secondary signal to
+    distinguish the two main causes of a >20% IQR outlier rate:
+
+    (a) Platykurtic (kurt < 0): probability mass spread across separated
+        sub-groups with gaps between them.  IQR collapses around the dominant
+        cluster and over-flags members of the other natural groups.
+        e.g. work-hours column with clusters at 20h, 40h, 60h.
+        --> "multiple natural clusters or flat spread (platykurtic)"
+
+    (b) Leptokurtic + skewed (kurt > 0, |skew| > 1): a long heavy tail pushes
+        values past the 1.5*IQR fences in a fully unimodal distribution.
+        e.g. lognormal income, Pareto wealth distributions.
+        --> "heavy tail / skewed distribution (leptokurtic)"
+
+    Fallback: generic message when kurtosis is ambiguous.
+
+    This is a heuristic used only to write a more informative flag message.
+    The severity decision (LOW at >20%) is correct for BOTH causes.
+    """
+    s = series.dropna()
+    if len(s) < 8:
+        return "distribution shape unclear (too few observations)"
+    kurt = float(s.kurt())   # excess kurtosis: <0 platykurtic, >0 leptokurtic
+    skew = float(s.skew())
+    if kurt < 0:
+        return "multiple natural clusters or flat spread (platykurtic)"
+    if abs(skew) > 1:
+        return "heavy tail / skewed distribution (leptokurtic)"
+    if kurt > 0:
+        # Leptokurtic but symmetric: one dominant central spike with satellite
+        # sub-populations.  The IQR collapses around the spike and mechanically
+        # flags legitimate sub-groups.  A true bell-curve sits at ~6.7% IQR
+        # outliers; reaching >20% without skew requires satellite clusters.
+        return "dominant central spike with satellite sub-populations (IQR collapses around the spike)"
+    return "distribution shape makes IQR fences unreliable at this scale"
+
+
+class OutlierRule(CriticRule):
+    """Outliers (IQR method): >5% of rows flagged in worst column.
+
+    Severity logic:
+      - MEDIUM (5-20%): IQR anomaly signal is plausible; values in this range
+        more likely represent true outliers worth investigating.
+      - LOW (>20%): IQR fences are no longer a reliable anomaly detector.
+        Two distinct causes, both handled identically:
+
+        (a) Tight-IQR multimodal: a dominant narrow cluster collapses the IQR;
+            members of other natural clusters are mechanically over-flagged.
+        (b) Heavy-tailed unimodal: a long right tail (Pareto, lognormal) pushes
+            25-30% of values past the 1.5*IQR fences while remaining unimodal.
+
+        In BOTH cases the correct response is NOT outlier removal.
+        _iqr_unreliability_hint() uses excess kurtosis to surface the likely
+        cause in the flag message without over-claiming modality.
+
+    Threshold rationale: true data-entry anomalies are typically rare (<5%).
+    Rates from 5-20% merit investigation.  Above 20% the IQR fences are
+    almost certainly responding to a distributional feature, not data errors.
+    Claiming "consider winsorization / removal" at >20% would actively mislead.
+
+    For each numerical column, values outside [Q1 - 1.5*IQR, Q3 + 1.5*IQR]
+    are counted as outliers.  Reports the worst column only.
     """
 
     name = "outliers_iqr"
+    _UNRELIABLE_THRESHOLD = 0.20  # IQR fences unreliable above this rate
 
     def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
         num = df.select_dtypes("number")
@@ -151,19 +257,70 @@ class OutlierRule(CriticRule):
             q3 = float(series.quantile(0.75))
             iqr = q3 - q1
             if iqr == 0:
-                continue  # Zero spread — handled by ZeroVarianceRule
+                continue  # Zero spread -- handled by ZeroVarianceRule
             lower = q1 - 1.5 * iqr
             upper = q3 + 1.5 * iqr
             outlier_pct = float(((series < lower) | (series > upper)).mean())
             if outlier_pct > worst_pct:
                 worst_pct = outlier_pct
                 worst_col = str(col)
-        if worst_col is not None and worst_pct > 0.05:
-            return [CriticFlag(column=worst_col, rule=self.name, severity="MEDIUM",
-                              message=f"{worst_pct:.1%} outliers (IQR)", value=worst_pct)]
-        return []
-
-
+        if worst_col is None or worst_pct <= 0.05:
+            return []
+        # High outlier rate: IQR fences unreliable regardless of cause.
+        # _iqr_unreliability_hint() uses kurtosis to write a precise message.
+        if worst_pct > self._UNRELIABLE_THRESHOLD:
+            hint = _iqr_unreliability_hint(num[worst_col])
+            # Branch-specific suggestion: Tukey context + actionable advice.
+            # "Tukey's 1.5×IQR fence" context in each branch explains the
+            # 20 % threshold to report readers who have no access to the code.
+            if "spike" in hint:
+                suggestion = (
+                    f"Tukey’s 1.5×IQR fence is calibrated for normally distributed "
+                    f"data and flags only ~0.7 % of values there; {worst_pct:.0%} flags "
+                    f"signal the method has broken down — this is a structural artefact, not "
+                    f"true outliers. The distribution has a dominant central spike with "
+                    f"legitimate satellite sub-populations. Do not remove these rows; "
+                    f"bin the column into schedule categories (e.g. part-time / full-time / "
+                    f"overtime) or segment the model by group."
+                )
+            elif "heavy tail" in hint or "leptokurtic" in hint:
+                suggestion = (
+                    f"Tukey’s 1.5×IQR fence is calibrated for normally distributed "
+                    f"data and flags only ~0.7 % of values there; {worst_pct:.0%} flags "
+                    f"signal a heavy-tailed distribution where legitimate extreme values "
+                    f"sit beyond the fences. Do not apply blanket removal; use a log or "
+                    f"sqrt transform, or a robust scaler (e.g. RobustScaler, Huber regression)."
+                )
+            else:
+                suggestion = (
+                    f"Tukey’s 1.5×IQR fence is calibrated for normally distributed "
+                    f"data and flags only ~0.7 % of values there; {worst_pct:.0%} flags "
+                    f"signal separated natural sub-groups — the IQR collapses around one "
+                    f"cluster and over-flags members of the others. Segment the data by "
+                    f"natural group before applying any outlier treatment."
+                )
+            return [CriticFlag(
+                column=worst_col,
+                rule=self.name,
+                severity="LOW",
+                message=(
+                    f"{worst_pct:.1%} outliers (IQR) -- IQR fences unreliable"
+                    f" at this rate ({hint})"
+                ),
+                value=worst_pct,
+                suggestion=suggestion,
+            )]
+        return [CriticFlag(
+            column=worst_col,
+            rule=self.name,
+            severity="MEDIUM",
+            message=f"{worst_pct:.1%} outliers (IQR)",
+            value=worst_pct,
+            suggestion=(
+                "Consider outlier treatment (winsorization, capping, or removal) "
+                "depending on the downstream modeling objective."
+            ),
+        )]
 class SkewnessRule(CriticRule):
     """Comprehensive skewness analysis with context-aware reporting.
 
@@ -313,6 +470,29 @@ class NearZeroVarianceRule(CriticRule):
         return []
 
 
+def _eta_squared(series_cat: pd.Series, series_num: pd.Series) -> float:
+    """Compute eta² (correlation ratio) between a categorical and numeric series.
+
+    eta² = SS_between / SS_total, where SS_between is the variance in series_num
+    explained by the categorical grouping in series_cat.
+
+    Returns 0.0 when computation is not meaningful (too few rows, zero variance).
+    """
+    df_pair = pd.DataFrame({"cat": series_cat, "num": series_num}).dropna()
+    if len(df_pair) < 2:
+        return 0.0
+    grand_mean = df_pair["num"].mean()
+    ss_total = float(((df_pair["num"] - grand_mean) ** 2).sum())
+    if ss_total == 0.0:
+        return 0.0  # ZeroVarianceRule already handles this column
+    ss_between = float(
+        df_pair.groupby("cat")["num"]
+        .apply(lambda g: len(g) * (g.mean() - grand_mean) ** 2)
+        .sum()
+    )
+    return min(ss_between / ss_total, 1.0)  # clamp: floating-point can exceed 1.0
+
+
 class NearPerfectCorrelationRule(CriticRule):
     """Near-perfect correlation: |r|>0.95 HIGH, 0.85<|r|≤0.95 MEDIUM.
 
@@ -339,6 +519,64 @@ class NearPerfectCorrelationRule(CriticRule):
             return [CriticFlag(column=None, rule=self.name, severity="MEDIUM",
                               message=f"|r|={max_val:.2f}", value=max_val)]
         return []
+
+
+class CategoricalNumericRedundancyRule(CriticRule):
+    """Categorical–numeric redundancy: eta² > 0.95 → HIGH.
+
+    Uses the correlation ratio (eta²) to detect when a categorical column and
+    a numeric column are encoding the same concept (e.g., 'education' and
+    'education-num' in the Adult Census dataset).
+
+    eta² = SS_between / SS_total measures how much variance in the numeric
+    column is explained by the categorical grouping. Values near 1.0 indicate
+    the pair is essentially redundant — at least one should be dropped before
+    modeling to avoid leakage or inflated feature importance.
+
+    Guards:
+      - Skips categoricals with nunique == n_rows (ID-like; eta² trivially ≈ 1.0)
+      - Skips categoricals with nunique > n_rows // 2 (sparse groups: unreliable)
+      - Skips numeric columns with zero variance (SS_total = 0)
+      - Returns empty list when n_rows < 10
+
+    Reports all qualifying pairs above threshold, sorted by eta² descending.
+    """
+
+    name = "categorical_numeric_redundancy"
+    _ETA2_THRESHOLD = 0.95
+
+    def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
+        num_cols = df.select_dtypes("number").columns.tolist()
+        cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+        if not num_cols or not cat_cols:
+            return []
+        n_rows = len(df)
+        if n_rows < 10:
+            return []
+        flags: list[CriticFlag] = []
+        for cat_col in cat_cols:
+            nunique = int(df[cat_col].nunique())
+            if nunique == n_rows or nunique > n_rows // 2:
+                continue  # Skip ID-like or hyper-sparse categoricals
+            for num_col in num_cols:
+                eta2 = _eta_squared(df[cat_col], df[num_col])
+                if eta2 > self._ETA2_THRESHOLD:
+                    flags.append(CriticFlag(
+                        column=None,
+                        rule=self.name,
+                        severity="HIGH",
+                        message=(
+                            f"'{cat_col}' ~ '{num_col}': eta²={eta2:.3f}"
+                            f" — likely categorical encoding pair"
+                        ),
+                        value=round(eta2, 6),
+                        suggestion=(
+                            f"'{cat_col}' and '{num_col}' carry redundant information;"
+                            f" consider dropping '{num_col}' or using only one for modeling"
+                        ),
+                    ))
+        flags.sort(key=lambda f: f.value, reverse=True)
+        return flags
 
 
 class AllUniqueColumnRule(CriticRule):
@@ -387,6 +625,182 @@ class SingleValueCategoricalRule(CriticRule):
         return []
 
 
+class HighCardinalityRule(CriticRule):
+    """High-cardinality categorical: >50 unique values → HIGH, >20 → MEDIUM.
+
+    Skips all-unique columns (already flagged as likely ID by AllUniqueColumnRule).
+    Reports all columns above threshold, sorted by nunique descending.
+    """
+
+    name = "high_cardinality"
+
+    def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
+        cat = df.select_dtypes(exclude="number")
+        if cat.empty or len(df) == 0:
+            return []
+        n_rows = len(df)
+        flags: list[CriticFlag] = []
+        for col in cat.columns:
+            nunique = int(cat[col].nunique())
+            if nunique == n_rows:
+                continue  # AllUniqueColumnRule handles ID-like columns
+            if nunique > 50:
+                flags.append(CriticFlag(
+                    column=str(col), rule=self.name, severity="HIGH",
+                    message=f"{nunique} unique values — high encoding cost",
+                    value=float(nunique),
+                    suggestion=(
+                        f"Consider target-encoding or embedding instead of one-hot; "
+                        f"one-hot would add {nunique} sparse columns"
+                    ),
+                ))
+            elif nunique > 20:
+                flags.append(CriticFlag(
+                    column=str(col), rule=self.name, severity="MEDIUM",
+                    message=f"{nunique} unique values — moderate encoding cost",
+                    value=float(nunique),
+                    suggestion="Consider grouping low-frequency categories or ordinal encoding",
+                ))
+        flags.sort(key=lambda f: f.value, reverse=True)
+        return flags
+
+
+class RareCategoryRule(CriticRule):
+    """Rare category levels: any level appearing in < 0.5% of rows → LOW per column.
+
+    Only fires when n_rows >= 100 (below that the 0.5% threshold is meaningless —
+    minimum frequency 1/99 ≈ 1.0% > 0.5%).
+    NaN values are excluded from frequency calculation (handled by MissingValueRule).
+    """
+
+    name = "rare_category"
+    _RARE_THRESHOLD = 0.005  # < 0.5%
+    _MIN_ROWS = 100
+    _EXAMPLE_LIMIT = 3
+
+    def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
+        cat = df.select_dtypes(exclude="number")
+        if cat.empty:
+            return []
+        if len(df) < self._MIN_ROWS:
+            return []
+        flags: list[CriticFlag] = []
+        for col in cat.columns:
+            series = cat[col].dropna()
+            if series.empty:
+                continue
+            freq = series.value_counts(normalize=True)
+            rare = freq[freq < self._RARE_THRESHOLD]
+            if rare.empty:
+                continue
+            n_rare = len(rare)
+            examples = [str(v) for v in rare.index[: self._EXAMPLE_LIMIT]]
+            example_str = ", ".join(f"'{v}'" for v in examples)
+            if n_rare > self._EXAMPLE_LIMIT:
+                example_str += f" (+{n_rare - self._EXAMPLE_LIMIT} more)"
+            flags.append(CriticFlag(
+                column=str(col),
+                rule=self.name,
+                severity="LOW",
+                message=f"{n_rare} rare level(s) (<0.5% each): {example_str}",
+                value=float(n_rare),
+                suggestion="Consider grouping rare categories into 'Other' to reduce noise",
+            ))
+        return flags
+
+
+class ClassImbalanceRule(CriticRule):
+    """Target variable class imbalance analysis.
+
+    Only fires when target_info is available via the artifact store.
+    Loads target_info from the pipeline state to inspect imbalance.
+
+    Thresholds:
+      - Imbalance ratio > 10:1 → HIGH
+      - Imbalance ratio > 3:1  → MEDIUM
+      - Position heuristic detection → LOW (confidence warning)
+      - Regression target |skew| > 2 → MEDIUM
+    """
+
+    name = "class_imbalance"
+
+    def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
+        # Load target_info from artifact store (if available)
+        try:
+            from tools._pipeline_state import is_active, load_state
+            if not is_active():
+                return []
+            raw = load_state("target_info")
+            if raw is None:
+                return []
+        except Exception:
+            return []
+
+        from eda_state import TargetInfo
+        target_info = TargetInfo.model_validate_json(raw)
+
+        if target_info.column is None:
+            return []
+
+        flags: list[CriticFlag] = []
+
+        # Confidence warning for position heuristic
+        if target_info.detection_method == "position_heuristic":
+            flags.append(CriticFlag(
+                column=target_info.column,
+                rule=self.name,
+                severity="LOW",
+                message=(
+                    f"Target '{target_info.column}' detected by position heuristic "
+                    f"— verify this is the correct target variable"
+                ),
+                value=0.0,
+                suggestion="Confirm target variable or use --target CLI flag",
+            ))
+
+        if target_info.problem_type == "classification":
+            ratio = target_info.imbalance_ratio
+            if ratio > 10:
+                flags.append(CriticFlag(
+                    column=target_info.column,
+                    rule=self.name,
+                    severity="HIGH",
+                    message=f"Severe class imbalance: {ratio:.1f}:1",
+                    value=ratio,
+                    suggestion="Consider SMOTE, class weights, or stratified sampling",
+                ))
+            elif ratio > 3:
+                flags.append(CriticFlag(
+                    column=target_info.column,
+                    rule=self.name,
+                    severity="MEDIUM",
+                    message=f"Moderate class imbalance: {ratio:.1f}:1",
+                    value=ratio,
+                    suggestion="Consider stratified train/test split and class weights",
+                ))
+
+        elif target_info.problem_type == "regression":
+            # Check regression target skewness
+            if target_info.column in df.columns:
+                series = df[target_info.column].dropna()
+                if len(series) > 2:
+                    skew_val = float(series.skew())
+                    if abs(skew_val) > 2:
+                        flags.append(CriticFlag(
+                            column=target_info.column,
+                            rule=self.name,
+                            severity="MEDIUM",
+                            message=(
+                                f"Regression target is highly skewed "
+                                f"(skewness={skew_val:.2f})"
+                            ),
+                            value=abs(skew_val),
+                            suggestion="Consider log or Box-Cox transform",
+                        ))
+
+        return flags
+
+
 # ---------------------------------------------------------------------------
 # Rule registry — Open/Closed: add new rule = add new class + append here
 # ---------------------------------------------------------------------------
@@ -400,8 +814,12 @@ DEFAULT_RULES: list[CriticRule] = [
     ZeroVarianceRule(),
     NearZeroVarianceRule(),
     NearPerfectCorrelationRule(),
+    CategoricalNumericRedundancyRule(),  # W5
     AllUniqueColumnRule(),
     SingleValueCategoricalRule(),
+    HighCardinalityRule(),               # W9
+    RareCategoryRule(),                  # W9
+    ClassImbalanceRule(),
 ]
 
 

@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from tools.visualization_tools import (
+    plot_class_distribution,
     plot_correlation_heatmap,
     plot_histograms,
     plot_missing_heatmap,
@@ -359,3 +360,100 @@ class TestEndToEnd:
         for p in all_paths:
             assert Path(p).exists()
             assert Path(p).stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# plot_class_distribution()
+# ---------------------------------------------------------------------------
+
+
+class TestPlotClassDistribution:
+    """Test plot_class_distribution() for classification, regression, unsupervised."""
+
+    @pytest.fixture()
+    def classification_df_json(self):
+        df = pd.DataFrame({
+            "feat": [1, 2, 3, 4, 5, 6],
+            "species": ["a", "a", "b", "b", "c", "c"],
+        })
+        return df.to_json(orient="records")
+
+    @pytest.fixture()
+    def regression_df_json(self):
+        df = pd.DataFrame({
+            "feat": list(range(50)),
+            "price": [float(x) for x in range(50)],
+        })
+        return df.to_json(orient="records")
+
+    @pytest.fixture()
+    def classification_ti_json(self):
+        from eda_state import TargetInfo
+        return TargetInfo(
+            column="species",
+            problem_type="classification",
+            n_classes=3,
+            class_counts={"a": 2, "b": 2, "c": 2},
+            imbalance_ratio=1.0,
+            detection_method="name_heuristic",
+        ).model_dump_json()
+
+    @pytest.fixture()
+    def regression_ti_json(self):
+        from eda_state import TargetInfo
+        return TargetInfo(
+            column="price",
+            problem_type="regression",
+            detection_method="name_heuristic",
+        ).model_dump_json()
+
+    @pytest.fixture()
+    def unsupervised_ti_json(self):
+        from eda_state import TargetInfo
+        return TargetInfo(
+            column=None,
+            problem_type="unsupervised",
+            detection_method="none",
+        ).model_dump_json()
+
+    def test_classification_creates_png(self, classification_df_json, classification_ti_json, plots_dir):
+        result = plot_class_distribution(classification_df_json, classification_ti_json, plots_dir)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        assert Path(paths[0]).exists()
+        assert Path(paths[0]).name == "class_distribution.png"
+
+    def test_classification_file_nonzero(self, classification_df_json, classification_ti_json, plots_dir):
+        result = plot_class_distribution(classification_df_json, classification_ti_json, plots_dir)
+        paths = json.loads(result)
+        assert Path(paths[0]).stat().st_size > 0
+
+    def test_regression_creates_png(self, regression_df_json, regression_ti_json, plots_dir):
+        result = plot_class_distribution(regression_df_json, regression_ti_json, plots_dir)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        assert Path(paths[0]).exists()
+        assert Path(paths[0]).name == "target_distribution.png"
+
+    def test_unsupervised_returns_empty(self, classification_df_json, unsupervised_ti_json, plots_dir):
+        result = plot_class_distribution(classification_df_json, unsupervised_ti_json, plots_dir)
+        paths = json.loads(result)
+        assert paths == []
+
+    def test_missing_column_returns_empty(self, classification_df_json, plots_dir):
+        from eda_state import TargetInfo
+        ti = TargetInfo(
+            column="nonexistent",
+            problem_type="classification",
+            detection_method="name_heuristic",
+        ).model_dump_json()
+        result = plot_class_distribution(classification_df_json, ti, plots_dir)
+        paths = json.loads(result)
+        assert paths == []
+
+    def test_creates_output_dir(self, classification_df_json, classification_ti_json, tmp_path):
+        new_dir = str(tmp_path / "new" / "plots")
+        result = plot_class_distribution(classification_df_json, classification_ti_json, new_dir)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        assert Path(new_dir).is_dir()

@@ -17,6 +17,9 @@ from tools.data_loader import (
     ParquetLoader,
     _LOADERS,
     _get_loader,
+    _has_datetime_column,
+    _classify_target,
+    detect_target,
     infer_dtypes,
     load_data,
     validate_schema,
@@ -253,3 +256,261 @@ class TestInferDtypes:
         data_json = load_data(csv_path)
         profile = json.loads(infer_dtypes(data_json))
         assert profile["shape"] == [4, 4]
+
+
+# ---------------------------------------------------------------------------
+# _has_datetime_column()
+# ---------------------------------------------------------------------------
+
+class TestHasDatetimeColumn:
+    def test_datetime_dtype_detected(self):
+        df = pd.DataFrame({
+            "date": pd.to_datetime(["2021-01-01", "2021-01-02"]),
+            "val": [1, 2],
+        })
+        assert _has_datetime_column(df) is True
+
+    def test_no_datetime(self):
+        df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
+        assert _has_datetime_column(df) is False
+
+    def test_string_date_column_with_date_in_name(self):
+        df = pd.DataFrame({
+            "order_date": ["2021-01-01", "2021-01-02"],
+            "val": [1, 2],
+        })
+        # Should detect via name heuristic + parseable check
+        assert _has_datetime_column(df) is True
+
+
+# ---------------------------------------------------------------------------
+# _classify_target()
+# ---------------------------------------------------------------------------
+
+class TestClassifyTarget:
+    def test_classification_low_cardinality(self):
+        df = pd.DataFrame({"target": ["a", "b", "c", "a", "b"]})
+        info = _classify_target(df, "target")
+        assert info.problem_type == "classification"
+        assert info.n_classes == 3
+        assert info.column == "target"
+
+    def test_regression_high_cardinality(self):
+        df = pd.DataFrame({"price": list(range(50))})
+        info = _classify_target(df, "price")
+        assert info.problem_type == "regression"
+        assert info.n_classes == 0
+
+    def test_imbalance_ratio(self):
+        df = pd.DataFrame({"y": ["a"] * 90 + ["b"] * 10})
+        info = _classify_target(df, "y")
+        assert info.problem_type == "classification"
+        assert info.imbalance_ratio == 9.0
+
+
+# ---------------------------------------------------------------------------
+# detect_target()
+# ---------------------------------------------------------------------------
+
+class TestDetectTarget:
+    """Test the 4-step heuristic target detection."""
+
+    def test_exact_keyword_target(self):
+        df = pd.DataFrame({"feature_1": [1, 2, 3], "target": [0, 1, 0]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "target"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_exact_keyword_label(self):
+        df = pd.DataFrame({"feat": [1, 2, 3], "label": ["a", "b", "a"]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "label"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_exact_keyword_y(self):
+        df = pd.DataFrame({"x": [1, 2, 3], "y": [0, 1, 0]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "y"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_contains_keyword_outcome(self):
+        df = pd.DataFrame({"feat": [1, 2], "patient_outcome": ["good", "bad"]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "patient_outcome"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_prefix_is_(self):
+        df = pd.DataFrame({"feat": [1, 2, 3], "is_fraud": [0, 1, 0]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "is_fraud"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_prefix_has_(self):
+        df = pd.DataFrame({"feat": [1, 2, 3], "has_subscription": [1, 0, 1]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "has_subscription"
+        assert result["detection_method"] == "name_heuristic"
+
+    def test_fallback_last_low_cardinality(self):
+        # No keyword matches, last column with nunique < 10
+        df = pd.DataFrame({
+            "feat1": list(range(20)),
+            "feat2": list(range(20, 40)),
+            "status": ["ok", "fail"] * 10,
+        })
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "status"
+        assert result["detection_method"] == "position_heuristic"
+
+    def test_no_target_unsupervised(self):
+        # All columns have high cardinality, no keyword matches
+        df = pd.DataFrame({
+            "alpha": list(range(100)),
+            "beta": list(range(100, 200)),
+            "gamma": list(range(200, 300)),
+        })
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] is None
+        assert result["problem_type"] == "unsupervised"
+        assert result["detection_method"] == "none"
+
+    def test_classification_type_detected(self):
+        df = pd.DataFrame({"feat": [1, 2, 3], "class": ["a", "b", "a"]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["problem_type"] == "classification"
+
+    def test_regression_type_detected(self):
+        # "price" is an exact keyword, and column has high cardinality
+        df = pd.DataFrame({
+            "feat": list(range(50)),
+            "price": [x * 1.5 for x in range(50)],
+        })
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["problem_type"] == "regression"
+
+    def test_exact_keyword_priority_over_contains(self):
+        # "target" (exact) and a column with "outcome" (contains)
+        df = pd.DataFrame({
+            "patient_outcome": ["good", "bad", "good"],
+            "target": [0, 1, 0],
+        })
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "target"
+
+    def test_case_insensitive(self):
+        df = pd.DataFrame({"Feature": [1, 2], "TARGET": [0, 1]})
+        result = json.loads(detect_target(df.to_json(orient="records")))
+        assert result["column"] == "TARGET"
+
+
+# ---------------------------------------------------------------------------
+# NA sentinel handling — CSVLoader
+# ---------------------------------------------------------------------------
+
+class TestCSVLoaderNASentinels:
+    """Tests that CSVLoader converts common sentinel tokens to NaN at load time."""
+
+    def test_question_mark_becomes_nan(self, tmp_path):
+        """Bare '?' must be read as NaN, not a literal string."""
+        p = tmp_path / "qmark.csv"
+        p.write_text("a,b\n1,2\n3,?\n")
+        df = CSVLoader().load(str(p))
+        assert pd.isna(df.loc[1, "b"]), "'?' should be NaN"
+
+    def test_leading_space_question_mark_becomes_nan(self, tmp_path):
+        """' ?' (UCI-style leading space) must be read as NaN via skipinitialspace."""
+        p = tmp_path / "spaced_qmark.csv"
+        p.write_text("a,b\n1, 2\n3, ?\n")
+        df = CSVLoader().load(str(p))
+        assert pd.isna(df.loc[1, "b"]), "' ?' should be NaN after skipinitialspace"
+
+    def test_other_sentinels_become_nan(self, tmp_path):
+        """Common tokens (Unknown, NULL, N/A) must also become NaN."""
+        p = tmp_path / "sentinels.csv"
+        p.write_text("a,b,c\nUnknown,NULL,N/A\n")
+        df = CSVLoader().load(str(p))
+        assert pd.isna(df.loc[0, "a"]), "'Unknown' should be NaN"
+        assert pd.isna(df.loc[0, "b"]), "'NULL' should be NaN"
+        assert pd.isna(df.loc[0, "c"]), "'N/A' should be NaN"
+
+    def test_clean_values_unaffected(self, tmp_path):
+        """Normal string and numeric values must not be converted to NaN."""
+        p = tmp_path / "clean.csv"
+        p.write_text("name,score\nAlice,42\nBob,17\n")
+        df = CSVLoader().load(str(p))
+        assert df.loc[0, "name"] == "Alice"
+        assert df.loc[1, "score"] == 17
+
+    def test_missing_analysis_detects_question_mark(self, tmp_path):
+        """Integration: missing_analysis() must report >0% missing for a '?'-only column."""
+        from tools.eda_tools import missing_analysis
+        p = tmp_path / "adult_mini.csv"
+        p.write_text(
+            "age,workclass,occupation\n"
+            "39, State-gov, Adm-clerical\n"
+            "54, ?, ?\n"
+            "28, Private, Prof-specialty\n"
+        )
+        data_json = load_data(str(p))
+        result = json.loads(missing_analysis(data_json))
+        assert result["per_column"]["workclass"] > 0, "workclass should have missing%>0"
+        assert result["per_column"]["occupation"] > 0, "occupation should have missing%>0"
+        assert result["per_column"]["age"] == 0.0, "age has no missing values"
+
+
+# ---------------------------------------------------------------------------
+# W8: duplicate_count artifact
+# ---------------------------------------------------------------------------
+
+class TestDuplicateCountArtifact:
+    """Test that load_data() saves and validate_schema() exposes duplicate_count."""
+
+    def test_load_data_saves_duplicate_count_artifact(self, csv_with_duplicates):
+        """load_data() stores the pre-dedup duplicate count in the artifact store."""
+        from tools._pipeline_state import init_session, clear_session, load_state
+        try:
+            init_session()
+            load_data(csv_with_duplicates)
+            raw = load_state("duplicate_count")
+            assert raw is not None
+            assert int(raw) == 1  # csv_with_duplicates has 3 rows, 1 duplicate
+        finally:
+            clear_session()
+
+    def test_load_data_saves_zero_for_clean_csv(self, csv_path):
+        """load_data() stores 0 when there are no duplicates."""
+        from tools._pipeline_state import init_session, clear_session, load_state
+        try:
+            init_session()
+            load_data(csv_path)
+            raw = load_state("duplicate_count")
+            assert int(raw) == 0
+        finally:
+            clear_session()
+
+    def test_validate_schema_includes_duplicate_count(self, csv_with_duplicates):
+        """validate_schema() exposes duplicate_count in the DataProfile JSON."""
+        from tools._pipeline_state import init_session, clear_session, load_state
+        try:
+            init_session()
+            data_json = load_data(csv_with_duplicates)
+            validate_schema(data_json)
+            # In pipeline mode validate_schema returns a STATE_REF string;
+            # the DataProfile JSON is in the schema_json artifact.
+            profile_json = json.loads(load_state("schema_json"))
+            assert "duplicate_count" in profile_json
+            assert profile_json["duplicate_count"] == 1
+        finally:
+            clear_session()
+
+    def test_validate_schema_duplicate_count_zero_clean_data(self, csv_path):
+        """validate_schema() returns duplicate_count=0 for a clean dataset."""
+        from tools._pipeline_state import init_session, clear_session, load_state
+        try:
+            init_session()
+            data_json = load_data(csv_path)
+            validate_schema(data_json)
+            profile_json = json.loads(load_state("schema_json"))
+            assert profile_json.get("duplicate_count", -1) == 0
+        finally:
+            clear_session()

@@ -5,12 +5,12 @@ Architecture Reference: architecture.md § 9
 AG2 Version: 0.10.3
 
 Models:
-  - gpt-5-nano  ($0.05 / $0.40 per 1M tokens) — dev & iteration
-  - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) — final validation only
+  - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) — dev & iteration
+  - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) and gpt-5  ($2.50 / $15.00 per 1M tokens) for FindingsGeneratorAgent only — final validation only
 
 Usage:
-  EDA_MODE=dev   → gpt-5-nano  (default)
-  EDA_MODE=final → gpt-5-mini
+  EDA_MODE=dev   → gpt-5-mini  (default)
+  EDA_MODE=final → gpt-5-mini + gpt-5 for FindingsGeneratorAgent
 """
 
 import os
@@ -32,16 +32,33 @@ _BASE: dict = {
 
 # --- Model-specific configurations ---
 LLM_CONFIG_DEV: dict = {
-    "config_list": [{**_BASE, "model": "gpt-5-nano"}],
+    "config_list": [{
+        **_BASE,
+        "model": "gpt-5-mini",
+        "price": [0.00025, 0.002],  # $0.25/$2.00 per 1M tokens
+    }],
 }
 
+#sets the config of FindingsGeneratorAgent to use gpt-5 instead of gpt-5-mini, while keeping the rest of the agents on gpt-5-mini. 
 LLM_CONFIG_FINAL: dict = {
-    "config_list": [{**_BASE, "model": "gpt-5-mini"}],
+    "config_list": [{
+        **_BASE,
+        "model": "gpt-5",
+        "price": [0.0025, 0.015],  # $2.5/$15.00 per 1M tokens
+    }],
 }
+# For cost control during final validation, only the FindingsGeneratorAgent uses gpt-5; all other agents remain on gpt-5-mini. This allows us to validate the critical findings generation step with the more powerful model while keeping overall costs manageable.
 
+LLM_CONFIG_FINAL_REST: dict = {
+    "config_list": [{
+        **_BASE,
+        "model": "gpt-5-mini",
+        "price": [0.0025, 0.015],  # $2.5/$15.00 per 1M tokens
+    }],
+}
 # --- Active configuration (selected via EDA_MODE environment variable) ---
 LLM_CONFIG: dict = (
-    LLM_CONFIG_FINAL if os.getenv("EDA_MODE") == "final" else LLM_CONFIG_DEV
+    LLM_CONFIG_FINAL_REST if os.getenv("EDA_MODE") == "final" else LLM_CONFIG_DEV
 )
 
 # --- Project paths ---
@@ -52,8 +69,40 @@ PLOTS_DIR = OUTPUTS_DIR / "plots"
 # --- Feature toggles ---
 IPYNB_EXPORT: bool = os.getenv("IPYNB_EXPORT", "false").lower() == "true"
 
+# --- OpenLIT observability ---
+# Enable via OPENLIT_ENABLE=true or --openlit CLI flag.
+# If OPENLIT_ENDPOINT is set, traces go there; otherwise they print to console.
+OPENLIT_ENABLE: bool = os.getenv("OPENLIT_ENABLE", "false").lower() == "true"
+OPENLIT_ENDPOINT: str | None = os.getenv("OPENLIT_ENDPOINT")
+OPENLIT_EVAL_MODEL: str = os.getenv("OPENLIT_EVAL_MODEL", "gpt-5")
+
 # --- Critic config ---
 MAX_CRITIC_ITERATIONS: int = int(os.getenv("MAX_CRITIC_ITERATIONS", "2"))
 
 # --- GroupChat config ---
-MAX_ROUNDS: int = int(os.getenv("MAX_ROUNDS", "50"))
+MAX_ROUNDS: int = int(os.getenv("MAX_ROUNDS", "70"))
+# Raised from 50 → 70 to accommodate:
+#   - W4 (analyze_categoricals = 5th EDA tool, +2 rounds worst-case sequential)
+#   - Planned W7 (feature importance = 6th EDA tool, +2 more rounds)
+#   - 2 critic-loop retries (each retry = +10 rounds FindingsGenerator + Critic)
+#   - Total worst-case sequential path peaks ~55 rounds; 70 is a safe ceiling.
+
+# --- CSV / Excel missing-value sentinel tokens ---
+# These tokens are treated as NaN at load time (in addition to pandas defaults).
+# Override via CSV_NA_TOKENS env var (comma-separated) for datasets where
+# any of these strings is a legitimate value rather than a missing sentinel.
+_env_na = os.getenv("CSV_NA_TOKENS")
+NA_TOKENS: list[str] = (
+    [t.strip() for t in _env_na.split(",")]
+    if _env_na
+    else [
+        "?", "??",                                      # UCI / survey sentinel
+        "NA", "N/A", "n/a", "na", "N\\A",             # standard abbreviations
+        "NULL", "null", "None", "none",                # programming defaults
+        "NaN", "nan", "<NA>", "<missing>",             # typed representations
+        "missing", "MISSING", "Missing",
+        "Unknown", "unknown", "UNK", "unk",
+        "Refused", "refused", "No answer",
+        "Not applicable", "Not available",
+    ]
+)

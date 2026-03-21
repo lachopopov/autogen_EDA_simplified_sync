@@ -4,7 +4,7 @@ agents/visualization_agent.py — VisualizationAgent factory + tool registration
 Architecture Reference: architecture.md § 4.4, § 12.1, § 12.6
 
 Role: Generate and save all visualizations to outputs/plots/.
-Tools: plot_histograms(), plot_correlation_heatmap(), plot_missing_heatmap()
+Tools: plot_histograms(), plot_correlation_heatmap(), plot_missing_heatmap(), plot_class_distribution()
 Output: plot_paths — list of saved PNG file paths
 
 Tool registration uses the AG2 canonical chained-decorator pattern:
@@ -23,6 +23,7 @@ from autogen import UserProxyAgent
 
 from agents import make_agent
 from tools.visualization_tools import (
+    plot_class_distribution,
     plot_correlation_heatmap,
     plot_histograms,
     plot_missing_heatmap,
@@ -33,8 +34,10 @@ from tools.visualization_tools import (
 # (only ReportExporterAgent is allowed to emit TERMINATE — architecture.md § 4.7, § 5).
 VISUALIZATION_SYSTEM_MESSAGE = """\
 Generate and save all visualizations to outputs/plots/.
-Call all three tools in a SINGLE parallel tool_calls message:
-  plot_histograms(), plot_correlation_heatmap(), plot_missing_heatmap().
+Call all four tools in a SINGLE parallel tool_calls message:
+  plot_histograms(), plot_correlation_heatmap(), plot_missing_heatmap(), plot_class_distribution().
+plot_class_distribution() also requires target_info_json — load it from artifact store (STATE_REF:target_info).
+If no target_info artifact exists, skip plot_class_distribution().
 When a tool returns a confirmation message with "Reference: STATE_REF:...", the tool has SUCCEEDED.
 Do NOT re-call the same tool. After receiving results, emit a brief text summary and advance.
 Do NOT copy large JSON.
@@ -81,3 +84,8 @@ def register_visualization_tools(agent, user_proxy: UserProxyAgent) -> None:
     agent.register_for_llm(
         description="Plot missing values bar chart by column. Saves PNG to output_dir. Returns JSON list of file paths."
     )(user_proxy.register_for_execution()(plot_missing_heatmap))
+
+    # --- plot_class_distribution ---
+    agent.register_for_llm(
+        description="Plot target variable distribution: bar chart for classification, histogram+KDE for regression. Requires target_info_json from artifact store. Saves PNG to output_dir."
+    )(user_proxy.register_for_execution()(plot_class_distribution))

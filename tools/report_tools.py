@@ -34,6 +34,11 @@ Report structure (Option A — plots inline in parent sections):
     - expert_commentary:  LLM 3-lens analysis (if interpretations available)
     - plot_paths:         list of PNG paths to render inline
     - plot_commentaries:  per-plot 3-lens commentary from LLM
+
+Public AG2-facing functions (complete list):
+  - render_pdf(findings_json, output_dir)      -> str  (always produced)
+  - render_markdown(findings_json, output_dir) -> str  (always produced, LLM-readable)
+  - render_ipynb(findings_json, output_dir)    -> str  (optional, IPYNB_EXPORT=true)
 """
 
 from __future__ import annotations
@@ -324,7 +329,19 @@ class IPYNBRenderer(ReportRenderer):
             for plot_path in section_plots:
                 p = Path(plot_path)
                 caption = p.stem.replace("_", " ").title()
-                plot_lines = [f"![{caption}]({plot_path})\n"]
+                # Jupyter resolves image paths relative to the notebook's own
+                # directory.  plot_path is relative to the project root (e.g.
+                # "outputs/plots/hist_age.png"), so we must convert it to be
+                # relative to the notebook parent dir ("outputs/") before
+                # embedding — otherwise Jupyter prepends the notebook dir and
+                # the image path becomes "outputs/outputs/plots/..." (broken).
+                try:
+                    nb_rel = Path(plot_path).resolve().relative_to(
+                        Path(output_path).resolve().parent
+                    )
+                except ValueError:
+                    nb_rel = p  # fallback: use as-is if paths share no common root
+                plot_lines = [f"![{caption}]({nb_rel})\n"]
                 fname = p.name
                 for pc in plot_comms:
                     if pc.get("plot_file") == fname:
@@ -360,6 +377,95 @@ class IPYNBRenderer(ReportRenderer):
 
 
 # ---------------------------------------------------------------------------
+# MarkdownRenderer — plain UTF-8 Markdown (LLM-readable)
+# ---------------------------------------------------------------------------
+
+
+class MarkdownRenderer(ReportRenderer):
+    """Concrete renderer: produces GitHub-Flavored Markdown report.
+
+    Produces plain UTF-8 text that is directly consumable by LLMs,
+    diff tools, and version control, while remaining human-readable
+    when rendered in any Markdown viewer.
+    """
+
+    def _write_output(self, content: dict[str, Any], output_path: str) -> str:
+        lines: list[str] = []
+
+        lines.append(f"# {_REPORT_TITLE}")
+        lines.append("")
+
+        for section in content.get("sections", []):
+            title = section.get("title", "")
+            body = section.get("content", "")
+
+            lines.append(f"## {title}")
+            lines.append("")
+            lines.append(body)
+            lines.append("")
+
+            # Expert commentary (3-lens: statistical, DS/ML, business)
+            expert = section.get("expert_commentary", "")
+            if expert:
+                for line in expert.split("\n"):
+                    stripped = line.strip()
+                    if not stripped:
+                        lines.append("")
+                        continue
+                    # Bold the perspective labels
+                    if stripped.startswith(("Statistical", "Data Science", "Business")):
+                        colon_idx = stripped.find(":")
+                        if colon_idx > 0:
+                            label = stripped[: colon_idx + 1]
+                            rest = stripped[colon_idx + 1 :].strip()
+                            lines.append(f"**{label}** {rest}")
+                            continue
+                    lines.append(stripped)
+                lines.append("")
+
+            # Inline plot references + per-plot commentary
+            section_plots = section.get("plot_paths", [])
+            plot_comms = section.get("plot_commentaries", [])
+            for plot_path in section_plots:
+                p = Path(plot_path)
+                caption = p.stem.replace("_", " ").title()
+                lines.append(f"![{caption}]({plot_path})")
+                fname = p.name
+                for pc in plot_comms:
+                    if pc.get("plot_file") == fname:
+                        lines.append("")
+                        for key, label in (
+                            ("statistical", "Statistical Perspective"),
+                            ("ds_ml", "Data Science & ML Perspective"),
+                            ("business", "Business Perspective"),
+                        ):
+                            text = pc.get(key, "")
+                            if text:
+                                lines.append(f"**{label}:** {text}")
+                        lines.append("")
+                        break
+            if section_plots:
+                lines.append("")
+
+        # Unresolved flags
+        unresolved = content.get("unresolved", [])
+        if unresolved:
+            lines.append("## Unresolved Data Quality Issues")
+            lines.append("")
+            for flag_text in unresolved:
+                lines.append(f"- {flag_text}")
+            lines.append("")
+
+        markdown_text = "\n".join(lines)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(markdown_text)
+
+        logger.info("Markdown report generated: %s", output_path)
+        return output_path
+
+
+# ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 
@@ -389,7 +495,7 @@ def render_pdf(
     ],
     output_dir: Annotated[
         str,
-        "Output directory path for the PDF report (e.g., 'outputs')",
+        "Output directory path — must be exactly 'outputs/' (report.pdf is created inside it)",
     ],
 ) -> str:
     """
@@ -428,7 +534,7 @@ def render_ipynb(
     ],
     output_dir: Annotated[
         str,
-        "Output directory path for the IPYNB report (e.g., 'outputs')",
+        "Output directory path — must be exactly 'outputs/' (report.ipynb is created inside it)",
     ],
 ) -> str:
     """
@@ -455,6 +561,49 @@ def render_ipynb(
 
     logger.info(
         "render_ipynb: %d sections, %d plots -> %s",
+        len(findings.get("sections", [])),
+        len(plot_paths),
+        result,
+    )
+    return result
+
+
+def render_markdown(
+    findings_json: Annotated[
+        str,
+        "JSON string of Findings from assemble_findings()",
+    ],
+    output_dir: Annotated[
+        str,
+        "Output directory path — must be exactly 'outputs/' (report.md is created inside it)",
+    ],
+) -> str:
+    """
+    AG2 tool entry point. Renders Findings as a plain Markdown report.
+
+    Produces: {output_dir}/report.md
+    Uses the Template Method pattern: MarkdownRenderer.
+
+    The Markdown output is LLM-readable (plain UTF-8 text with structure
+    preserved via headings and bold labels) and human-readable when rendered.
+    Call this unconditionally alongside render_pdf().
+
+    Returns:
+        The absolute path to the generated Markdown file.
+    """
+    # Artifact store: resolve input
+    from tools._pipeline_state import is_active, resolve
+    if is_active():
+        findings_json = resolve(findings_json, "findings")
+
+    findings = json.loads(findings_json)
+    plot_paths = _extract_plot_paths(findings)
+    output_path = str(Path(output_dir) / "report.md")
+
+    result = MarkdownRenderer().render(findings, plot_paths, output_path)
+
+    logger.info(
+        "render_markdown: %d sections, %d plots -> %s",
         len(findings.get("sections", [])),
         len(plot_paths),
         result,

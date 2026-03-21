@@ -73,7 +73,7 @@ class TestCreateFindingsGeneratorAgent:
         assert "Do NOT include the word TERMINATE" in findings_agent.system_message
 
     def test_max_consecutive_auto_reply(self, findings_agent):
-        assert findings_agent._max_consecutive_auto_reply == 5
+        assert findings_agent._max_consecutive_auto_reply == 10
 
     def test_termination_guard(self, findings_agent):
         assert findings_agent._is_termination_msg({"content": "TERMINATE"}) is True

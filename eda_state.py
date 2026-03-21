@@ -29,6 +29,28 @@ logger = logging.getLogger(__name__)
 # Sub-models — used by tools (tools layer) for I/O validation
 # ---------------------------------------------------------------------------
 
+class TargetInfo(BaseModel):
+    """Target variable metadata — detected heuristically, confirmed by user.
+
+    Used by target_analysis(), ClassImbalanceRule, and the report generator
+    to produce problem-type-aware EDA output.
+
+    detection_method values:
+      - "name_heuristic":     matched a general keyword in column names
+      - "position_heuristic": last column + low cardinality fallback
+      - "user_specified":     user provided via --target or interactive override
+      - "none":               no target detected / user declined
+    """
+
+    column: str | None = None            # None = unsupervised
+    problem_type: str = "unsupervised"   # "classification" | "regression" | "unsupervised"
+    n_classes: int = 0                   # >0 for classification only
+    class_counts: dict[str, int] = Field(default_factory=dict)
+    imbalance_ratio: float = 1.0         # majority_count / minority_count
+    detection_method: str = ""           # see docstring
+    has_datetime_index: bool = False     # True if a datetime column detected
+
+
 class DataProfile(BaseModel):
     """Schema and shape metadata produced by DataPrepAgent's tools."""
 
@@ -37,6 +59,83 @@ class DataProfile(BaseModel):
     dtypes: dict[str, str] = Field(default_factory=dict)
     numerical_cols: list[str] = Field(default_factory=list)
     categorical_cols: list[str] = Field(default_factory=list)
+    duplicate_count: int = 0  # Rows removed by load_data() dedup (W8)
+
+
+class CategoricalStats(BaseModel):
+    """Per-column categorical distribution summary (W4)."""
+
+    cardinality: int = 0
+    entropy_bits: float = 0.0        # Shannon entropy in bits
+    rare_count: int = 0              # Values with freq < 0.5%
+    top_values: list[dict[str, Any]] = Field(default_factory=list)
+    more_values: int = 0             # Values beyond top-N not shown
+
+
+class CategoricalAnalysis(BaseModel):
+    """Full categorical inventory produced by analyze_categoricals() (W4)."""
+
+    columns: dict[str, CategoricalStats] = Field(default_factory=dict)
+    target_column: str | None = None
+    top_n: int = 10
+
+
+class AssociationRow(BaseModel):
+    """Per-feature result row from compute_feature_target_associations() (W7).
+
+    Two complementary lenses:
+      - MI (mutual information): detects any form of dependence (kNN-estimated).
+      - Effect size: measures practical magnitude in an n-invariant [0, 1] scale.
+
+    Effect size metric selection by feature/task combination:
+      - numerical feature + classification  → eta²  (SS_between/SS_total, one-way ANOVA)
+      - categorical feature + classification → Cramér's V  (sqrt(chi²/(n*(k-1))))
+      - numerical feature + regression       → |Pearson r|  (absolute correlation)
+      - categorical feature + regression     → eta²  (reversed ANOVA: target ~ cat_feature)
+
+    Ranking:
+      borda_score = mi_rank + effect_size_rank  (lower = more important)
+      F-statistic / chi² and p-value are stored as supplementary data only —
+      they scale with n and must NOT drive the rank.
+    """
+
+    feature: str = ""
+    feature_type: str = ""           # "numerical" | "categorical"
+
+    # --- MI lens (kNN, possibly on stratified sample) ---
+    mi_score: float = 0.0            # nats; higher = more dependence
+    mi_rank: int = 0                 # 1 = highest MI
+
+    # --- Effect size lens (full dataset, O(n), n-invariant) ---
+    effect_size: float = 0.0         # [0, 1]; higher = larger practical effect
+    effect_size_type: str = ""       # "eta2" | "cramer_v" | "pearson_r"
+    effect_size_label: str = ""      # "weak" | "moderate" | "strong"
+    effect_size_rank: int = 0        # 1 = largest effect size
+
+    # --- Borda fusion (the ranking signal) ---
+    borda_score: int = 0             # mi_rank + effect_size_rank (lower = more important)
+
+    # --- Supplementary (informational only — NOT used in ranking) ---
+    f_stat_or_chi2: float = 0.0      # raw test statistic (n-dependent)
+    p_value: float = 1.0             # significance witness
+
+
+class FeatureAssociations(BaseModel):
+    """Top-N feature–target association results produced by
+    compute_feature_target_associations() (W7).
+
+    MI is computed on a stratified sample when n > MAX_ROWS_FOR_MI (50K)
+    to keep kNN estimation fast.  Effect sizes always use the full dataset.
+    """
+
+    target_col: str = ""
+    task_type: str = "unknown"       # "classification" | "regression" | "unknown"
+    rows: list[AssociationRow] = Field(default_factory=list)
+    top_n: int = 10
+    total_features: int = 0
+    mi_sample_size: int | None = None   # None = full dataset used for MI
+    mi_sample_note: str = ""            # set when sampling occurred
+    missingness_strategy: str = ""      # "complete-case (...)" or "imputed (...)"
 
 
 class MissingInfo(BaseModel):
@@ -105,6 +204,9 @@ class Interpretations(BaseModel):
     missing_values: Optional[dict[str, str]] = None
     correlation: Optional[dict[str, str]] = None
     statistical_analysis: Optional[dict[str, str]] = None
+    categorical_analysis: Optional[dict[str, str]] = None
+    feature_associations: Optional[dict[str, str]] = None   # W7
+    target_variable_analysis: Optional[dict[str, str]] = None
     quality_assessment: Optional[dict[str, str]] = None
     plot_commentaries: list[PlotCommentary] = Field(default_factory=list)
     conclusions: str = ""

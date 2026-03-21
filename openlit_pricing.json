@@ -1,0 +1,28 @@
+{
+  "chat": {
+    "gpt-5-nano": {
+      "promptPrice": 0.00005,
+      "completionPrice": 0.0004
+    },
+    "gpt-5-nano-2025-08-07": {
+      "promptPrice": 0.00005,
+      "completionPrice": 0.0004
+    },
+    "gpt-5-mini": {
+      "promptPrice": 0.00025,
+      "completionPrice": 0.002
+    },
+    "gpt-5-mini-2025-08-07": {
+      "promptPrice": 0.00025,
+      "completionPrice": 0.002
+    },
+    "gpt-5": {
+      "promptPrice": 0.00125,
+      "completionPrice": 0.01
+    },
+    "gpt-5-2025-08-07": {
+      "promptPrice": 0.00125,
+      "completionPrice": 0.01
+    }
+  }
+}

@@ -4,7 +4,7 @@
 
 Automated end-to-end statistical analysis, visualization, quality assessment, and report generation using AI agents coordinated through AG2 StateFlow. Engineered for small-to-medium datasets (100–100K rows) with expert-validated Metadata-First Hybrid architecture.
 
-**Latest:** 625 unit tests passing, live smoke tests validated on iris.csv and stress_critic.csv. Conclusions and recommendations fortified with business-actionable insights.
+**Latest:** 744 unit tests passing, live smoke tests validated on iris.csv, stress_critic.csv, and adult.csv (UCI census — `?` sentinel handling verified). Conclusions and recommendations fortified with business-actionable insights.
 
 ---
 
@@ -20,6 +20,7 @@ Automated end-to-end statistical analysis, visualization, quality assessment, an
 - [Deployment Recommendations](#deployment-recommendations)
 - [Development & Testing](#development--testing)
 - [Future Optimizations](#future-optimizations)
+- [Observability (OpenLIT)](#observability-openlit)
 - [License & Attribution](#license--attribution)
 
 ---
@@ -108,7 +109,31 @@ Create a `.env` file in the project root:
 
 ```bash
 # .env
+
+# --- Required ---
 OPENAI_API_KEY=sk-your-actual-key-here
+
+# --- Model selection (optional) ---
+# dev = gpt-5-nano (fast, ~$0.01/run)  |  final = gpt-5-mini (quality, ~$0.10/run)
+# EDA_MODE=dev
+
+# --- CSV / Excel missing-value sentinels (optional) ---
+# Comma-separated list overrides the built-in default set (which includes "?").
+# Set to a custom list if your data uses non-standard sentinels.
+# Set to empty (CSV_NA_TOKENS=) to disable all custom sentinel conversion.
+# CSV_NA_TOKENS=?,Unknown,NULL,N/A,missing
+
+# --- Observability (optional) ---
+# OPENLIT_ENABLE=true
+# OPENLIT_ENDPOINT=http://127.0.0.1:4318
+# OPENLIT_EVAL_MODEL=gpt-5    # judge model — must be stronger than the evaluated model
+
+# --- Report export (optional) ---
+# IPYNB_EXPORT=true           # also export Jupyter notebook alongside PDF
+
+# --- Pipeline tuning (optional) ---
+# MAX_CRITIC_ITERATIONS=2     # max critic↔revision loops before forcing report export
+# MAX_ROUNDS=50               # absolute ceiling on GroupChat rounds
 ```
 
 **Security note:** Never commit `.env` to version control. Add it to `.gitignore` (already done).
@@ -181,14 +206,20 @@ Sample datasets are included in `test_data/`:
 
 - **iris.csv** — Classic Iris dataset (150 rows, 5 columns, balanced, multicollinear)
 - **stress_critic.csv** — Edge case dataset for quality thresholds (tests high outlier counts, missing data)
+- **adult.csv** — UCI census dataset (250 rows sampled); `workclass` and `occupation` use `" ?"` (space + question mark) as missing-value sentinels — validates automatic sentinel-to-NaN conversion
 
 ```bash
 # Quick test
 python main.py test_data/iris.csv
 
-# Stress test the system
+# Stress test the quality rules
 python main.py test_data/stress_critic.csv
+
+# Sentinel handling test (? missing values)
+python main.py test_data/adult.csv
 ```
+
+> **Note:** If your dataset uses `"?"` as a *legitimate* value (not a missing sentinel), override via: `CSV_NA_TOKENS=NA,NULL,none python main.py your_data.csv` or add `CSV_NA_TOKENS=NA,NULL,none` to your `.env`.
 
 ---
 
@@ -222,7 +253,7 @@ user_proxy (initiator)
 
 **Reference docs:**
 - [architecture.md](architecture.md) — System design, 13 sections
-- [lessons_learned.md](lessons_learned.md) — 26 engineering principles (Lessons 1–26)
+- [lessons_learned.md](lessons_learned.md) — 33 engineering principles (Lessons 1–33)
 
 #### Extending the System: Add a New Tool
 
@@ -338,7 +369,7 @@ pytest tests/ --cov=. --cov-report=html
 pytest -m "not slow" tests/
 ```
 
-**Test inventory:** 625 tests covering tools, agents, orchestrator, state management, and end-to-end integration.
+**Test inventory:** 744 tests covering tools, agents, orchestrator, state management, and end-to-end integration.
 
 #### Performance & Cost Tuning
 
@@ -547,8 +578,8 @@ pytest tests/ -v --tb=short
 - **[tools/](tools/)** — Pure-Python tool functions (pandas, matplotlib, analysis)
 - **[tools/_pipeline_state.py](tools/_pipeline_state.py)** — Artifact store implementation
 - **[eda_state.py](eda_state.py)** — Pydantic models (state schema)
-- **[tests/](tests/)** — 625 unit tests
-- **[lessons_learned.md](lessons_learned.md)** — 26 architectural lessons
+- **[tests/](tests/)** — 744 unit tests
+- **[lessons_learned.md](lessons_learned.md)** — 33 engineering lessons
 - **[architecture.md](architecture.md)** — System design (13 sections)
 
 ### Code Quality
@@ -567,7 +598,7 @@ mypy agents/ tools/ --strict
 pytest tests/ -v --cov=. --cov-report=term-missing
 ```
 
-**Current state:** 625 tests passing, ruff clean, zero linting errors.
+**Current state:** 744 tests passing, ruff clean, zero linting errors.
 
 ### Adding New Tests
 
@@ -659,6 +690,124 @@ If async is implemented:
 
 ---
 
+## Observability (OpenLIT)
+
+The pipeline supports **OpenLIT** for LLM observability — tracing every agent call, token usage, and cost in a visual dashboard.
+
+### Prerequisites
+
+1. **Docker** installed and running
+2. **OpenLIT stack** deployed (OTEL collector + dashboard):
+
+```bash
+# Deploy OpenLIT (one-time)
+docker run -d --name openlit \
+  -p 3000:3000 -p 4317:4317 -p 4318:4318 \
+  ghcr.io/openlit/openlit:latest
+```
+
+3. **openlit SDK** installed (already in `requirements.txt`):
+
+```bash
+pip install openlit
+```
+
+### Configuration
+
+Add to your `.env` file:
+
+```bash
+OPENLIT_ENABLE=true
+OPENLIT_ENDPOINT=http://127.0.0.1:4318
+OPENLIT_EVAL_MODEL=gpt-5    # judge for hallucination eval; must be stronger than main model
+```
+
+Or use CLI flags to override:
+
+```bash
+# Enable OpenLIT for this run (overrides .env)
+python main.py test_data/iris.csv --openlit
+
+# Disable OpenLIT for this run (overrides .env)
+python main.py test_data/iris.csv --no-openlit
+```
+
+### Accessing the Dashboard
+
+Open **http://127.0.0.1:3000** in your browser.
+
+**Default credentials:**
+- Email: `user@openlit.io`
+- Password: `openlituser`
+
+The dashboard shows:
+- **Request traces** — full call chain per agent
+- **Token usage** — input/output tokens per LLM call
+- **Cost tracking** — per-request and cumulative costs
+
+### Hallucination Evaluation
+
+The pipeline includes **automated hallucination detection** for FindingsGenerator output using OpenLIT's programmatic evaluations. When OpenLIT is enabled, the LLM-generated interpretations are evaluated against the deterministic fact sheet (ground truth) using a stronger judge model.
+
+**How it works:**
+1. `prepare_interpretation_context()` (called by **FindingsGeneratorExecutor**) produces a deterministic fact sheet: all statistics, histogram bin data, correlation matrix, missing percentages, critic flags
+2. **FindingsGeneratorAgent** (gpt-5-nano in `dev` mode / gpt-5-mini in `final` mode, controlled by `EDA_MODE`) generates expert commentary grounded in the fact sheet
+3. `save_interpretations()` (called by **FindingsGeneratorExecutor**, only when OpenLIT session is active) runs `openlit.evals.Hallucination` with the judge model (`OPENLIT_EVAL_MODEL`, default `gpt-5`) comparing the generated text against the fact sheet as ground truth
+4. Evaluation results are persisted in the artifact store (`hallucination_eval` key) and forwarded as OTel metrics to the OpenLIT dashboard via `collect_metrics=True`
+5. `assemble_findings()` builds a **Trustworthiness Assessment** section at the end of the report based on the persisted eval score
+
+**Trustworthiness levels** (based on hallucination score):
+
+| Score Range | Level | Meaning |
+|---|---|---|
+| 0.0 – 0.3 | **High Trustworthiness** | Commentary is well-grounded in the source data |
+| 0.3 – 0.7 | **Medium Trustworthiness** | Some claims may not be fully supported; cross-check recommended |
+| 0.7 – 1.0 | **Low Trustworthiness** | Significant hallucination detected; treat with caution |
+
+**Telemetry:** `_shutdown_openlit()` flushes both the `TracerProvider` and `MeterProvider` before exit, ensuring the eval counter created by `collect_metrics=True` is exported to the OTLP collector (default `PeriodicExportingMetricReader` interval is 60 s — longer than a typical pipeline run).
+
+**Non-blocking:** The evaluation logs warnings but never fails the pipeline.
+
+**Configure the judge model** via environment variable:
+
+```bash
+# Default: gpt-5 (recommended — must be stronger than the evaluated model)
+OPENLIT_EVAL_MODEL=gpt-5
+```
+
+**Cost impact:** ~$0.10 per run (one additional gpt-5 call).
+
+### Custom Pricing for New Models
+
+OpenLIT's default pricing JSON may not include newer models like `gpt-5-nano` and `gpt-5-mini`. The project includes `openlit_pricing.json` with correct pricing:
+
+```json
+{
+  "chat": {
+    "gpt-5-nano": {"promptPrice": 0.00005, "completionPrice": 0.0004},
+    "gpt-5-mini": {"promptPrice": 0.00025, "completionPrice": 0.002}
+  }
+}
+```
+
+This file is automatically loaded by `_init_openlit()` in `main.py`. To add new models, edit `openlit_pricing.json` — prices are per-token.
+
+### Known Issues (openlit 1.36.8)
+
+Three bugs exist in openlit 1.36.8 that are patched locally in the conda environment:
+
+1. **`async_agno.py` line 783** — `return await result` inside an async generator (invalid Python). Patched to `await result`.
+2. **`__init__.py` tracer=None** — `config.update_config()` passes user-provided `otel_tracer` (always None) instead of the internally created `configured_tracer`. Patched to pass `configured_tracer`.
+3. **`evals/utils.py` line 155** — `temperature=0.0` hardcoded in `client.beta.chat.completions.parse()`. gpt-5 family models reject `temperature=0.0` with HTTP 400. Patched by removing the `temperature` parameter.
+
+Additionally, the **Agno instrumentor** is disabled (`disabled_instrumentors=["agno"]`) since AG2 does not use the Agno framework, and the buggy instrumentor would cause initialization failures.
+
+> **Note:** These patches live in the installed package and will be lost on `pip install --upgrade openlit`. Re-apply them if upgrading, or check if the upstream fix has been released.
+
+See [lessons_learned.md](lessons_learned.md) Lessons 29–33 for full details.
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
@@ -678,6 +827,12 @@ If async is implemented:
 **Tests fail with "PipelineStateError"**
 - Session cleanup may have left stale state dirs
 - `rm -rf outputs/.pipeline_state/` and retry
+
+**Missing values showing as 0% despite known missing data (`?`, `Unknown`, etc.)**
+- Confirm your CSV uses one of the built-in sentinel tokens (`?`, `Unknown`, `NULL`, `N/A`, etc. — see `config.py → NA_TOKENS`)
+- For custom sentinels not in the default list: `CSV_NA_TOKENS=my_token,another python main.py data.csv`
+- For datasets where `"?"` is a *legitimate* category value (not missing), exclude it: `CSV_NA_TOKENS=NA,NULL,None,nan`
+- `skipinitialspace=True` is applied at load time — leading spaces in fields (e.g., `" ?"` in UCI-style CSVs) are automatically stripped before sentinel matching
 
 **PDF not generated**
 - Check `outputs/plots/` directory exists and is writable
@@ -716,7 +871,7 @@ Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) (if available) or:
 ## Questions?
 
 - **Architecture:** See [architecture.md](architecture.md)
-- **Engineering details:** See [lessons_learned.md](lessons_learned.md) (26 lessons)
+- **Engineering details:** See [lessons_learned.md](lessons_learned.md) (33 lessons)
 - **Agent development:** Lesson #11 (tool registration) + Lesson #1 (agent decision flow)
 - **Performance tuning:** Config EDA_MODE, adjust model selection
 
