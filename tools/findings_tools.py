@@ -81,6 +81,7 @@ def _build_overview_section(
     categorical_cols: list[str] | None = None,
     numerical_cols: list[str] | None = None,
     encoded_categorical_cols: list[str] | None = None,
+    encoded_categorical_subtypes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the overview section from EDA describe stats.
 
@@ -97,6 +98,9 @@ def _build_overview_section(
             explicitly so no column type is anonymous in the overview.
         encoded_categorical_cols: Columns reclassified from numerical to categorical
             (subset of categorical_cols).  When present, a transparency note is added.
+        encoded_categorical_subtypes: Mapping of encoded-categorical column names
+            to their measurement subtype ("nominal" or "ordinal").  When present,
+            the transparency note distinguishes nominal from ordinal columns.
     """
     if shape is not None:
         row_count, num_columns = shape
@@ -139,11 +143,37 @@ def _build_overview_section(
                 f"{n_cat} categorical{enc_note}."
             )
     if encoded_categorical_cols:
-        enc_names = ", ".join(encoded_categorical_cols)
-        parts.append(
-            f"Note: {enc_names} {'are' if len(encoded_categorical_cols) > 1 else 'is'} "
-            f"numerically encoded but reclassified as categorical for analysis."
-        )
+        # Build subtype-aware transparency note (Stevens' measurement theory:
+        # nominal vs ordinal determines valid operations on the data).
+        if encoded_categorical_subtypes:
+            nominal = [c for c in encoded_categorical_cols
+                       if encoded_categorical_subtypes.get(c, "nominal") == "nominal"]
+            ordinal = [c for c in encoded_categorical_cols
+                       if encoded_categorical_subtypes.get(c) == "ordinal"]
+            subtype_parts: list[str] = []
+            if nominal:
+                subtype_parts.append(
+                    f"{len(nominal)} nominal: {', '.join(nominal)}"
+                )
+            if ordinal:
+                subtype_parts.append(
+                    f"{len(ordinal)} ordinal: {', '.join(ordinal)}"
+                )
+            if subtype_parts:
+                subtype_detail = " (" + "; ".join(subtype_parts) + ")"
+            else:
+                subtype_detail = ""
+            parts.append(
+                f"Note: {len(encoded_categorical_cols)} column(s) are numerically "
+                f"encoded but reclassified as categorical for analysis{subtype_detail}."
+            )
+        else:
+            enc_names = ", ".join(encoded_categorical_cols)
+            parts.append(
+                f"Note: {enc_names} "
+                f"{'are' if len(encoded_categorical_cols) > 1 else 'is'} "
+                f"numerically encoded but reclassified as categorical for analysis."
+            )
     if duplicate_count > 0:
         dup_pct = duplicate_count / max(row_count + duplicate_count, 1) * 100
         parts.append(
@@ -178,8 +208,22 @@ def _build_missing_section(eda: EDAResults) -> dict[str, Any]:
     return {"title": "Missing Values", "content": content}
 
 
-def _build_correlation_section(eda: EDAResults) -> dict[str, Any]:
-    """Build the correlation summary section."""
+def _build_correlation_section(
+    eda: EDAResults,
+    encoded_categorical_cols: list[str] | None = None,
+    ordinal_spearman: dict[str, dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    """Build the correlation summary section.
+
+    Args:
+        eda: EDAResults with Pearson correlation matrix.
+        encoded_categorical_cols: Columns reclassified as categorical
+            (excluded from Pearson matrix).  Used for a transparency note.
+        ordinal_spearman: Pre-computed Spearman ρ matrix among ordinal
+            encoded-categorical columns (≥3 unique values).  When provided,
+            an "Ordinal Inter-Correlation" subsection is appended showing
+            high inter-correlations relevant for feature selection.
+    """
     corr = eda.correlation
     if not corr:
         return {"title": "Correlation Analysis", "content": "No numerical columns for correlation analysis."}
@@ -202,6 +246,45 @@ def _build_correlation_section(eda: EDAResults) -> dict[str, Any]:
         )
     else:
         content = f"Pearson correlation computed for {len(cols)} numerical columns. No notable correlations found."
+
+    # Transparency note: reclassified encoded-categorical columns are excluded
+    # from the Pearson matrix (they operate on string-cast values post-reclassification).
+    if encoded_categorical_cols:
+        content += (
+            f" Note: {len(encoded_categorical_cols)} column(s) reclassified as "
+            f"categorical ({', '.join(encoded_categorical_cols)}) are excluded "
+            f"from the Pearson matrix; see Categorical Analysis and "
+            f"Feature–Target Associations for their association structure."
+        )
+
+    # Ordinal inter-correlation subsection (Spearman ρ — rank correlation,
+    # makes no equal-interval assumption; appropriate for ordinal data).
+    if ordinal_spearman:
+        ord_cols = list(ordinal_spearman.keys())
+        # Collect notable off-diagonal pairs (|ρ| ≥ 0.5)
+        notable_pairs: list[tuple[str, str, float]] = []
+        for i, col_a in enumerate(ord_cols):
+            for col_b in ord_cols[i + 1:]:
+                rho = ordinal_spearman.get(col_a, {}).get(col_b, 0.0)
+                if abs(rho) >= 0.5:
+                    notable_pairs.append((col_a, col_b, rho))
+        notable_pairs.sort(key=lambda t: abs(t[2]), reverse=True)
+
+        content += (
+            f"\n\nOrdinal Inter-Correlation (Spearman ρ): "
+            f"Computed for {len(ord_cols)} ordinal feature(s) "
+            f"({', '.join(ord_cols)})."
+        )
+        if notable_pairs:
+            pair_strs = [f"{a} ↔ {b} (ρ={v:.3f})" for a, b, v in notable_pairs]
+            content += (
+                f" Notable pairs (|ρ| ≥ 0.5): {'; '.join(pair_strs)}. "
+                f"High inter-correlations among ordinal features suggest "
+                f"multicollinearity — consider dimensionality reduction "
+                f"or sequential feature selection."
+            )
+        else:
+            content += " No pairs exceed |ρ| ≥ 0.5."
 
     return {"title": "Correlation Analysis", "content": content}
 
@@ -332,6 +415,7 @@ def _build_target_section(target_analysis_data: dict) -> dict[str, Any]:
 def _build_statistical_analysis_section(
     eda: EDAResults,
     critic: "CriticReport | None" = None,
+    target_column: str | None = None,
 ) -> dict[str, Any]:
     """Build an interpretive statistical analysis section.
 
@@ -346,6 +430,11 @@ def _build_statistical_analysis_section(
                 contradict the Data Quality Assessment section.
                 Defaults to None (backward-compatible: all columns that
                 breach IQR fences are reported uniformly).
+        target_column: Optional target variable name.  When supplied, the
+                target is excluded from ``narrow_iqr_cols`` and
+                ``high_cv_cols`` diagnostics — its distributional
+                properties are Bernoulli invariants, not data quality
+                issues.
     """
     describe = eda.describe
     if not describe:
@@ -393,6 +482,13 @@ def _build_statistical_analysis_section(
                 upper_fence = q75 + 1.5 * iqr
                 if col_min < lower_fence or col_max > upper_fence:
                     potential_outlier_cols.append(col)
+
+    # Exclude target column — its distributional properties (IQR=0 for
+    # imbalanced binary, CV>1 for low-prevalence) are Bernoulli invariants,
+    # not data quality issues.
+    if target_column:
+        high_cv_cols = [c for c in high_cv_cols if c != target_column]
+        narrow_iqr_cols = [c for c in narrow_iqr_cols if c != target_column]
 
     if numeric_cols:
         paragraphs.append(
@@ -2108,6 +2204,16 @@ def assemble_findings(
                     section["plot_commentaries"] = plot_comms
         return section
 
+    # Load encoded-categorical subtypes for overview section (F3 fix)
+    _encoded_categorical_subtypes: dict[str, str] | None = None
+    if is_active():
+        _subtypes_raw = load_state("reclassified_subtypes")
+        if _subtypes_raw:
+            try:
+                _encoded_categorical_subtypes = json.loads(_subtypes_raw)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     # Build sections in report order (Option A: plots inline in parent sections)
     overview = _enrich(
         _build_overview_section(
@@ -2115,6 +2221,7 @@ def assemble_findings(
             categorical_cols=_categorical_cols,
             numerical_cols=_numerical_cols,
             encoded_categorical_cols=_encoded_categorical_cols,
+            encoded_categorical_subtypes=_encoded_categorical_subtypes,
         ),
         "overview",
     )
@@ -2122,12 +2229,69 @@ def assemble_findings(
         _build_missing_section(eda), "missing_values",
         paired_plots=missing_heatmap_paths or None,
     )
+    # Resolve target column name for downstream sections (F2 safety fix)
+    _target_column: str | None = None
+    if is_active():
+        _ti_raw = load_state("target_info")
+        if _ti_raw:
+            try:
+                _target_column = json.loads(_ti_raw).get("column")
+            except Exception:
+                pass
+
+    # Compute Spearman ρ among ordinal encoded-categorical columns (F1 fix).
+    # Rank correlation makes no equal-interval assumption — appropriate for
+    # ordinal data.  Only columns with subtype "ordinal" AND ≥3 unique values
+    # contribute meaningful inter-correlations (nominal columns have no rank
+    # ordering; binary columns yield degenerate rank ties).
+    _ordinal_spearman: dict[str, dict[str, float]] | None = None
+    if _encoded_categorical_cols and is_active():
+        _data_raw_sp = load_state("data_json")
+        if _data_raw_sp:
+            try:
+                _df_sp = pd.DataFrame(json.loads(_data_raw_sp))
+                if _encoded_categorical_subtypes:
+                    # Subtypes known: restrict to ordinal only.
+                    _ord_cols = [
+                        c for c in _encoded_categorical_cols
+                        if c in _df_sp.columns
+                        and _df_sp[c].nunique(dropna=True) >= 3
+                        and _encoded_categorical_subtypes.get(c) == "ordinal"
+                    ]
+                else:
+                    # Subtypes unavailable (--categoricals flag / no LLM):
+                    # fall back to all columns with ≥3 unique values.
+                    _ord_cols = [
+                        c for c in _encoded_categorical_cols
+                        if c in _df_sp.columns
+                        and _df_sp[c].nunique(dropna=True) >= 3
+                    ]
+                if len(_ord_cols) >= 2:
+                    # Columns are string-cast: convert back to numeric for Spearman
+                    _df_ord = _df_sp[_ord_cols].apply(pd.to_numeric, errors="coerce")
+                    _sp_matrix = _df_ord.corr(method="spearman")
+                    _ordinal_spearman = {
+                        col: {
+                            c2: round(float(v), 4)
+                            for c2, v in row.items()
+                        }
+                        for col, row in _sp_matrix.to_dict().items()
+                    }
+            except Exception:
+                logger.warning("Spearman ordinal inter-correlation failed", exc_info=True)
+
     correlation = _enrich(
-        _build_correlation_section(eda), "correlation",
+        _build_correlation_section(
+            eda,
+            encoded_categorical_cols=_encoded_categorical_cols,
+            ordinal_spearman=_ordinal_spearman,
+        ),
+        "correlation",
         paired_plots=corr_heatmap_paths or None,
     )
     statistical = _enrich(
-        _build_statistical_analysis_section(eda, critic), "statistical_analysis",
+        _build_statistical_analysis_section(eda, critic, target_column=_target_column),
+        "statistical_analysis",
         paired_plots=hist_paths or None,
     )
 

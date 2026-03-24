@@ -2028,3 +2028,257 @@ class TestBuildOverviewSectionEncodedCategoricals:
             encoded_categorical_cols=["sex", "education"],
         )
         assert "are numerically encoded" in section["content"]
+
+
+# ---------------------------------------------------------------------------
+# F2: Exclude target from "candidate for removal"
+# ---------------------------------------------------------------------------
+
+class TestStatisticalAnalysisTargetExclusion:
+    """F2 fix: target column must not appear in 'candidates for removal' or
+    'high variability' diagnostics — its distributional properties are
+    Bernoulli invariants, not data quality issues."""
+
+    def test_target_excluded_from_narrow_iqr(self):
+        """Binary target with IQR=0 must not be flagged as removal candidate."""
+        eda = EDAResults(describe={
+            "target": {"count": 1000, "mean": 0.22, "std": 0.41,
+                       "min": 0, "25%": 0, "50%": 0, "75%": 0, "max": 1},
+            "const_feat": {"count": 1000, "mean": 5.0, "std": 0.0,
+                           "min": 5, "25%": 5, "50%": 5, "75%": 5, "max": 5},
+        })
+        section = _build_statistical_analysis_section(eda, target_column="target")
+        content = section["content"]
+        # "const_feat" should still be flagged
+        assert "const_feat" in content
+        # "target" should NOT appear in the narrow IQR sentence
+        assert "target" not in content.split("Near-zero")[0] if "Near-zero" in content else True
+        # Look specifically: "target" should not be in the narrow_iqr cols list
+        if "Near-zero interquartile range" in content:
+            iqr_sentence = content.split("Near-zero interquartile range")[1].split(".")[0]
+            assert "target" not in iqr_sentence
+
+    def test_target_excluded_from_high_cv(self):
+        """Binary target with CV>1.0 must not be flagged as high variability."""
+        eda = EDAResults(describe={
+            "target": {"count": 1000, "mean": 0.22, "std": 0.41,
+                       "min": 0, "25%": 0, "50%": 0, "75%": 0, "max": 1},
+            "noisy_feat": {"count": 1000, "mean": 1.0, "std": 5.0,
+                           "min": -10, "25%": -1, "50%": 0, "75%": 2, "max": 30},
+        })
+        section = _build_statistical_analysis_section(eda, target_column="target")
+        content = section["content"]
+        if "variability" in content.lower():
+            cv_sentence = content.split("High variability")[1].split(".")[0]
+            assert "target" not in cv_sentence
+
+    def test_no_target_column_backward_compat(self):
+        """Without target_column, binary column IS flagged (backward compat)."""
+        eda = EDAResults(describe={
+            "binary": {"count": 1000, "mean": 0.22, "std": 0.41,
+                       "min": 0, "25%": 0, "50%": 0, "75%": 0, "max": 1},
+        })
+        section = _build_statistical_analysis_section(eda)
+        content = section["content"]
+        assert "binary" in content
+
+    def test_target_none_backward_compat(self):
+        """target_column=None behaves like no target provided."""
+        eda = EDAResults(describe={
+            "binary": {"count": 1000, "mean": 0.22, "std": 0.41,
+                       "min": 0, "25%": 0, "50%": 0, "75%": 0, "max": 1},
+        })
+        section = _build_statistical_analysis_section(eda, target_column=None)
+        content = section["content"]
+        assert "binary" in content
+
+
+# ---------------------------------------------------------------------------
+# F5: Transparency note in correlation section
+# ---------------------------------------------------------------------------
+
+class TestCorrelationTransparencyNote:
+    """F5 fix: correlation section must note excluded encoded-categorical columns."""
+
+    def test_transparency_note_present(self):
+        eda = EDAResults(correlation={
+            "age": {"age": 1.0, "income": 0.3},
+            "income": {"age": 0.3, "income": 1.0},
+        })
+        section = _build_correlation_section(
+            eda, encoded_categorical_cols=["SEX", "PAY_0"],
+        )
+        assert "2 column(s) reclassified" in section["content"]
+        assert "SEX" in section["content"]
+        assert "PAY_0" in section["content"]
+        assert "Categorical Analysis" in section["content"]
+
+    def test_no_note_when_no_encoded_cols(self):
+        eda = EDAResults(correlation={
+            "age": {"age": 1.0, "income": 0.3},
+            "income": {"age": 0.3, "income": 1.0},
+        })
+        section = _build_correlation_section(eda, encoded_categorical_cols=None)
+        assert "reclassified" not in section["content"]
+
+    def test_no_note_when_empty_list(self):
+        eda = EDAResults(correlation={
+            "age": {"age": 1.0, "income": 0.3},
+            "income": {"age": 0.3, "income": 1.0},
+        })
+        section = _build_correlation_section(eda, encoded_categorical_cols=[])
+        assert "reclassified" not in section["content"]
+
+
+# ---------------------------------------------------------------------------
+# F1: Spearman ordinal inter-correlation
+# ---------------------------------------------------------------------------
+
+class TestCorrelationSpearmanSubsection:
+    """F1 fix: ordinal inter-correlation subsection in correlation analysis."""
+
+    def test_spearman_subsection_present(self):
+        """When ordinal_spearman is provided, subsection appears."""
+        eda = EDAResults(correlation={
+            "age": {"age": 1.0, "income": 0.3},
+            "income": {"age": 0.3, "income": 1.0},
+        })
+        ordinal_sp = {
+            "PAY_0": {"PAY_0": 1.0, "PAY_2": 0.72, "PAY_3": 0.65},
+            "PAY_2": {"PAY_0": 0.72, "PAY_2": 1.0, "PAY_3": 0.82},
+            "PAY_3": {"PAY_0": 0.65, "PAY_2": 0.82, "PAY_3": 1.0},
+        }
+        section = _build_correlation_section(eda, ordinal_spearman=ordinal_sp)
+        content = section["content"]
+        assert "Ordinal Inter-Correlation" in content
+        assert "Spearman" in content
+        assert "PAY_2" in content
+        assert "PAY_3" in content
+
+    def test_spearman_notable_pairs_shown(self):
+        """Pairs with |ρ| ≥ 0.5 appear in the notable pairs list."""
+        eda = EDAResults(correlation={"x": {"x": 1.0}})
+        ordinal_sp = {
+            "A": {"A": 1.0, "B": 0.82, "C": 0.3},
+            "B": {"A": 0.82, "B": 1.0, "C": 0.55},
+            "C": {"A": 0.3, "B": 0.55, "C": 1.0},
+        }
+        section = _build_correlation_section(eda, ordinal_spearman=ordinal_sp)
+        content = section["content"]
+        # A↔B (0.82) and B↔C (0.55) should be notable, A↔C (0.3) should not
+        assert "A ↔ B" in content
+        assert "B ↔ C" in content
+
+    def test_spearman_no_notable_pairs(self):
+        """When all pairs are below |ρ| < 0.5, says 'No pairs exceed'."""
+        eda = EDAResults(correlation={"x": {"x": 1.0}})
+        ordinal_sp = {
+            "A": {"A": 1.0, "B": 0.2},
+            "B": {"A": 0.2, "B": 1.0},
+        }
+        section = _build_correlation_section(eda, ordinal_spearman=ordinal_sp)
+        assert "No pairs exceed" in section["content"]
+
+    def test_spearman_none_no_subsection(self):
+        """Without ordinal_spearman, no Spearman subsection appears."""
+        eda = EDAResults(correlation={
+            "x": {"x": 1.0, "y": 0.5},
+            "y": {"x": 0.5, "y": 1.0},
+        })
+        section = _build_correlation_section(eda, ordinal_spearman=None)
+        assert "Spearman" not in section["content"]
+
+    def test_collinearity_warning(self):
+        """High inter-correlations trigger collinearity advisory."""
+        eda = EDAResults(correlation={"x": {"x": 1.0}})
+        ordinal_sp = {
+            "P4": {"P4": 1.0, "P5": 0.82},
+            "P5": {"P4": 0.82, "P5": 1.0},
+        }
+        section = _build_correlation_section(eda, ordinal_spearman=ordinal_sp)
+        assert "collinearity" in section["content"].lower()
+
+    def test_collinearity_text_is_dataset_agnostic(self):
+        """D2 fix: advisory uses 'multicollinearity', not 'temporal'."""
+        eda = EDAResults(correlation={"x": {"x": 1.0}})
+        ordinal_sp = {
+            "P4": {"P4": 1.0, "P5": 0.82},
+            "P5": {"P4": 0.82, "P5": 1.0},
+        }
+        section = _build_correlation_section(eda, ordinal_spearman=ordinal_sp)
+        content = section["content"]
+        assert "multicollinearity" in content
+        assert "temporal" not in content.lower()
+
+
+# ---------------------------------------------------------------------------
+# F3: Nominal/ordinal subtype in overview
+# ---------------------------------------------------------------------------
+
+class TestOverviewEncodedCategoricalSubtypes:
+    """F3 fix: overview must distinguish nominal from ordinal encoded columns."""
+
+    @pytest.fixture()
+    def eda_basic(self):
+        return EDAResults(describe={
+            "age": {"count": 100, "mean": 35.0, "std": 10.0, "min": 18,
+                    "25%": 28, "50%": 35, "75%": 42, "max": 65},
+        })
+
+    def test_subtypes_shown_when_available(self, eda_basic):
+        section = _build_overview_section(
+            eda_basic, shape=(100, 5),
+            categorical_cols=["sex", "pay_0", "pay_2"],
+            numerical_cols=["age", "amount"],
+            encoded_categorical_cols=["sex", "pay_0", "pay_2"],
+            encoded_categorical_subtypes={
+                "sex": "nominal", "pay_0": "ordinal", "pay_2": "ordinal",
+            },
+        )
+        content = section["content"]
+        assert "1 nominal" in content
+        assert "2 ordinal" in content
+        assert "sex" in content
+        assert "pay_0" in content
+
+    def test_no_subtypes_fallback(self, eda_basic):
+        """Without subtypes, falls back to simple note (no nominal/ordinal)."""
+        section = _build_overview_section(
+            eda_basic, shape=(100, 3),
+            categorical_cols=["sex", "name"],
+            numerical_cols=["age"],
+            encoded_categorical_cols=["sex"],
+            encoded_categorical_subtypes=None,
+        )
+        content = section["content"]
+        assert "numerically encoded" in content
+        assert "nominal" not in content
+        assert "ordinal" not in content
+
+    def test_empty_subtypes_fallback(self, eda_basic):
+        """Empty subtypes dict (--categoricals path) falls back to simple note."""
+        section = _build_overview_section(
+            eda_basic, shape=(100, 3),
+            categorical_cols=["sex", "name"],
+            numerical_cols=["age"],
+            encoded_categorical_cols=["sex"],
+            encoded_categorical_subtypes={},
+        )
+        content = section["content"]
+        # With empty dict, all columns default to "nominal" — the subtype
+        # logic should still produce subtype detail
+        assert "reclassified" in content
+
+    def test_all_ordinal(self, eda_basic):
+        section = _build_overview_section(
+            eda_basic, shape=(100, 4),
+            categorical_cols=["pay_0", "pay_2", "pay_3"],
+            numerical_cols=["age"],
+            encoded_categorical_cols=["pay_0", "pay_2", "pay_3"],
+            encoded_categorical_subtypes={
+                "pay_0": "ordinal", "pay_2": "ordinal", "pay_3": "ordinal",
+            },
+        )
+        content = section["content"]
+        assert "3 ordinal" in content
+        assert "nominal" not in content

@@ -415,7 +415,7 @@ def _resolve_reclassification(
     target_column: str | None,
     categoricals_flag: str | None,
     no_reclassify_flag: bool,
-) -> list[str]:
+) -> tuple[list[str], dict[str, str]]:
     """Resolve encoded-categorical reclassification using CLI flags or interactive prompt.
 
     Mirrors _resolve_target() in structure.
@@ -427,11 +427,12 @@ def _resolve_reclassification(
         no_reclassify_flag: If True, skip detection entirely.
 
     Returns:
-        List of column names confirmed for reclassification (may be empty).
+        Tuple of (confirmed column names, subtype mapping {col: "nominal"|"ordinal"}).
+        Subtypes may be empty when using --categoricals (no LLM detection).
     """
     if no_reclassify_flag:
         logger.info("Encoded-categorical detection skipped (--no-reclassify)")
-        return []
+        return [], {}
 
     if categoricals_flag:
         cols = [c.strip() for c in categoricals_flag.split(",") if c.strip()]
@@ -442,7 +443,7 @@ def _resolve_reclassification(
                 "--categoricals: columns not found (ignored): %s", invalid,
             )
         logger.info("Explicit reclassification via --categoricals: %s", valid)
-        return valid
+        return valid, {}
 
     # LLM detection + interactive confirmation
     from tools.data_loader import detect_encoded_categoricals
@@ -450,7 +451,10 @@ def _resolve_reclassification(
     suspects = detect_encoded_categoricals(df, target_column=target_column)
     if not suspects:
         logger.info("No encoded-categorical suspects detected")
-        return []
+        return [], {}
+
+    # Build subtype mapping from LLM detection results
+    _subtypes = {s.column: s.subtype or "nominal" for s in suspects}
 
     if not sys.stdin.isatty():
         accepted = [s.column for s in suspects]
@@ -459,9 +463,10 @@ def _resolve_reclassification(
             "(override with --categoricals COL1,COL2 or --no-reclassify): %s",
             len(accepted), accepted,
         )
-        return accepted
+        return accepted, {c: _subtypes[c] for c in accepted}
 
-    return _confirm_reclassify_interactive(suspects)
+    confirmed = _confirm_reclassify_interactive(suspects)
+    return confirmed, {c: _subtypes[c] for c in confirmed if c in _subtypes}
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +623,7 @@ def run_pipeline(
     )
 
     # --- Pre-pipeline: detect encoded categoricals ---
-    reclassified_cols = _resolve_reclassification(
+    reclassified_cols, reclassified_subtypes = _resolve_reclassification(
         df,
         target_column=target_info.column,
         categoricals_flag=categoricals_flag,
@@ -637,6 +642,8 @@ def run_pipeline(
     # Store reclassified categoricals for infer_dtypes() consumption
     if reclassified_cols:
         save_state("reclassified_categoricals", json.dumps(reclassified_cols))
+    if reclassified_subtypes:
+        save_state("reclassified_subtypes", json.dumps(reclassified_subtypes))
 
     # Lazy import to avoid heavy AG2 imports on --help / parse-only usage
     from orchestrator import build_group_chat

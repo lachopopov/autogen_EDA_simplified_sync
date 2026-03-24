@@ -1035,25 +1035,28 @@ class TestResolveReclassification:
         })
 
     def test_no_reclassify_flag(self, df):
-        result = _resolve_reclassification(
+        cols, subtypes = _resolve_reclassification(
             df, target_column=None,
             categoricals_flag=None, no_reclassify_flag=True,
         )
-        assert result == []
+        assert cols == []
+        assert subtypes == {}
 
     def test_explicit_categoricals_flag(self, df):
-        result = _resolve_reclassification(
+        cols, subtypes = _resolve_reclassification(
             df, target_column=None,
             categoricals_flag="SEX,EDUCATION", no_reclassify_flag=False,
         )
-        assert set(result) == {"SEX", "EDUCATION"}
+        assert set(cols) == {"SEX", "EDUCATION"}
+        assert subtypes == {}  # --categoricals has no LLM subtypes
 
     def test_explicit_categoricals_invalid_columns_filtered(self, df):
-        result = _resolve_reclassification(
+        cols, subtypes = _resolve_reclassification(
             df, target_column=None,
             categoricals_flag="SEX,NONEXISTENT", no_reclassify_flag=False,
         )
-        assert result == ["SEX"]
+        assert cols == ["SEX"]
+        assert subtypes == {}
 
     def test_llm_detection_non_tty_auto_accept(self, df):
         """Non-TTY mode auto-accepts all LLM suspects."""
@@ -1064,16 +1067,18 @@ class TestResolveReclassification:
         with patch("tools.data_loader.detect_encoded_categoricals", return_value=suspects), \
              patch("sys.stdin") as mock_stdin:
             mock_stdin.isatty.return_value = False
-            result = _resolve_reclassification(
+            cols, subtypes = _resolve_reclassification(
                 df, target_column=None,
                 categoricals_flag=None, no_reclassify_flag=False,
             )
-        assert result == ["SEX"]
+        assert cols == ["SEX"]
+        assert subtypes == {"SEX": "nominal"}
 
     def test_llm_detection_no_suspects(self, df):
         with patch("tools.data_loader.detect_encoded_categoricals", return_value=[]):
-            result = _resolve_reclassification(
+            cols, subtypes = _resolve_reclassification(
                 df, target_column=None,
                 categoricals_flag=None, no_reclassify_flag=False,
             )
-        assert result == []
+        assert cols == []
+        assert subtypes == {}
