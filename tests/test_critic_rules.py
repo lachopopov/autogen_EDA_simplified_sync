@@ -575,6 +575,57 @@ class TestSkewnessRule:
         assert len(flags) == 1
         assert "log" in flags[0].suggestion.lower() or "sqrt" in flags[0].suggestion.lower()
 
+    def test_positive_skew_negative_min_avoids_log_sqrt(self):
+        """Strong positive skew with min < 0 → cube root/signed-log, NOT log1p/sqrt."""
+        # Shift [0]*27+[1000,5000,100000] by -5: skew unchanged (shift-invariant),
+        # all zeros become -5 so zeros_pct=0%, min=-5 < 0.
+        data = [x - 5 for x in [0] * 27 + [1000, 5000, 100000]]
+        df = pd.DataFrame({"x": data})
+        assert df["x"].min() < 0
+        assert (df["x"] == 0).mean() <= 0.20  # no zero-inflation path
+        assert df["x"].skew() > 2
+        flags = SkewnessRule().check(df, {})
+        assert len(flags) >= 1
+        s = flags[0].suggestion.lower()
+        assert "cube" in s or "signed" in s
+        assert "log1p" not in s
+        assert "sqrt" not in s
+
+    def test_moderate_positive_skew_negative_min_avoids_sqrt(self):
+        """Moderate positive skew (1 < skew ≤ 2) with min < 0 → cube root, NOT sqrt."""
+        # [1,2,2,3,3,4,4,5,6,11] has confirmed moderate skew (1,2]; shift by -2 → min=-1.
+        # zeros_pct = 2/10 = 20% which is NOT > 20%, so zero-inflation branch not taken.
+        data = [x - 2 for x in [1, 2, 2, 3, 3, 4, 4, 5, 6, 11]]
+        df = pd.DataFrame({"x": data})
+        assert df["x"].min() < 0
+        assert df["x"].skew() > 1
+        flags = SkewnessRule().check(df, {})
+        if flags:
+            s = flags[0].suggestion.lower()
+            assert "cube" in s
+            assert "sqrt" not in s
+
+    def test_zero_inflation_negative_min_avoids_log1p(self):
+        """Zero-inflation (>20% zeros) with min < 0 → no log1p in suggestion."""
+        data = [0] * 20 + [-3, -2, -1, 500, 1000, 2000, 3000, 4000, 5000, 6000]
+        df = pd.DataFrame({"x": data})
+        assert (df["x"] == 0).mean() > 0.20
+        assert df["x"].min() < 0
+        flags = SkewnessRule().check(df, {})
+        if flags:
+            assert "log1p" not in flags[0].suggestion.lower()
+
+    def test_positive_skew_non_negative_min_still_gets_log(self):
+        """Regression: strong positive skew with min ≥ 0 still suggests log/sqrt."""
+        data = [1] * 27 + [1000, 5000, 100000]
+        df = pd.DataFrame({"x": data})
+        assert df["x"].min() >= 0
+        assert df["x"].skew() > 2
+        flags = SkewnessRule().check(df, {})
+        assert len(flags) >= 1
+        s = flags[0].suggestion.lower()
+        assert "log" in s or "sqrt" in s
+
     def test_negative_skew_suggestion_strong(self):
         """Strong negative skew → reflect and log transform suggested."""
         data = [-10000] + [1] * 29
@@ -681,6 +732,44 @@ class TestNearPerfectCorrelationRule:
         """Only one numerical column → can't compute correlation → no flag."""
         df = pd.DataFrame({"x": [1, 2, 3, 4, 5]})
         assert NearPerfectCorrelationRule().check(df, {}) == []
+
+    def test_high_severity_suggestion_names_linear_and_trees(self):
+        """HIGH flag suggestion explicitly names linear and tree-based model families."""
+        df = pd.DataFrame({"x": [1, 2, 3, 4, 5], "y": [2, 4, 6, 8, 10]})  # r=1.0
+        flags = NearPerfectCorrelationRule().check(df, {})
+        assert len(flags) == 1
+        suggestion = flags[0].suggestion.lower()
+        assert "linear" in suggestion
+        assert any(t in suggestion for t in ("xgboost", "lightgbm", "randomforest", "tree"))
+
+    def test_medium_severity_suggestion_names_linear_and_trees(self):
+        """MEDIUM flag suggestion explicitly names linear and tree-based model families."""
+        df = pd.DataFrame({"x": [1, 2, 3, 4, 5], "y": [1, 2, 4, 3, 5]})
+        flags = NearPerfectCorrelationRule().check(df, {})
+        assert len(flags) == 1
+        suggestion = flags[0].suggestion.lower()
+        assert "linear" in suggestion
+        assert any(t in suggestion for t in ("xgboost", "lightgbm", "randomforest", "tree"))
+
+    def test_suggestion_includes_vif_estimate(self):
+        """|r|=1.0 (fully correlated) → suggestion contains 'VIF' and a number ≥ 10."""
+        import re
+        df = pd.DataFrame({"x": [1, 2, 3, 4, 5], "y": [2, 4, 6, 8, 10]})
+        flags = NearPerfectCorrelationRule().check(df, {})
+        assert len(flags) == 1
+        suggestion = flags[0].suggestion
+        assert "VIF" in suggestion
+        nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", suggestion)]
+        assert any(n >= 10 for n in nums), f"Expected VIF ≥ 10 in suggestion: {suggestion}"
+
+    def test_message_includes_pair_names(self):
+        """Message contains both column names that form the worst-correlated pair."""
+        df = pd.DataFrame({"alpha": [1, 2, 3, 4, 5], "beta": [2, 4, 6, 8, 10]})
+        flags = NearPerfectCorrelationRule().check(df, {})
+        assert len(flags) == 1
+        message = flags[0].message
+        assert "alpha" in message
+        assert "beta" in message
 
 
 # ---------------------------------------------------------------------------

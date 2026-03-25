@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Annotated, Any
 
 import numpy as np
@@ -718,12 +719,15 @@ def _build_recommendations_section(
                 if val > 0.90:
                     redundant_pairs.append((col_a, col_b, val))
         if redundant_pairs:
+            worst_r = max(r for _, _, r in redundant_pairs)
+            vif_worst = round(1 / (1 - min(worst_r, 0.9999) ** 2), 1)
             recommendations.append(
-                f"FEATURE ENGINEERING — {len(redundant_pairs)} near-redundant "
-                f"feature pair(s) detected (|r|>0.90). For linear models, retain "
-                f"only one feature per pair to avoid multicollinearity. For "
-                f"tree-based models, redundancy is less critical but increases "
-                f"training time without adding predictive power."
+                f"FEATURE ENGINEERING — {len(redundant_pairs)} near-redundant feature "
+                f"pair(s) detected (|r|>0.90). For linear models, each correlated pair "
+                f"inflates VIF (worst pair: ~{vif_worst:.0f}\u00d7) \u2014 retain only one feature "
+                f"per pair to avoid unstable coefficients. Tree-based models (XGBoost, "
+                f"LightGBM, RandomForest) are unaffected by collinearity and can safely "
+                f"use all features."
             )
 
     # --- Critic-driven recommendations ---
@@ -1244,20 +1248,50 @@ def _build_feature_associations_section(
             f"{', '.join(label_counts['weak'][:5])}."
         )
 
-    # Lensing divergence: features where MI rank and effect size rank diverge > 5 positions
-    divergent = [
-        r for r in fa.rows if abs(r.mi_rank - r.effect_size_rank) > 5
-    ]
-    if divergent:
-        div_parts = [
-            f"{r.feature} (MI rank {r.mi_rank} vs effect size rank {r.effect_size_rank})"
-            for r in divergent[:3]
-        ]
+    # --- MI × Effect-Size quadrant analysis ---
+    # Each feature is classified into one of four quadrants based on two
+    # independent lenses: MI (kNN, captures any dependence including nonlinear)
+    # and effect size (eta²/Cramér's V/|Pearson r|, measures linear/group-mean component).
+    #
+    #   Q1  HIGH MI + STRONG ES  → linear / simple relationship (expected; no alert)
+    #   Q2  HIGH MI + WEAK   ES  → NONLINEAR SIGNAL: tree-based models from the start
+    #   Q3  LOW  MI + STRONG ES  → SUSPICIOUS ASSOCIATION: outlier / leakage / small-n
+    #   Q4  LOW  MI + WEAK   ES  → no relationship (no alert; already in weak ES summary)
+    #
+    # "High MI" = top half of features by MI rank: mi_rank ≤ ⌈N/2⌉.
+    # "High/Low ES" = effect_size_label is "strong" / "weak" ("moderate" is neutral).
+    mid_rank = math.ceil(fa.total_features / 2) if fa.total_features > 0 else 1
+    nonlinear_features: list[str] = []   # Q2: high MI, weak effect size
+    suspicious_features: list[str] = []  # Q3: low MI, strong effect size
+    for row in fa.rows:
+        high_mi = row.mi_rank <= mid_rank
+        if high_mi and row.effect_size_label == "weak":
+            nonlinear_features.append(
+                f"{row.feature} (MI rank {row.mi_rank}/{fa.total_features}, "
+                f"{row.effect_size_type}={row.effect_size:.4f} [weak])"
+            )
+        elif (not high_mi) and row.effect_size_label == "strong":
+            suspicious_features.append(
+                f"{row.feature} (MI rank {row.mi_rank}/{fa.total_features}, "
+                f"{row.effect_size_type}={row.effect_size:.4f} [strong])"
+            )
+    if nonlinear_features:
         paragraphs.append(
-            f"Lens divergence detected (MI rank vs effect size rank differ >5 positions): "
-            f"{'; '.join(div_parts)}. "
-            f"Possible non-linear signal (high MI, low effect size) or "
-            f"strong linear signal missed by MI sampling (high effect size, low MI)."
+            f"NONLINEAR SIGNAL -- high MI + weak effect size indicates a nonlinear "
+            f"or complex relationship not captured by linear measures. "
+            f"Use tree-based models (XGBoost, LightGBM, RandomForest) from the "
+            f"start -- linear models (OLS, Logistic, ElasticNet) will underfit. "
+            f"Affected: {'; '.join(nonlinear_features[:3])}."
+        )
+    if suspicious_features:
+        paragraphs.append(
+            f"SUSPICIOUS ASSOCIATION [red flag] -- low MI + strong effect size. "
+            f"Possible causes: (a) outliers inflating eta2/Cohen's d, "
+            f"(b) data leakage (feature partially encodes the target), "
+            f"(c) small-n instability (wide effect-size confidence intervals). "
+            f"Investigate before modeling: check scatter vs target, run a leakage "
+            f"audit, and verify with bootstrapped effect-size CIs. "
+            f"Affected: {'; '.join(suspicious_features[:3])}."
         )
 
     return {
@@ -2096,30 +2130,28 @@ def assemble_findings(
             critic = CriticReport.model_validate_json(critic_report_json)
             logger.info("CriticReport resolved via fallback")
 
-        # --- Resolve plot_paths_json (may require composition) ---
-        try:
-            plot_paths_json = resolve(plot_paths_json, "plot_paths")
-            plot_paths = json.loads(plot_paths_json)
-            if not isinstance(plot_paths, list):
-                raise ValueError("plot_paths is not a list")
-        except (PipelineStateError, Exception):
-            # Compose from individual visualization artifacts
-            hist = load_state("plot_histograms")
-            corr_hm = load_state("plot_correlation_heatmap")
-            miss_hm = load_state("plot_missing_heatmap")
-            cls_dist = load_state("plot_class_distribution")
-            merged: list[str] = []
-            if hist:
-                merged.extend(json.loads(hist))
-            if corr_hm:
-                merged.extend(json.loads(corr_hm))
-            if miss_hm:
-                merged.extend(json.loads(miss_hm))
-            if cls_dist:
-                merged.extend(json.loads(cls_dist))
-            plot_paths = merged
-            plot_paths_json = json.dumps(plot_paths)
-            logger.info("plot_paths composed from %d visualization artifacts", len(plot_paths))
+        # --- Resolve plot_paths from individual visualization artifacts ---
+        # Always compose from individual artifact keys when the session is active,
+        # mirroring the EDAResults composition pattern above.  The LLM-supplied
+        # plot_paths_json parameter is intentionally ignored here: it may be an
+        # empty list "[]", a single-artifact reference (e.g. STATE_REF:plot_histograms
+        # which would only return histogram paths), or garbage — all of which would
+        # silently drop heatmap and class-distribution plots from the report.
+        hist = load_state("plot_histograms")
+        corr_hm = load_state("plot_correlation_heatmap")
+        miss_hm = load_state("plot_missing_heatmap")
+        cls_dist = load_state("plot_class_distribution")
+        merged: list[str] = []
+        if hist:
+            merged.extend(json.loads(hist))
+        if corr_hm:
+            merged.extend(json.loads(corr_hm))
+        if miss_hm:
+            merged.extend(json.loads(miss_hm))
+        if cls_dist:
+            merged.extend(json.loads(cls_dist))
+        plot_paths = merged
+        logger.info("plot_paths composed from %d visualization artifacts", len(plot_paths))
     else:
         eda = EDAResults.model_validate_json(eda_results_json)
         critic = CriticReport.model_validate_json(critic_report_json)

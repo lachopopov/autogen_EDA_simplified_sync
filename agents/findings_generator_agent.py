@@ -91,11 +91,19 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
   For the "feature_associations" section, use ONLY values from the
   FEATURE–TARGET ASSOCIATIONS table in the fact sheet. For each of the
   top-3 features state: Borda score, MI score, effect size value + type +
-  label (weak/moderate/strong). In the "ds_ml" perspective, identify which
-  features show lens divergence (MI rank vs effect size rank differ >5) and
-  explain the implication. In the "business" perspective, translate the
-  top-ranked features into actionable signals (e.g. which features are most
-  worth collecting at data entry time).
+  label (weak/moderate/strong). In the "ds_ml" perspective: if the
+  deterministic content contains the label "NONLINEAR SIGNAL", you MUST
+  state that tree-based models (XGBoost, LightGBM, RandomForest) should be
+  the default choice and explain WHY (MI captured dependence that linear
+  effect-size measures missed -- the relationship is non-monotonic or has
+  complex feature interactions). Do NOT soften this label -- do not write
+  "possible" or "may indicate" when "NONLINEAR SIGNAL" is present. If the
+  content contains "SUSPICIOUS ASSOCIATION", you MUST name the three
+  plausible causes (outlier inflation, data leakage, small-n instability)
+  and recommend explicit verification steps (scatter plot vs target, leakage
+  audit, bootstrapped effect-size confidence intervals). In the "business"
+  perspective, translate the top-ranked features into actionable signals
+  (e.g. which features are most worth collecting at data entry time).
   For each plot in the PLOT INVENTORY, provide a plot_commentaries entry with
   the same three perspectives using the exact plot filename as plot_file.
 
@@ -191,6 +199,14 @@ RULES:
   note this caveat in your commentary: these are NOT true anomalies. Recommend
   binning or segmentation rather than outlier removal. Do NOT list this flag
   alongside HIGH/MEDIUM data quality concerns.
+- When the QUALITY FLAGS section of the fact sheet contains a flag with
+  rule=near_perfect_correlation, your "ds_ml" perspective for the
+  "correlation" section MUST: (1) quote the VIF estimate from the flag's
+  suggestion text, (2) explicitly name which model families are impacted
+  (linear: OLS, Logistic, ElasticNet) vs. unaffected (tree-based: XGBoost,
+  LightGBM, RandomForest), and (3) state the specific actionable remediation
+  (drop one feature per highly-correlated pair, or apply PCA for ≥3 correlated
+  features).
 - PROVENANCE RULE (PART 2): Before generating PART 2, determine from filename,
   column names, and domain context whether the dataset is operational/commercial
   or academic/survey/benchmark. If academic/survey/benchmark, open PART 2 with

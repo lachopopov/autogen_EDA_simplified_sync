@@ -345,7 +345,7 @@ class SkewnessRule(CriticRule):
         n_rows = len(df)
 
         # Collect all skewed columns with context
-        skewed: list[tuple[str, float, float]] = []  # (col, skew, zeros_pct)
+        skewed: list[tuple[str, float, float, float]] = []  # (col, skew, zeros_pct, col_min)
         for col in num.columns:
             series = num[col].dropna()
             if series.size < 3:  # Need at least 3 points for skewness
@@ -355,7 +355,7 @@ class SkewnessRule(CriticRule):
                 continue
             if abs(skew_val) > 1:
                 zeros_pct = float((series == 0).mean() * 100)
-                skewed.append((str(col), skew_val, zeros_pct))
+                skewed.append((str(col), skew_val, zeros_pct, float(series.min())))
 
         if not skewed:
             return []
@@ -365,7 +365,7 @@ class SkewnessRule(CriticRule):
         skewed = skewed[: self._MAX_REPORTED]
 
         flags: list[CriticFlag] = []
-        for col, skew_val, zeros_pct in skewed:
+        for col, skew_val, zeros_pct, col_min in skewed:
             abs_skew = abs(skew_val)
 
             # Base severity
@@ -389,18 +389,38 @@ class SkewnessRule(CriticRule):
             message = ", ".join(parts)
 
             # Transformation suggestion
+            # log1p/log/sqrt are undefined or return NaN for negative values;
+            # cube root (cbrt) and signed-log (sign(x)*log1p(|x|)) work for all reals.
             if zeros_pct > 20:
-                suggestion = (
-                    "High zero-inflation — consider zero-inflated model or log1p transform"
-                )
+                if col_min >= 0:
+                    suggestion = (
+                        "High zero-inflation — consider zero-inflated model or log1p transform"
+                    )
+                else:
+                    suggestion = (
+                        "High zero-inflation with negative values — "
+                        "cube root or signed-log transform recommended"
+                    )
             elif skew_val > 2:
-                suggestion = "Strong positive skew — log or sqrt transform recommended"
+                if col_min >= 0:
+                    suggestion = "Strong positive skew — log1p or sqrt transform recommended"
+                else:
+                    suggestion = (
+                        "Strong positive skew with negative values — "
+                        "cube root or signed-log transform recommended"
+                    )
             elif skew_val < -2:
                 suggestion = (
                     "Strong negative skew — reflect and log transform recommended"
                 )
             elif skew_val > 1:
-                suggestion = "Moderate positive skew — sqrt transform may help"
+                if col_min >= 0:
+                    suggestion = "Moderate positive skew — sqrt transform may help"
+                else:
+                    suggestion = (
+                        "Moderate positive skew with negative values — "
+                        "cube root transform recommended"
+                    )
             else:
                 suggestion = "Moderate negative skew — reflect and sqrt transform may help"
 
@@ -512,12 +532,34 @@ class NearPerfectCorrelationRule(CriticRule):
         max_val = float(corr_masked.max().max())
         if np.isnan(max_val):
             return []
+        # Extract the names of the worst-correlated pair
+        max_idx = corr_masked.stack().idxmax()
+        pair_a, pair_b = str(max_idx[0]), str(max_idx[1])
+        # Pairwise VIF: 1/(1-r²); cap r at 0.9999 to avoid zero-division for r=1.0
+        vif = round(1 / (1 - min(max_val, 0.9999) ** 2), 1)
         if max_val > 0.95:
-            return [CriticFlag(column=None, rule=self.name, severity="HIGH",
-                              message=f"|r|={max_val:.2f}", value=max_val)]
+            return [CriticFlag(
+                column=None, rule=self.name, severity="HIGH",
+                message=f"'{pair_a}' \u2194 '{pair_b}' (|r|={max_val:.2f}, VIF\u2248{vif:.0f}\u00d7)",
+                value=max_val,
+                suggestion=(
+                    f"Critical collinearity \u2014 estimated VIF \u2248 {vif:.0f}\u00d7 for "
+                    f"'{pair_a}'\u2194'{pair_b}'; critical for linear models "
+                    f"(OLS, Logistic, ElasticNet \u2014 unstable coefficients); "
+                    f"safe for tree-based models (XGBoost, LightGBM, RandomForest)"
+                ),
+            )]
         if max_val > 0.85:
-            return [CriticFlag(column=None, rule=self.name, severity="MEDIUM",
-                              message=f"|r|={max_val:.2f}", value=max_val)]
+            return [CriticFlag(
+                column=None, rule=self.name, severity="MEDIUM",
+                message=f"'{pair_a}' \u2194 '{pair_b}' (|r|={max_val:.2f}, VIF\u2248{vif:.1f}\u00d7)",
+                value=max_val,
+                suggestion=(
+                    f"Moderate collinearity \u2014 estimated VIF \u2248 {vif:.1f}\u00d7 for "
+                    f"'{pair_a}'\u2194'{pair_b}'; monitor in linear models; "
+                    f"tree-based models tolerate this without preprocessing"
+                ),
+            )]
         return []
 
 

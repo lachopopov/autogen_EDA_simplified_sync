@@ -11,12 +11,14 @@ import json
 import pytest
 
 from eda_state import (
+    AssociationRow,
     CategoricalAnalysis,
     CategoricalStats,
     CriticFlag,
     CriticReport,
     DataProfile,
     EDAResults,
+    FeatureAssociations,
     Findings,
     MissingInfo,
 )
@@ -25,6 +27,7 @@ from tools.findings_tools import (
     _build_categorical_section,
     _build_conclusions_section,
     _build_correlation_section,
+    _build_feature_associations_section,
     _build_missing_section,
     _build_overview_section,
     _build_quality_section,
@@ -472,6 +475,25 @@ class TestBuildRecommendationsSection:
         )
         section = _build_recommendations_section(eda, critic)
         assert "upstream data collection" in section["content"].lower()
+
+    def test_recommendation_safe_for_trees_language(self, critic_approved):
+        """r=0.95 between two features → recommendation uses 'unaffected' or 'safe' for trees."""
+        eda = EDAResults(
+            missing=MissingInfo(total_pct=0.0),
+            correlation={"x": {"x": 1.0, "y": 0.95}, "y": {"x": 0.95, "y": 1.0}},
+        )
+        section = _build_recommendations_section(eda, critic_approved)
+        content = section["content"].lower()
+        assert "unaffected" in content or "safe" in content
+
+    def test_recommendation_mentions_vif(self, critic_approved):
+        """r=0.95 between two features → recommendation explicitly mentions VIF."""
+        eda = EDAResults(
+            missing=MissingInfo(total_pct=0.0),
+            correlation={"x": {"x": 1.0, "y": 0.95}, "y": {"x": 0.95, "y": 1.0}},
+        )
+        section = _build_recommendations_section(eda, critic_approved)
+        assert "VIF" in section["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -2282,3 +2304,91 @@ class TestOverviewEncodedCategoricalSubtypes:
         content = section["content"]
         assert "3 ordinal" in content
         assert "nominal" not in content
+
+
+# ---------------------------------------------------------------------------
+# _build_feature_associations_section — MI × effect-size quadrant analysis
+# ---------------------------------------------------------------------------
+
+class TestBuildFeatureAssociationsQuadrants:
+    """Tests for the MI × effect-size 2×2 quadrant analysis.
+
+    Quadrant logic (mid_rank = ceil(total_features / 2)):
+      Q1  mi_rank ≤ mid_rank + strong ES  → linear (no alert)
+      Q2  mi_rank ≤ mid_rank + weak   ES  → NONLINEAR SIGNAL
+      Q3  mi_rank  > mid_rank + strong ES  → SUSPICIOUS ASSOCIATION
+      Q4  mi_rank  > mid_rank + weak   ES  → no relationship (no alert)
+    """
+
+    def _row(self, feature, mi_rank, es_label, es=0.05, es_type="eta2",
+             mi_score=0.3, es_rank=1, borda=2):
+        return AssociationRow(
+            feature=feature, mi_rank=mi_rank,
+            effect_size_label=es_label, effect_size=es,
+            effect_size_type=es_type, mi_score=mi_score,
+            effect_size_rank=es_rank, borda_score=borda,
+        )
+
+    def _fa(self, rows, total_features):
+        return FeatureAssociations(
+            target_col="target", task_type="classification",
+            total_features=total_features, rows=rows,
+        )
+
+    def test_nonlinear_signal_detected(self):
+        """High MI + weak effect size (Q2) → NONLINEAR SIGNAL in content."""
+        # total_features=2, mid_rank=ceil(2/2)=1
+        # 'income': mi_rank=1 ≤ 1 (high MI) + weak ES → Q2
+        # 'age':    mi_rank=2 > 1 (low MI)  + moderate ES → Q_mixed (no alert)
+        fa = self._fa(
+            rows=[
+                self._row("income", mi_rank=1, es_label="weak", es=0.004),
+                self._row("age",    mi_rank=2, es_label="moderate", es=0.07),
+            ],
+            total_features=2,
+        )
+        section = _build_feature_associations_section(fa)
+        assert "NONLINEAR SIGNAL" in section["content"]
+        assert "SUSPICIOUS ASSOCIATION" not in section["content"]
+
+    def test_suspicious_association_detected(self):
+        """Low MI + strong effect size (Q3) → SUSPICIOUS ASSOCIATION in content."""
+        # total_features=2, mid_rank=1
+        # 'income': mi_rank=1 ≤ 1 (high MI) + moderate ES → Q_mixed (no alert)
+        # 'age':    mi_rank=2 > 1 (low MI)  + strong ES  → Q3
+        fa = self._fa(
+            rows=[
+                self._row("income", mi_rank=1, es_label="moderate", es=0.08),
+                self._row("age",    mi_rank=2, es_label="strong",   es=0.20),
+            ],
+            total_features=2,
+        )
+        section = _build_feature_associations_section(fa)
+        assert "SUSPICIOUS ASSOCIATION" in section["content"]
+        assert "NONLINEAR SIGNAL" not in section["content"]
+
+    def test_no_alert_for_linear_quadrant(self):
+        """High MI + strong ES (Q1) and low MI + weak ES (Q4) → no quadrant alert."""
+        # total_features=2, mid_rank=1
+        # 'x': mi_rank=1, strong ES → Q1 linear (expected; no alert)
+        # 'y': mi_rank=2, weak   ES → Q4 none  (no alert)
+        fa = self._fa(
+            rows=[
+                self._row("x", mi_rank=1, es_label="strong", es=0.20),
+                self._row("y", mi_rank=2, es_label="weak",   es=0.002),
+            ],
+            total_features=2,
+        )
+        content = _build_feature_associations_section(fa)["content"]
+        assert "NONLINEAR SIGNAL" not in content
+        assert "SUSPICIOUS ASSOCIATION" not in content
+
+    def test_nonlinear_signal_recommends_tree_models(self):
+        """NONLINEAR SIGNAL content explicitly names tree-based model families."""
+        fa = self._fa(
+            rows=[self._row("income", mi_rank=1, es_label="weak", es=0.004)],
+            total_features=2,
+        )
+        content = _build_feature_associations_section(fa)["content"]
+        assert "NONLINEAR SIGNAL" in content
+        assert any(t in content for t in ("XGBoost", "LightGBM", "RandomForest", "tree"))
