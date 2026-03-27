@@ -527,13 +527,13 @@ class TestSkewnessRule:
         # Normal column should not appear
         assert "normal" not in flagged_cols or abs(df["normal"].skew()) > 1
 
-    def test_max_five_columns(self):
-        """At most 5 columns reported even if more are skewed."""
-        # Create 8 heavily skewed columns
-        data = {f"col_{i}": [1] * 9 + [100 * (i + 1)] for i in range(8)}
+    def test_max_columns_capped(self):
+        """At most _MAX_REPORTED columns flagged even if more are skewed."""
+        # Create 25 heavily skewed columns — exceeds _MAX_REPORTED = 20
+        data = {f"col_{i}": [1] * 9 + [100 * (i + 1)] for i in range(25)}
         df = pd.DataFrame(data)
         flags = SkewnessRule().check(df, {})
-        assert len(flags) <= 5
+        assert len(flags) <= SkewnessRule._MAX_REPORTED
 
     def test_sorted_by_severity(self):
         """Flags sorted by absolute skew descending (worst first)."""

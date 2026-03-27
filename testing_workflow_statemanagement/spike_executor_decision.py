@@ -23,10 +23,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from autogen import GroupChat, GroupChatManager, UserProxyAgent
+from autogen import GroupChat, GroupChatManager, UserProxyAgent  # noqa: E402
 
-from agents.data_prep_agent import create_data_prep_agent, register_data_prep_tools
-from agents.eda_analysis_agent import (
+from agents.data_prep_agent import create_data_prep_agent, register_data_prep_tools  # noqa: E402
+from agents.eda_analysis_agent import (  # noqa: E402
     create_eda_analysis_agent,
     register_eda_analysis_tools,
 )
@@ -119,11 +119,11 @@ def state_flow_executor_decision(last_speaker, groupchat):
         if last_content and ("error" in last_content.lower()
                              or "exitcode: 1" in last_content):
             # Error → retry: send back to assistant to fix
-            print(f"  [EXECUTOR DECISION] DataPrepExecutor: ERROR detected → retry")
+            print("  [EXECUTOR DECISION] DataPrepExecutor: ERROR detected → retry")
             return data_prep_agent
         else:
             # Success → return to agent for next tool or summary
-            print(f"  [EXECUTOR DECISION] DataPrepExecutor: SUCCESS → back to agent")
+            print("  [EXECUTOR DECISION] DataPrepExecutor: SUCCESS → back to agent")
             return data_prep_agent
 
     # EDAAnalysisAgent → to executor or end
@@ -138,10 +138,10 @@ def state_flow_executor_decision(last_speaker, groupchat):
     if name == "EDAAnalysisExecutor":
         if last_content and ("error" in last_content.lower()
                              or "exitcode: 1" in last_content):
-            print(f"  [EXECUTOR DECISION] EDAExecutor: ERROR detected → retry")
+            print("  [EXECUTOR DECISION] EDAExecutor: ERROR detected → retry")
             return eda_analysis_agent
         else:
-            print(f"  [EXECUTOR DECISION] EDAExecutor: SUCCESS → back to agent")
+            print("  [EXECUTOR DECISION] EDAExecutor: SUCCESS → back to agent")
             return eda_analysis_agent
 
     return None

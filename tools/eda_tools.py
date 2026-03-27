@@ -986,3 +986,301 @@ def compute_feature_target_associations(
             f"Reference: {STATE_REF_PREFIX}feature_associations"
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Interaction signal detection (A4) — dataset-agnostic multivariate signals
+# ---------------------------------------------------------------------------
+
+_FAMILY_RE = r"^([a-zA-Z_]+?)_?(\d+)$"
+_MIN_FAMILY_SIZE = 3  # require ≥3 columns to form a family
+
+
+def _detect_column_families(
+    numerical_cols: list[str],
+) -> dict[str, list[str]]:
+    """Detect numbered column families via regex (e.g., PAY_0..PAY_6).
+
+    Returns dict mapping family prefix to ordered list of column names
+    (sorted by numeric suffix).  Only families with ≥ _MIN_FAMILY_SIZE
+    members are returned.
+    """
+    import re
+
+    families: dict[str, list[tuple[int, str]]] = {}
+    for col in numerical_cols:
+        m = re.match(_FAMILY_RE, col)
+        if m:
+            prefix = m.group(1)
+            idx = int(m.group(2))
+            families.setdefault(prefix, []).append((idx, col))
+
+    result: dict[str, list[str]] = {}
+    for prefix, members in families.items():
+        if len(members) >= _MIN_FAMILY_SIZE:
+            members.sort(key=lambda x: x[0])
+            result[prefix] = [col for _, col in members]
+    return result
+
+
+def compute_interaction_signals(
+    data_json: Annotated[str, "JSON string (records orientation) from load_data()"],
+    target_info_json: Annotated[str, "JSON string of TargetInfo from detect_target()"],
+) -> str:
+    """
+    AG2 tool entry point.
+    Compute dataset-agnostic interaction signals: persistence gradients,
+    trajectories, cross-feature segments, and portfolio concentration.
+
+    Works on any tabular dataset — detects column families via regex,
+    uses Borda-ranked features for cross-feature analysis, and
+    median-splits regression targets for segment analysis.
+
+    Returns:
+        JSON string with interaction signal results, or empty dict
+        if insufficient structure is detected.
+    """
+    from tools._pipeline_state import is_active, resolve, load_state, save_state, STATE_REF_PREFIX
+
+    if is_active():
+        data_json = resolve(data_json, "data_json")
+        target_info_json = resolve(target_info_json, "target_info")
+
+    df = pd.DataFrame(json.loads(data_json))
+    target_info = TargetInfo.model_validate_json(target_info_json)
+
+    # Guard: need a target for meaningful interaction analysis
+    if (
+        target_info.column is None
+        or target_info.column not in df.columns
+        or target_info.problem_type == "unsupervised"
+    ):
+        result = json.dumps({"signals": [], "note": "No target — interaction analysis skipped."})
+        if is_active():
+            save_state("interaction_signals", result)
+            return (
+                f"No target column — skipping interaction analysis. "
+                f"Reference: {STATE_REF_PREFIX}interaction_signals"
+            )
+        return result
+
+    target_col = target_info.column
+    task_type = target_info.problem_type
+
+    # For regression targets, create a binary proxy via median split
+    if task_type == "regression":
+        median_val = df[target_col].median()
+        target_binary = (df[target_col] >= median_val).astype(int)
+    else:
+        # Classification: use the target as-is for binary; for multiclass,
+        # binarize as "is max class" vs "not max class"
+        if target_info.n_classes <= 2:
+            target_binary = df[target_col]
+        else:
+            most_common = df[target_col].value_counts().idxmax()
+            target_binary = (df[target_col] == most_common).astype(int)
+
+    # Determine column types from DataProfile when available
+    numerical_cols: list[str] = []
+    if is_active():
+        dtypes_raw = load_state("dtypes_json")
+        if dtypes_raw:
+            from eda_state import DataProfile
+            try:
+                dp = DataProfile.model_validate_json(dtypes_raw)
+                numerical_cols = [c for c in dp.numerical_cols if c in df.columns and c != target_col]
+            except Exception:
+                pass
+    if not numerical_cols:
+        numerical_cols = [
+            c for c in df.select_dtypes(include="number").columns
+            if c != target_col
+        ]
+
+    signals: list[dict] = []
+    overall_rate = float(target_binary.mean())
+
+    # -----------------------------------------------------------------------
+    # 1. COLUMN FAMILY ANALYSIS: Persistence Gradient + Trajectory
+    # -----------------------------------------------------------------------
+    families = _detect_column_families(numerical_cols)
+
+    for prefix, members in families.items():
+        family_df = df[members].copy()
+
+        # Persistence gradient: count how many family columns exceed their
+        # respective per-column medians.  Then compute target rate at each
+        # persistence level (0..len(members)).
+        medians = family_df.median()
+        above_median = family_df.gt(medians).sum(axis=1)
+        gradient_rates: dict[str, float] = {}
+        gradient_counts: dict[str, int] = {}
+        for level in range(len(members) + 1):
+            mask = above_median == level
+            n_level = int(mask.sum())
+            if n_level >= 10:  # minimum group size for meaningful rate
+                rate = float(target_binary[mask].mean())
+                gradient_rates[str(level)] = round(rate * 100, 1)
+                gradient_counts[str(level)] = n_level
+
+        if len(gradient_rates) >= 2:
+            rates_list = list(gradient_rates.values())
+            spread = max(rates_list) - min(rates_list)
+            if spread >= 5.0:  # at least 5pp spread to be interesting
+                signals.append({
+                    "type": "persistence_gradient",
+                    "family": prefix,
+                    "columns": members,
+                    "gradient_rates_pct": gradient_rates,
+                    "gradient_counts": gradient_counts,
+                    "spread_pp": round(spread, 1),
+                    "overall_rate_pct": round(overall_rate * 100, 1),
+                })
+
+        # Trajectory: compare first vs last column using median threshold
+        first_col, last_col = members[0], members[-1]
+        first_above = df[first_col] > medians[first_col]
+        last_above = df[last_col] > medians[last_col]
+
+        # Four trajectory groups
+        trajectories: dict[str, dict] = {}
+        for label, mask_first, mask_last in [
+            ("stable_low", ~first_above, ~last_above),
+            ("deteriorating", ~first_above, last_above),
+            ("improving", first_above, ~last_above),
+            ("stable_high", first_above, last_above),
+        ]:
+            mask = mask_first & mask_last
+            n_group = int(mask.sum())
+            if n_group >= 10:
+                rate = float(target_binary[mask].mean())
+                trajectories[label] = {
+                    "count": n_group,
+                    "target_rate_pct": round(rate * 100, 1),
+                }
+
+        if len(trajectories) >= 2:
+            rates_list = [v["target_rate_pct"] for v in trajectories.values()]
+            spread = max(rates_list) - min(rates_list)
+            if spread >= 5.0:
+                signals.append({
+                    "type": "trajectory",
+                    "family": prefix,
+                    "first_col": first_col,
+                    "last_col": last_col,
+                    "trajectories": trajectories,
+                    "spread_pp": round(spread, 1),
+                    "overall_rate_pct": round(overall_rate * 100, 1),
+                })
+
+    # -----------------------------------------------------------------------
+    # 2. CROSS-FEATURE SEGMENTS: Top-2 Borda features → 2×2 target rates
+    # -----------------------------------------------------------------------
+    fa_raw = None
+    if is_active():
+        fa_raw = load_state("feature_associations")
+    if fa_raw:
+        fa = FeatureAssociations.model_validate_json(fa_raw)
+        # Pick top-2 numerical features by Borda score
+        top_num = [r for r in fa.rows if r.feature_type == "numerical" and r.feature in df.columns][:2]
+        if len(top_num) == 2:
+            f1, f2 = top_num[0].feature, top_num[1].feature
+            m1 = df[f1].median()
+            m2 = df[f2].median()
+            f1_hi = df[f1] >= m1
+            f2_hi = df[f2] >= m2
+
+            segment_table: dict[str, dict] = {}
+            for label, mask in [
+                (f"{f1}_lo_{f2}_lo", ~f1_hi & ~f2_hi),
+                (f"{f1}_lo_{f2}_hi", ~f1_hi & f2_hi),
+                (f"{f1}_hi_{f2}_lo", f1_hi & ~f2_hi),
+                (f"{f1}_hi_{f2}_hi", f1_hi & f2_hi),
+            ]:
+                n_seg = int(mask.sum())
+                if n_seg >= 10:
+                    rate = float(target_binary[mask].mean())
+                    segment_table[label] = {
+                        "count": n_seg,
+                        "target_rate_pct": round(rate * 100, 1),
+                    }
+
+            if len(segment_table) >= 2:
+                rates_list = [v["target_rate_pct"] for v in segment_table.values()]
+                spread = max(rates_list) - min(rates_list)
+                if spread >= 5.0:
+                    signals.append({
+                        "type": "cross_feature_segments",
+                        "feature_1": f1,
+                        "feature_2": f2,
+                        "segments": segment_table,
+                        "spread_pp": round(spread, 1),
+                        "overall_rate_pct": round(overall_rate * 100, 1),
+                    })
+
+    # -----------------------------------------------------------------------
+    # 3. PORTFOLIO CONCENTRATION: Top-1 Borda feature → quintiles
+    # -----------------------------------------------------------------------
+    if fa_raw:
+        fa = FeatureAssociations.model_validate_json(fa_raw)
+        top_feat = next(
+            (r for r in fa.rows if r.feature_type == "numerical" and r.feature in df.columns),
+            None,
+        )
+        if top_feat:
+            feat_col = top_feat.feature
+            try:
+                quintiles = pd.qcut(df[feat_col], q=5, labels=False, duplicates="drop")
+                conc_table: dict[str, dict] = {}
+                for q_val in sorted(quintiles.dropna().unique()):
+                    mask = quintiles == q_val
+                    n_q = int(mask.sum())
+                    if n_q >= 5:
+                        rate = float(target_binary[mask].mean())
+                        pos_count = int(target_binary[mask].sum())
+                        conc_table[f"Q{int(q_val) + 1}"] = {
+                            "count": n_q,
+                            "target_rate_pct": round(rate * 100, 1),
+                            "positive_count": pos_count,
+                        }
+
+                if len(conc_table) >= 2:
+                    rates_list = [v["target_rate_pct"] for v in conc_table.values()]
+                    spread = max(rates_list) - min(rates_list)
+                    total_pos = int(target_binary.sum())
+                    # Top-quintile concentration ratio
+                    top_q = max(conc_table.items(), key=lambda x: x[1]["target_rate_pct"])
+                    top_q_pct = round(top_q[1]["positive_count"] / max(total_pos, 1) * 100, 1)
+                    if spread >= 5.0:
+                        signals.append({
+                            "type": "portfolio_concentration",
+                            "feature": feat_col,
+                            "quintiles": conc_table,
+                            "spread_pp": round(spread, 1),
+                            "top_quintile_concentration_pct": top_q_pct,
+                            "overall_rate_pct": round(overall_rate * 100, 1),
+                        })
+            except (ValueError, TypeError):
+                pass  # qcut fails on constant or near-constant features
+
+    result_dict = {
+        "signals": signals,
+        "n_families": len(families),
+        "families_detected": {k: v for k, v in families.items()},
+        "overall_target_rate_pct": round(overall_rate * 100, 1),
+    }
+    result = json.dumps(result_dict)
+
+    logger.info(
+        "Interaction signals computed: %d signals from %d column families",
+        len(signals), len(families),
+    )
+
+    if is_active():
+        save_state("interaction_signals", result)
+        return (
+            f"Interaction signals computed: {len(signals)} signals "
+            f"from {len(families)} column families. "
+            f"Reference: {STATE_REF_PREFIX}interaction_signals"
+        )
+    return result

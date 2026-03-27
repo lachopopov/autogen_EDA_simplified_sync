@@ -19,14 +19,13 @@ Prerequisites:
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 # Load .env from project root
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-import openlit
+import openlit  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 1. Initialise OpenLIT with OTLP endpoint + custom pricing

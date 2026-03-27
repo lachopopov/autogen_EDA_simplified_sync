@@ -116,9 +116,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def ensure_output_dirs() -> None:
-    """Create ``outputs/`` and ``outputs/plots/`` directories if they don't exist."""
+    """Create output directories and remove stale plots from prior runs."""
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    # Remove stale .png files from a previous dataset run so that the
+    # current run's plots directory is clean.
+    stale = list(PLOTS_DIR.glob("*.png"))
+    for f in stale:
+        f.unlink()
+    if stale:
+        logger.info("Cleaned %d stale plot file(s) from %s", len(stale), PLOTS_DIR)
     logger.info("Output dirs ready: %s, %s", OUTPUTS_DIR, PLOTS_DIR)
 
 
@@ -397,9 +404,9 @@ def _confirm_reclassify_interactive(
         response = input("     [Enter] Accept  |  [n] Reject: ").strip().lower()
         if response in ("", "y", "yes"):
             accepted.append(s.column)
-            print(f"     \u2713 Accepted")
+            print("     \u2713 Accepted")
         else:
-            print(f"     \u2717 Rejected")
+            print("     \u2717 Rejected")
         print()
 
     if accepted:
@@ -606,6 +613,10 @@ def run_pipeline(
 
     # --- OpenLIT observability (must run BEFORE any AG2 / OpenAI call) ---
     if enable_openlit:
+        # Bridge CLI flag to config so downstream code (e.g.
+        # _run_comprehensive_eval) sees the authoritative value.
+        import config as _cfg
+        _cfg.OPENLIT_ENABLE = True
         _init_openlit()
 
     # --- Pre-pipeline: load data + detect target ---

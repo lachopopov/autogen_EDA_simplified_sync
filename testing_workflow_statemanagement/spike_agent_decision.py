@@ -20,10 +20,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from autogen import GroupChat, GroupChatManager, UserProxyAgent
+from autogen import GroupChat, GroupChatManager, UserProxyAgent  # noqa: E402
 
-from agents.data_prep_agent import create_data_prep_agent, register_data_prep_tools
-from agents.eda_analysis_agent import (
+from agents.data_prep_agent import create_data_prep_agent, register_data_prep_tools  # noqa: E402
+from agents.eda_analysis_agent import (  # noqa: E402
     create_eda_analysis_agent,
     register_eda_analysis_tools,
 )

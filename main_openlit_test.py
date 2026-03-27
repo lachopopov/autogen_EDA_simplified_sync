@@ -10,14 +10,14 @@ load_dotenv(_ENV_PATH)
 # --- OpenLIT observability setup ---
 # openlit 1.36.8 has a known SyntaxError in its agno instrumentor — disabled here.
 # Also patched: __init__.py (configured_tracer) and async_agno.py (return in async gen).
-import openlit
+import openlit  # noqa: E402
 
 openlit.init(
     otlp_endpoint="http://127.0.0.1:4318",
     disabled_instrumentors=["agno"],
 )
 
-from autogen import AssistantAgent, LLMConfig, UserProxyAgent
+from autogen import AssistantAgent, LLMConfig, UserProxyAgent  # noqa: E402
 
 # --- Base configuration shared across all models ---
 # Note: temperature is NOT set here. gpt-5-nano and gpt-5-mini only support

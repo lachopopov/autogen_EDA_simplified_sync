@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from tools.visualization_tools import (
+    plot_categorical_bars,
     plot_class_distribution,
     plot_correlation_heatmap,
     plot_histograms,
@@ -417,26 +418,26 @@ class TestPlotClassDistribution:
         ).model_dump_json()
 
     def test_classification_creates_png(self, classification_df_json, classification_ti_json, plots_dir):
-        result = plot_class_distribution(classification_df_json, classification_ti_json, plots_dir)
+        result = plot_class_distribution(classification_ti_json, plots_dir, data_json=classification_df_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
         assert Path(paths[0]).name == "class_distribution.png"
 
     def test_classification_file_nonzero(self, classification_df_json, classification_ti_json, plots_dir):
-        result = plot_class_distribution(classification_df_json, classification_ti_json, plots_dir)
+        result = plot_class_distribution(classification_ti_json, plots_dir, data_json=classification_df_json)
         paths = json.loads(result)
         assert Path(paths[0]).stat().st_size > 0
 
     def test_regression_creates_png(self, regression_df_json, regression_ti_json, plots_dir):
-        result = plot_class_distribution(regression_df_json, regression_ti_json, plots_dir)
+        result = plot_class_distribution(regression_ti_json, plots_dir, data_json=regression_df_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
         assert Path(paths[0]).name == "target_distribution.png"
 
     def test_unsupervised_returns_empty(self, classification_df_json, unsupervised_ti_json, plots_dir):
-        result = plot_class_distribution(classification_df_json, unsupervised_ti_json, plots_dir)
+        result = plot_class_distribution(unsupervised_ti_json, plots_dir, data_json=classification_df_json)
         paths = json.loads(result)
         assert paths == []
 
@@ -447,13 +448,204 @@ class TestPlotClassDistribution:
             problem_type="classification",
             detection_method="name_heuristic",
         ).model_dump_json()
-        result = plot_class_distribution(classification_df_json, ti, plots_dir)
+        result = plot_class_distribution(ti, plots_dir, data_json=classification_df_json)
         paths = json.loads(result)
         assert paths == []
 
     def test_creates_output_dir(self, classification_df_json, classification_ti_json, tmp_path):
         new_dir = str(tmp_path / "new" / "plots")
-        result = plot_class_distribution(classification_df_json, classification_ti_json, new_dir)
+        result = plot_class_distribution(classification_ti_json, new_dir, data_json=classification_df_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(new_dir).is_dir()
+
+
+# ---------------------------------------------------------------------------
+# plot_categorical_bars()
+# ---------------------------------------------------------------------------
+
+
+class TestPlotCategoricalBars:
+    """Test plot_categorical_bars() function."""
+
+    def _make_cat_analysis_json(self, columns: dict) -> str:
+        """Build a minimal CategoricalAnalysis JSON from a columns dict."""
+        from eda_state import CategoricalAnalysis, CategoricalStats
+        col_stats = {}
+        for col, top_vals in columns.items():
+            col_stats[col] = CategoricalStats(
+                cardinality=len(top_vals),
+                top_values=top_vals,
+                more_values=0,
+            )
+        return CategoricalAnalysis(columns=col_stats, top_n=10).model_dump_json()
+
+    @pytest.fixture()
+    def simple_cat_json(self):
+        return self._make_cat_analysis_json({
+            "dept": [
+                {"value": "eng", "count": 50, "pct": 50.0, "is_rare": False},
+                {"value": "hr",  "count": 30, "pct": 30.0, "is_rare": False},
+                {"value": "mgmt","count": 20, "pct": 20.0, "is_rare": False},
+            ],
+        })
+
+    @pytest.fixture()
+    def two_col_cat_json(self):
+        return self._make_cat_analysis_json({
+            "status": [
+                {"value": "active",   "count": 80, "pct": 80.0, "is_rare": False},
+                {"value": "inactive", "count": 20, "pct": 20.0, "is_rare": False},
+            ],
+            "region": [
+                {"value": "north", "count": 60, "pct": 60.0, "is_rare": False},
+                {"value": "south", "count": 25, "pct": 25.0, "is_rare": False},
+                {"value": "east",  "count": 15, "pct": 15.0, "is_rare": False},
+            ],
+        })
+
+    @pytest.fixture()
+    def empty_cat_json(self):
+        from eda_state import CategoricalAnalysis
+        return CategoricalAnalysis(columns={}, top_n=10).model_dump_json()
+
+    def test_returns_json_list(self, simple_cat_json, plots_dir):
+        result = plot_categorical_bars(simple_cat_json, plots_dir)
+        paths = json.loads(result)
+        assert isinstance(paths, list)
+
+    def test_creates_one_png_per_column(self, two_col_cat_json, plots_dir):
+        result = plot_categorical_bars(two_col_cat_json, plots_dir)
+        paths = json.loads(result)
+        assert len(paths) == 2
+
+    def test_files_exist_on_disk(self, two_col_cat_json, plots_dir):
+        result = plot_categorical_bars(two_col_cat_json, plots_dir)
+        paths = json.loads(result)
+        for p in paths:
+            assert Path(p).exists(), f"File not found: {p}"
+
+    def test_filename_prefix_is_cat(self, simple_cat_json, plots_dir):
+        result = plot_categorical_bars(simple_cat_json, plots_dir)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        assert Path(paths[0]).name == "cat_dept.png"
+
+    def test_filename_sanitizes_spaces(self, plots_dir):
+        """Column name with spaces → underscores in filename."""
+        cat_json = self._make_cat_analysis_json({
+            "status code": [
+                {"value": "200", "count": 90, "pct": 90.0, "is_rare": False},
+                {"value": "404", "count": 10, "pct": 10.0, "is_rare": False},
+            ],
+        })
+        result = plot_categorical_bars(cat_json, plots_dir)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        assert Path(paths[0]).name == "cat_status_code.png"
+
+    def test_filename_sanitizes_special_chars(self, plots_dir):
+        """Column with special characters → sanitized filename."""
+        cat_json = self._make_cat_analysis_json({
+            "col/type:raw": [
+                {"value": "a", "count": 100, "pct": 100.0, "is_rare": False},
+            ],
+        })
+        result = plot_categorical_bars(cat_json, plots_dir)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        fname = Path(paths[0]).name
+        assert "/" not in fname and ":" not in fname
+        assert fname.startswith("cat_")
+
+    def test_files_are_png(self, simple_cat_json, plots_dir):
+        result = plot_categorical_bars(simple_cat_json, plots_dir)
+        paths = json.loads(result)
+        for p in paths:
+            assert Path(p).suffix == ".png"
+
+    def test_files_nonzero_size(self, simple_cat_json, plots_dir):
+        result = plot_categorical_bars(simple_cat_json, plots_dir)
+        paths = json.loads(result)
+        for p in paths:
+            assert Path(p).stat().st_size > 0
+
+    def test_empty_columns_returns_empty_list(self, empty_cat_json, plots_dir):
+        result = plot_categorical_bars(empty_cat_json, plots_dir)
+        paths = json.loads(result)
+        assert paths == []
+
+    def test_column_with_empty_top_values_is_skipped(self, plots_dir):
+        """A column with no top_values entries produces no PNG."""
+        from eda_state import CategoricalAnalysis, CategoricalStats
+        analysis = CategoricalAnalysis(
+            columns={"empty_col": CategoricalStats(cardinality=0, top_values=[])},
+            top_n=10,
+        )
+        result = plot_categorical_bars(analysis.model_dump_json(), plots_dir)
+        paths = json.loads(result)
+        assert paths == []
+
+    def test_rare_category_flag_does_not_crash(self, plots_dir):
+        """At least one is_rare=True entry renders without error."""
+        cat_json = self._make_cat_analysis_json({
+            "rarity_col": [
+                {"value": "common",  "count": 990, "pct": 99.0, "is_rare": False},
+                {"value": "unusual", "count": 3,   "pct": 0.3,  "is_rare": True},
+            ],
+        })
+        result = plot_categorical_bars(cat_json, plots_dir)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        assert Path(paths[0]).exists()
+
+    def test_more_values_annotation_does_not_crash(self, plots_dir):
+        """more_values > 0 path completes without error."""
+        from eda_state import CategoricalAnalysis, CategoricalStats
+        analysis = CategoricalAnalysis(
+            columns={
+                "big_col": CategoricalStats(
+                    cardinality=25,
+                    top_values=[
+                        {"value": str(i), "count": 10, "pct": 4.0, "is_rare": False}
+                        for i in range(10)
+                    ],
+                    more_values=15,
+                )
+            },
+            top_n=10,
+        )
+        result = plot_categorical_bars(analysis.model_dump_json(), plots_dir)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        assert Path(paths[0]).exists()
+
+    def test_creates_output_dir(self, simple_cat_json, tmp_path):
+        nested = str(tmp_path / "a" / "b" / "plots")
+        result = plot_categorical_bars(simple_cat_json, nested)
+        paths = json.loads(result)
+        assert len(paths) == 1
+        assert Path(nested).is_dir()
+
+    def test_end_to_end_via_analyze_categoricals(self, tmp_path):
+        """analyze_categoricals() → plot_categorical_bars() full chain."""
+        import pandas as pd
+        from tools.eda_tools import analyze_categoricals
+
+        df = pd.DataFrame({
+            "dept":   ["eng", "hr", "eng", "sales", "hr", "eng"],
+            "region": ["north", "south", "north", "north", "east", "south"],
+            "age":    [25, 30, 35, 40, 45, 50],  # numeric — not categorical
+        })
+        data_json = df.to_json(orient="records")
+        target_json = '{"column": null, "problem_type": "unsupervised", "detection_method": "none"}'
+
+        cat_analysis_json = analyze_categoricals(data_json, target_json)
+        plots_dir = str(tmp_path / "plots")
+        result = plot_categorical_bars(cat_analysis_json, plots_dir)
+        paths = json.loads(result)
+        # dept and region are the 2 categorical columns
+        assert len(paths) == 2
+        for p in paths:
+            assert Path(p).exists()
+            assert Path(p).stat().st_size > 0

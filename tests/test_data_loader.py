@@ -16,7 +16,6 @@ from tools.data_loader import (
     ExcelLoader,
     ParquetLoader,
     _LOADERS,
-    _MAX_PROFILED_CARDINALITY,
     _build_column_profiles,
     _get_loader,
     _has_datetime_column,

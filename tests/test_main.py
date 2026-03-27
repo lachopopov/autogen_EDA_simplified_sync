@@ -171,6 +171,21 @@ class TestEnsureOutputDirs:
         assert out.is_dir()
         assert plots.is_dir()
 
+    def test_cleans_stale_png_files(self, monkeypatch, tmp_path):
+        """Stale .png files from previous runs are removed."""
+        out = tmp_path / "outputs"
+        plots = out / "plots"
+        plots.mkdir(parents=True)
+        (plots / "old_hist.png").write_text("dummy")
+        (plots / ".gitkeep").write_text("")
+        monkeypatch.setattr("main.OUTPUTS_DIR", out)
+        monkeypatch.setattr("main.PLOTS_DIR", plots)
+
+        ensure_output_dirs()
+
+        assert not (plots / "old_hist.png").exists()
+        assert (plots / ".gitkeep").exists()
+
 
 # ===================================================================
 # TestRunPipeline — file validation + orchestrator wiring
@@ -834,11 +849,16 @@ class TestInitOpenlit:
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
 
+        import config as _cfg
+        original_val = _cfg.OPENLIT_ENABLE
         with patch("main._init_openlit") as mock_init, \
              patch("main._shutdown_openlit") as mock_shutdown:
             run_pipeline(csv_file, no_target_flag=True, enable_openlit=True)
             mock_init.assert_called_once()
             mock_shutdown.assert_called_once()
+            # Verify CLI flag bridges to config module
+            assert _cfg.OPENLIT_ENABLE is True
+        _cfg.OPENLIT_ENABLE = original_val
 
     @patch("autogen.gather_usage_summary")
     @patch("orchestrator.build_group_chat")

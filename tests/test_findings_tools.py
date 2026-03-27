@@ -20,6 +20,7 @@ from eda_state import (
     EDAResults,
     FeatureAssociations,
     Findings,
+    Interpretations,
     MissingInfo,
 )
 from tools.findings_tools import (
@@ -28,6 +29,8 @@ from tools.findings_tools import (
     _build_conclusions_section,
     _build_correlation_section,
     _build_feature_associations_section,
+    _build_interaction_signals_block,
+    _build_limitations_section,
     _build_missing_section,
     _build_overview_section,
     _build_quality_section,
@@ -634,14 +637,14 @@ class TestAssembleFindingsApproved:
         findings = Findings.model_validate_json(result)
         assert isinstance(findings, Findings)
 
-    def test_has_seven_sections(self, eda_results_basic, critic_approved, plot_paths_sample):
+    def test_has_eight_sections(self, eda_results_basic, critic_approved, plot_paths_sample):
         result = assemble_findings(
             eda_results_json=eda_results_basic.model_dump_json(),
             critic_report_json=critic_approved.model_dump_json(),
             plot_paths_json=json.dumps(plot_paths_sample),
         )
         findings = Findings.model_validate_json(result)
-        assert len(findings.sections) == 7
+        assert len(findings.sections) == 8
 
     def test_no_unresolved_flags(self, eda_results_basic, critic_approved, plot_paths_sample):
         """APPROVED with no flags → empty unresolved list."""
@@ -791,7 +794,7 @@ class TestAssembleFindingsEdgeCases:
             plot_paths_json=json.dumps([]),
         )
         findings = Findings.model_validate_json(result)
-        assert len(findings.sections) == 7
+        assert len(findings.sections) == 8
 
     def test_empty_plot_paths(self, eda_results_basic, critic_approved):
         """No plots → no plot_paths in any section."""
@@ -854,6 +857,166 @@ class TestAssembleFindingsEdgeCases:
         findings = Findings.model_validate_json(result)
         stat_section = next(s for s in findings.sections if s["title"] == "Statistical Analysis")
         assert len(stat_section.get("plot_paths", [])) == 20
+
+
+# ---------------------------------------------------------------------------
+# Categorical bar-chart plot routing
+# ---------------------------------------------------------------------------
+
+
+class TestCatBarRouting:
+    """cat_*.png paths must be routed exclusively to the Categorical Analysis
+    section and must not contaminate other sections (Statistical Analysis,
+    Missing Values, etc.)."""
+
+    def test_cat_bar_paths_routed_to_categorical_section(
+        self, eda_results_basic, critic_approved, tmp_path, monkeypatch,
+    ):
+        """cat_*.png paths land in Categorical Analysis section plot_paths."""
+        from tools._pipeline_state import (
+            init_session, clear_session, save_state, load_state,
+        )
+
+        monkeypatch.setattr(
+            "tools._pipeline_state._BASE_STATE_DIR", tmp_path / ".state",
+        )
+        init_session()
+        try:
+            save_state("describe_stats", json.dumps(eda_results_basic.describe))
+            save_state("missing_analysis", eda_results_basic.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda_results_basic.correlation))
+            save_state("critic_report", critic_approved.model_dump_json())
+
+            # Build a minimal CategoricalAnalysis artifact
+            cat_analysis = CategoricalAnalysis(
+                columns={
+                    "dept": CategoricalStats(
+                        cardinality=3,
+                        top_values=[
+                            {"value": "eng", "count": 50, "pct": 50.0, "is_rare": False},
+                            {"value": "sales", "count": 30, "pct": 30.0, "is_rare": False},
+                            {"value": "hr", "count": 20, "pct": 20.0, "is_rare": False},
+                        ],
+                    ),
+                    "region": CategoricalStats(
+                        cardinality=2,
+                        top_values=[
+                            {"value": "north", "count": 60, "pct": 60.0, "is_rare": False},
+                            {"value": "south", "count": 40, "pct": 40.0, "is_rare": False},
+                        ],
+                    ),
+                },
+            )
+            save_state("categorical_analysis", cat_analysis.model_dump_json())
+
+            # In pipeline mode plot_paths_json is ignored; plots come from artifact store
+            cat_paths = [
+                "outputs/plots/cat_dept.png",
+                "outputs/plots/cat_region.png",
+            ]
+            save_state("plot_categorical_bars", json.dumps(cat_paths))
+
+            assemble_findings(
+                eda_results_json="STATE_REF:describe_stats",
+                critic_report_json="STATE_REF:critic_report",
+                plot_paths_json=json.dumps([]),
+            )
+            findings = Findings.model_validate_json(load_state("findings"))
+
+            # Categorical section must carry both cat_ plots
+            cat_sec = next(
+                (s for s in findings.sections if s["title"] == "Categorical Analysis"),
+                None,
+            )
+            assert cat_sec is not None, "Categorical Analysis section missing"
+            assert set(cat_sec.get("plot_paths", [])) == set(cat_paths)
+
+            # Statistical Analysis section must NOT receive cat_ paths
+            stat_sec = next(
+                (s for s in findings.sections if s["title"] == "Statistical Analysis"),
+                None,
+            )
+            if stat_sec:
+                for pp in stat_sec.get("plot_paths", []):
+                    assert not pp.startswith("outputs/plots/cat_"), (
+                        f"cat_bar path leaked into Statistical Analysis: {pp}"
+                    )
+
+            # Missing Values section must NOT receive cat_ paths
+            missing_sec = next(
+                (s for s in findings.sections if s["title"] == "Missing Values"),
+                None,
+            )
+            if missing_sec:
+                for pp in missing_sec.get("plot_paths", []):
+                    assert not pp.startswith("outputs/plots/cat_")
+        finally:
+            clear_session()
+
+    def test_cat_bar_paths_do_not_pollute_statistical_section(
+        self, eda_results_basic, critic_approved, tmp_path, monkeypatch,
+    ):
+        """Mixed hist_ and cat_ paths: each goes to its own section only."""
+        from tools._pipeline_state import (
+            init_session, clear_session, save_state, load_state,
+        )
+
+        monkeypatch.setattr(
+            "tools._pipeline_state._BASE_STATE_DIR", tmp_path / ".state",
+        )
+        init_session()
+        try:
+            save_state("describe_stats", json.dumps(eda_results_basic.describe))
+            save_state("missing_analysis", eda_results_basic.missing.model_dump_json())
+            save_state("correlation_matrix", json.dumps(eda_results_basic.correlation))
+            save_state("critic_report", critic_approved.model_dump_json())
+
+            cat_analysis = CategoricalAnalysis(
+                columns={
+                    "status": CategoricalStats(
+                        cardinality=2,
+                        top_values=[
+                            {"value": "active", "count": 80, "pct": 80.0, "is_rare": False},
+                            {"value": "inactive", "count": 20, "pct": 20.0, "is_rare": False},
+                        ],
+                    ),
+                },
+            )
+            save_state("categorical_analysis", cat_analysis.model_dump_json())
+
+            hist_paths = ["outputs/plots/hist_age.png", "outputs/plots/hist_income.png"]
+            cat_paths = ["outputs/plots/cat_status.png"]
+            # In pipeline mode plots come from artifact store, not plot_paths_json
+            save_state("plot_histograms", json.dumps(hist_paths))
+            save_state("plot_categorical_bars", json.dumps(cat_paths))
+
+            assemble_findings(
+                eda_results_json="STATE_REF:describe_stats",
+                critic_report_json="STATE_REF:critic_report",
+                plot_paths_json=json.dumps([]),
+            )
+            findings = Findings.model_validate_json(load_state("findings"))
+
+            stat_sec = next(
+                (s for s in findings.sections if s["title"] == "Statistical Analysis"),
+                None,
+            )
+            if stat_sec:
+                stat_plots = stat_sec.get("plot_paths", [])
+                assert set(stat_plots) == set(hist_paths), (
+                    f"Statistical Analysis has unexpected plots: {stat_plots}"
+                )
+                for pp in stat_plots:
+                    assert not pp.startswith("outputs/plots/cat_")
+
+            cat_sec = next(
+                (s for s in findings.sections if s["title"] == "Categorical Analysis"),
+                None,
+            )
+            assert cat_sec is not None
+            assert set(cat_sec.get("plot_paths", [])) == set(cat_paths)
+        finally:
+            clear_session()
 
 
 # ---------------------------------------------------------------------------
@@ -1399,12 +1562,11 @@ class TestRunComprehensiveEval:
 
         # Mock the OpenAI client so _capturing_openai actually works
         class FakeClient:
-            class beta:
-                class chat:
-                    class completions:
-                        @staticmethod
-                        def parse(**kwargs):
-                            return FakeResponse()
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        return FakeResponse()
 
         monkeypatch.setattr("openai.OpenAI", lambda **kw: FakeClient())
 
@@ -2392,3 +2554,323 @@ class TestBuildFeatureAssociationsQuadrants:
         content = _build_feature_associations_section(fa)["content"]
         assert "NONLINEAR SIGNAL" in content
         assert any(t in content for t in ("XGBoost", "LightGBM", "RandomForest", "tree"))
+
+
+# ---------------------------------------------------------------------------
+# _build_limitations_section (D3)
+# ---------------------------------------------------------------------------
+
+class TestBuildLimitationsSection:
+    """Test the _build_limitations_section helper."""
+
+    def test_basic_limitations(self, eda_results_basic, critic_approved):
+        section = _build_limitations_section(eda_results_basic, critic_approved)
+        assert section["title"] == "Limitations & Caveats"
+        assert "univariate" in section["content"].lower()
+        assert "temporal" in section["content"].lower()
+
+    def test_high_missing_caveat(self, critic_approved):
+        eda = EDAResults(
+            missing=MissingInfo(per_column={"col_x": 35.0}, total_pct=35.0),
+        )
+        section = _build_limitations_section(eda, critic_approved)
+        assert "col_x" in section["content"]
+        assert "MNAR" in section["content"]
+
+    def test_outlier_flag_caveat(self, eda_results_basic):
+        critic = CriticReport(
+            flags=[CriticFlag(column="age", rule="outliers_iqr", severity="LOW",
+                              message="outliers", value=0.1)],
+            iteration=1, status="APPROVED",
+        )
+        section = _build_limitations_section(eda_results_basic, critic)
+        assert "IQR" in section["content"]
+        assert "sub-population" in section["content"]
+
+    def test_interaction_signals_modifies_caveat(self, eda_results_basic, critic_approved):
+        signals = {"signals": [{"type": "persistence_gradient"}]}
+        section = _build_limitations_section(
+            eda_results_basic, critic_approved, interaction_signals=signals
+        )
+        assert "1 multivariate signal" in section["content"]
+        assert "higher-order" in section["content"]
+
+    def test_small_sample_caveat(self, critic_approved):
+        eda = EDAResults(
+            describe={"col_a": {"count": 50.0}},
+            missing=MissingInfo(per_column={}, total_pct=0.0),
+        )
+        section = _build_limitations_section(eda, critic_approved)
+        assert "n=50" in section["content"]
+        assert "bootstrap" in section["content"].lower()
+
+
+# ---------------------------------------------------------------------------
+# _build_interaction_signals_block (A4 fact-sheet helper)
+# ---------------------------------------------------------------------------
+
+class TestBuildInteractionSignalsBlock:
+    """Test the _build_interaction_signals_block helper."""
+
+    def test_empty_signals(self):
+        result = _build_interaction_signals_block({"signals": []})
+        assert "No interaction signals" in result
+
+    def test_persistence_gradient(self):
+        data = {
+            "signals": [{
+                "type": "persistence_gradient",
+                "family": "PAY",
+                "columns": ["PAY_0", "PAY_1", "PAY_2"],
+                "gradient_rates_pct": {"0": 10.0, "1": 30.0, "2": 50.0},
+                "gradient_counts": {"0": 100, "1": 200, "2": 150},
+                "spread_pp": 40.0,
+                "overall_rate_pct": 22.0,
+            }],
+            "overall_target_rate_pct": 22.0,
+            "families_detected": {"PAY": ["PAY_0", "PAY_1", "PAY_2"]},
+        }
+        result = _build_interaction_signals_block(data)
+        assert "PERSISTENCE GRADIENT" in result
+        assert "PAY" in result
+        assert "40.0pp" in result
+
+    def test_trajectory(self):
+        data = {
+            "signals": [{
+                "type": "trajectory",
+                "family": "PAY",
+                "first_col": "PAY_0",
+                "last_col": "PAY_6",
+                "trajectories": {
+                    "stable_low": {"count": 500, "target_rate_pct": 5.0},
+                    "deteriorating": {"count": 100, "target_rate_pct": 60.0},
+                },
+                "spread_pp": 55.0,
+                "overall_rate_pct": 22.0,
+            }],
+            "overall_target_rate_pct": 22.0,
+            "families_detected": {"PAY": ["PAY_0", "PAY_6"]},
+        }
+        result = _build_interaction_signals_block(data)
+        assert "TRAJECTORY" in result
+        assert "deteriorating" in result
+
+    def test_cross_feature_segments(self):
+        data = {
+            "signals": [{
+                "type": "cross_feature_segments",
+                "feature_1": "income",
+                "feature_2": "age",
+                "segments": {
+                    "income_lo_age_lo": {"count": 100, "target_rate_pct": 5.0},
+                    "income_hi_age_hi": {"count": 100, "target_rate_pct": 40.0},
+                },
+                "spread_pp": 35.0,
+                "overall_rate_pct": 22.0,
+            }],
+            "overall_target_rate_pct": 22.0,
+            "families_detected": {},
+        }
+        result = _build_interaction_signals_block(data)
+        assert "CROSS-FEATURE" in result
+        assert "income" in result
+        assert "age" in result
+
+    def test_portfolio_concentration(self):
+        data = {
+            "signals": [{
+                "type": "portfolio_concentration",
+                "feature": "income",
+                "quintiles": {
+                    "Q1": {"count": 100, "target_rate_pct": 5.0, "positive_count": 5},
+                    "Q5": {"count": 100, "target_rate_pct": 45.0, "positive_count": 45},
+                },
+                "spread_pp": 40.0,
+                "top_quintile_concentration_pct": 90.0,
+                "overall_rate_pct": 22.0,
+            }],
+            "overall_target_rate_pct": 22.0,
+            "families_detected": {},
+        }
+        result = _build_interaction_signals_block(data)
+        assert "PORTFOLIO CONCENTRATION" in result
+        assert "90.0%" in result
+
+    def test_families_note(self):
+        data = {
+            "signals": [],
+            "n_families": 2,
+            "families_detected": {"PAY": ["PAY_0", "PAY_1", "PAY_2"], "BILL": ["BILL_0", "BILL_1", "BILL_2"]},
+        }
+        result = _build_interaction_signals_block(data)
+        assert "2 column families" in result
+
+
+# ---------------------------------------------------------------------------
+# _build_target_section — Cohen's d ranking (A2)
+# ---------------------------------------------------------------------------
+
+class TestBuildTargetSectionCohenD:
+    """Test that per-class feature stats are ranked by Cohen's d, not truncated."""
+
+    def test_top10_not_top5(self):
+        """With >5 features, all top-10 should be shown (not hard-capped at 5)."""
+        feats = {f"feat_{i}": {"mean": float(i * 10), "std": 5.0}
+                 for i in range(15)}
+        data = {
+            "column": "target",
+            "problem_type": "classification",
+            "n_classes": 2,
+            "imbalance_ratio": 1.0,
+            "class_distribution": {
+                "0": {"count": 50, "pct": 50.0},
+                "1": {"count": 50, "pct": 50.0},
+            },
+            "per_class_feature_stats": {
+                "0": feats,
+                "1": {f"feat_{i}": {"mean": float(i * 10 + 5), "std": 5.0}
+                      for i in range(15)},
+            },
+        }
+        section = _build_target_section(data)
+        content = section["content"]
+        # Should show top 10 features, not be truncated at 5
+        assert "Showing top 10 of 15" in content
+
+    def test_cohens_d_ranking_order(self):
+        """Features with larger mean-difference should appear first."""
+        data = {
+            "column": "target",
+            "problem_type": "classification",
+            "n_classes": 2,
+            "imbalance_ratio": 1.0,
+            "class_distribution": {
+                "0": {"count": 50, "pct": 50.0},
+                "1": {"count": 50, "pct": 50.0},
+            },
+            "per_class_feature_stats": {
+                "0": {
+                    "small_diff": {"mean": 10.0, "std": 5.0},
+                    "big_diff": {"mean": 10.0, "std": 5.0},
+                },
+                "1": {
+                    "small_diff": {"mean": 11.0, "std": 5.0},  # d ≈ 0.2
+                    "big_diff": {"mean": 50.0, "std": 5.0},    # d ≈ 8.0
+                },
+            },
+        }
+        section = _build_target_section(data)
+        content = section["content"]
+        # big_diff should appear before small_diff due to higher Cohen's d
+        assert content.index("big_diff") < content.index("small_diff")
+
+    def test_five_features_no_truncation_note(self):
+        """With ≤10 features, no truncation note should appear."""
+        feats = {f"feat_{i}": {"mean": float(i), "std": 1.0} for i in range(5)}
+        data = {
+            "column": "target",
+            "problem_type": "classification",
+            "n_classes": 2,
+            "imbalance_ratio": 1.0,
+            "class_distribution": {
+                "0": {"count": 50, "pct": 50.0},
+                "1": {"count": 50, "pct": 50.0},
+            },
+            "per_class_feature_stats": {
+                "0": feats,
+                "1": feats,
+            },
+        }
+        section = _build_target_section(data)
+        assert "Showing top" not in section["content"]
+
+
+# ---------------------------------------------------------------------------
+# _build_categorical_inventory — Anomalous rate flag (A3)
+# ---------------------------------------------------------------------------
+
+class TestCategoricalInventoryAnomalousRate:
+    """Test anomalous target rate detection in _build_categorical_inventory."""
+
+    def test_anomalous_rate_flagged(self):
+        """Category with rate >2× overall should get ANOMALOUS_RATE flag."""
+        # Weighted overall = (10*200 + 80*100)/300 = 4666.7/300 ≈ 28.9%
+        # Category B: 80% > 28.9% * 2 = 57.8%  →  flagged
+        cat = CategoricalAnalysis(
+            columns={
+                "edu": CategoricalStats(
+                    cardinality=3,
+                    entropy_bits=1.5,
+                    rare_count=0,
+                    top_values=[
+                        {"value": "A", "count": 200, "pct": 66.7,
+                         "target_rates": {"1": 10.0}},
+                        {"value": "B", "count": 100, "pct": 33.3,
+                         "target_rates": {"1": 80.0}},  # >2× the ~28.9% overall
+                    ],
+                ),
+            },
+            target_column="target",
+        )
+        result = _build_categorical_inventory(cat)
+        assert "ANOMALOUS_RATE" in result
+
+    def test_no_flag_when_rate_normal(self):
+        """Category rate close to overall should not be flagged."""
+        cat = CategoricalAnalysis(
+            columns={
+                "edu": CategoricalStats(
+                    cardinality=2,
+                    entropy_bits=1.0,
+                    rare_count=0,
+                    top_values=[
+                        {"value": "A", "count": 100, "pct": 50.0,
+                         "target_rates": {"1": 20.0}},
+                        {"value": "B", "count": 100, "pct": 50.0,
+                         "target_rates": {"1": 22.0}},
+                    ],
+                ),
+            },
+            target_column="target",
+        )
+        result = _build_categorical_inventory(cat)
+        assert "ANOMALOUS_RATE" not in result
+
+    def test_no_flag_when_small_n(self):
+        """Category with n < 50 should not get ANOMALOUS_RATE flag."""
+        cat = CategoricalAnalysis(
+            columns={
+                "edu": CategoricalStats(
+                    cardinality=2,
+                    entropy_bits=1.0,
+                    rare_count=0,
+                    top_values=[
+                        {"value": "A", "count": 200, "pct": 83.3,
+                         "target_rates": {"1": 20.0}},
+                        {"value": "B", "count": 40, "pct": 16.7,
+                         "target_rates": {"1": 80.0}},  # >2× but n<50
+                    ],
+                ),
+            },
+            target_column="target",
+        )
+        result = _build_categorical_inventory(cat)
+        assert "ANOMALOUS_RATE" not in result
+
+
+# ---------------------------------------------------------------------------
+# Interpretations model — limitations field (D3)
+# ---------------------------------------------------------------------------
+
+class TestInterpretationsLimitations:
+    """Test that Interpretations accepts and round-trips the limitations field."""
+
+    def test_default_empty(self):
+        interp = Interpretations()
+        assert interp.limitations == ""
+
+    def test_set_and_roundtrip(self):
+        interp = Interpretations(limitations="This analysis is univariate only.")
+        restored = Interpretations.model_validate_json(interp.model_dump_json())
+        assert restored.limitations == "This analysis is univariate only."

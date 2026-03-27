@@ -229,6 +229,7 @@ class Interpretations(BaseModel):
     plot_commentaries: list[PlotCommentary] = Field(default_factory=list)
     conclusions: str = ""
     recommendations_and_business_implications: str = ""
+    limitations: str = ""
 
 
 # ---------------------------------------------------------------------------

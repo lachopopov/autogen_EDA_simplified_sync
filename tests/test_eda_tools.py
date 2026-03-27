@@ -11,7 +11,7 @@ import json
 import pandas as pd
 import pytest
 
-from eda_state import CategoricalAnalysis, CategoricalStats, EDAResults, MissingInfo, TargetInfo
+from eda_state import CategoricalAnalysis, EDAResults, MissingInfo, TargetInfo
 from tools.eda_tools import (
     analyze_categoricals,
     correlation_matrix,
@@ -691,7 +691,7 @@ class TestAnalyzeCategoricalsIntegration:
             ti = TargetInfo().model_dump_json()
             save_state("target_info", ti)
 
-            result = analyze_categoricals("STATE_REF:data_json", "STATE_REF:target_info")
+            _result = analyze_categoricals("STATE_REF:data_json", "STATE_REF:target_info")
 
             from tools._pipeline_state import load_state
             ca = CategoricalAnalysis.model_validate_json(load_state("categorical_analysis"))
@@ -723,10 +723,131 @@ class TestAnalyzeCategoricalsIntegration:
             ti = TargetInfo().model_dump_json()
             save_state("target_info", ti)
 
-            result = analyze_categoricals("STATE_REF:data_json", "STATE_REF:target_info")
+            _result = analyze_categoricals("STATE_REF:data_json", "STATE_REF:target_info")
 
             from tools._pipeline_state import load_state
             ca = CategoricalAnalysis.model_validate_json(load_state("categorical_analysis"))
             assert "color" in ca.columns, "select_dtypes fallback must populate columns"
         finally:
             clear_session()
+
+
+# ---------------------------------------------------------------------------
+# compute_interaction_signals() (A4)
+# ---------------------------------------------------------------------------
+
+
+class TestDetectColumnFamilies:
+    """Test the _detect_column_families helper."""
+
+    def test_basic_family(self):
+        from tools.eda_tools import _detect_column_families
+        cols = ["PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6"]
+        families = _detect_column_families(cols)
+        assert "PAY" in families
+        assert len(families["PAY"]) == 6
+
+    def test_no_families_below_threshold(self):
+        from tools.eda_tools import _detect_column_families
+        cols = ["PAY_0", "PAY_1"]
+        families = _detect_column_families(cols)
+        assert len(families) == 0
+
+    def test_multiple_families(self):
+        from tools.eda_tools import _detect_column_families
+        cols = ["PAY_0", "PAY_1", "PAY_2", "BILL_0", "BILL_1", "BILL_2"]
+        families = _detect_column_families(cols)
+        assert "PAY" in families
+        assert "BILL" in families
+
+    def test_non_numeric_suffix_ignored(self):
+        from tools.eda_tools import _detect_column_families
+        cols = ["price", "color", "size"]
+        families = _detect_column_families(cols)
+        assert len(families) == 0
+
+    def test_sorted_by_index(self):
+        from tools.eda_tools import _detect_column_families
+        cols = ["X_3", "X_1", "X_0", "X_2"]
+        families = _detect_column_families(cols)
+        assert families["X"] == ["X_0", "X_1", "X_2", "X_3"]
+
+
+class TestComputeInteractionSignals:
+    """Test compute_interaction_signals() without pipeline session."""
+
+    @pytest.fixture()
+    def classification_df_json(self):
+        """DataFrame with column families and a binary target."""
+        import numpy as np
+        np.random.seed(42)
+        n = 500
+        df = pd.DataFrame({
+            "PAY_0": np.random.choice([0, 1, 2, 3], n),
+            "PAY_1": np.random.choice([0, 1, 2, 3], n),
+            "PAY_2": np.random.choice([0, 1, 2, 3], n),
+            "other_feat": np.random.randn(n),
+        })
+        # Create a target correlated with PAY columns
+        df["default"] = ((df["PAY_0"] + df["PAY_1"] + df["PAY_2"]) > 3).astype(int)
+        return df.to_json(orient="records")
+
+    @pytest.fixture()
+    def no_family_df_json(self):
+        """DataFrame with no column families."""
+        df = pd.DataFrame({
+            "age": [25, 30, 35, 40, 45] * 20,
+            "income": [50000, 60000, 70000, 80000, 90000] * 20,
+            "target": [0, 1, 0, 1, 0] * 20,
+        })
+        return df.to_json(orient="records")
+
+    def test_unsupervised_returns_empty(self):
+        from tools.eda_tools import compute_interaction_signals
+        df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+        ti = TargetInfo(column=None, problem_type="unsupervised")
+        result = json.loads(compute_interaction_signals(
+            df.to_json(orient="records"), ti.model_dump_json()
+        ))
+        assert result["signals"] == []
+
+    def test_no_families_returns_empty_signals(self, no_family_df_json):
+        from tools.eda_tools import compute_interaction_signals
+        ti = TargetInfo(column="target", problem_type="classification", n_classes=2)
+        result = json.loads(compute_interaction_signals(
+            no_family_df_json, ti.model_dump_json()
+        ))
+        assert result["n_families"] == 0
+        # No column families → no persistence/trajectory signals (may have cross-feature from fallback)
+        family_signals = [s for s in result["signals"] if s["type"] in ("persistence_gradient", "trajectory")]
+        assert len(family_signals) == 0
+
+    def test_classification_with_families(self, classification_df_json):
+        from tools.eda_tools import compute_interaction_signals
+        ti = TargetInfo(column="default", problem_type="classification", n_classes=2)
+        result = json.loads(compute_interaction_signals(
+            classification_df_json, ti.model_dump_json()
+        ))
+        assert result["n_families"] == 1
+        assert "PAY" in result["families_detected"]
+        assert "overall_target_rate_pct" in result
+
+    def test_regression_target_median_split(self):
+        """Regression targets are median-split into binary for segment analysis."""
+        from tools.eda_tools import compute_interaction_signals
+        import numpy as np
+        np.random.seed(42)
+        n = 200
+        df = pd.DataFrame({
+            "X_0": np.random.randn(n),
+            "X_1": np.random.randn(n),
+            "X_2": np.random.randn(n),
+            "price": np.random.randn(n) * 100 + 500,
+        })
+        ti = TargetInfo(column="price", problem_type="regression")
+        result = json.loads(compute_interaction_signals(
+            df.to_json(orient="records"), ti.model_dump_json()
+        ))
+        assert "overall_target_rate_pct" in result
+        # Median split means ~50% target rate
+        assert 40 <= result["overall_target_rate_pct"] <= 60

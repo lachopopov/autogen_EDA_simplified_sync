@@ -325,7 +325,7 @@ class SkewnessRule(CriticRule):
     """Comprehensive skewness analysis with context-aware reporting.
 
     Enhancements over basic threshold:
-      - Reports up to 5 most skewed numerical columns (|skew| > 1)
+      - Reports up to 20 most skewed numerical columns (|skew| > 1)
       - Direction-aware: positive (right-skew) vs negative (left-skew)
       - Sample size adjustment: n < 30 → HIGH downgraded to MEDIUM
       - Zero-inflation detection: >20% zeros noted in message
@@ -335,7 +335,7 @@ class SkewnessRule(CriticRule):
     """
 
     name = "skewness"
-    _MAX_REPORTED = 5
+    _MAX_REPORTED = 20
 
     def check(self, df: pd.DataFrame, stats: dict) -> list[CriticFlag]:
         num = df.select_dtypes("number")
@@ -526,41 +526,50 @@ class NearPerfectCorrelationRule(CriticRule):
         if num.shape[1] < 2:
             return []
         corr = num.corr().abs()
-        # Mask diagonal (self-correlation = 1.0)
-        mask = np.eye(corr.shape[0], dtype=bool)
-        corr_masked = corr.where(~mask)
-        max_val = float(corr_masked.max().max())
-        if np.isnan(max_val):
+
+        # Collect ALL pairs above the 0.85 threshold (upper triangle only
+        # to avoid duplicates).
+        pairs: list[tuple[str, str, float]] = []
+        for i in range(corr.shape[0]):
+            for j in range(i + 1, corr.shape[1]):
+                val = float(corr.iloc[i, j])
+                if not np.isnan(val) and val > 0.85:
+                    pairs.append((corr.index[i], corr.columns[j], val))
+
+        if not pairs:
             return []
-        # Extract the names of the worst-correlated pair
-        max_idx = corr_masked.stack().idxmax()
-        pair_a, pair_b = str(max_idx[0]), str(max_idx[1])
-        # Pairwise VIF: 1/(1-r²); cap r at 0.9999 to avoid zero-division for r=1.0
-        vif = round(1 / (1 - min(max_val, 0.9999) ** 2), 1)
-        if max_val > 0.95:
-            return [CriticFlag(
-                column=None, rule=self.name, severity="HIGH",
-                message=f"'{pair_a}' \u2194 '{pair_b}' (|r|={max_val:.2f}, VIF\u2248{vif:.0f}\u00d7)",
-                value=max_val,
-                suggestion=(
-                    f"Critical collinearity \u2014 estimated VIF \u2248 {vif:.0f}\u00d7 for "
-                    f"'{pair_a}'\u2194'{pair_b}'; critical for linear models "
-                    f"(OLS, Logistic, ElasticNet \u2014 unstable coefficients); "
-                    f"safe for tree-based models (XGBoost, LightGBM, RandomForest)"
-                ),
-            )]
-        if max_val > 0.85:
-            return [CriticFlag(
-                column=None, rule=self.name, severity="MEDIUM",
-                message=f"'{pair_a}' \u2194 '{pair_b}' (|r|={max_val:.2f}, VIF\u2248{vif:.1f}\u00d7)",
-                value=max_val,
-                suggestion=(
-                    f"Moderate collinearity \u2014 estimated VIF \u2248 {vif:.1f}\u00d7 for "
-                    f"'{pair_a}'\u2194'{pair_b}'; monitor in linear models; "
-                    f"tree-based models tolerate this without preprocessing"
-                ),
-            )]
-        return []
+
+        # Sort by descending |r| so the worst pair comes first.
+        pairs.sort(key=lambda x: x[2], reverse=True)
+
+        flags: list[CriticFlag] = []
+        for pair_a, pair_b, max_val in pairs:
+            # Pairwise VIF: 1/(1-r²); cap r at 0.9999 to avoid zero-division
+            vif = round(1 / (1 - min(max_val, 0.9999) ** 2), 1)
+            if max_val > 0.95:
+                flags.append(CriticFlag(
+                    column=None, rule=self.name, severity="HIGH",
+                    message=f"'{pair_a}' \u2194 '{pair_b}' (|r|={max_val:.2f}, VIF\u2248{vif:.0f}\u00d7)",
+                    value=max_val,
+                    suggestion=(
+                        f"Critical collinearity \u2014 estimated VIF \u2248 {vif:.0f}\u00d7 for "
+                        f"'{pair_a}'\u2194'{pair_b}'; critical for linear models "
+                        f"(OLS, Logistic, ElasticNet \u2014 unstable coefficients); "
+                        f"safe for tree-based models (XGBoost, LightGBM, RandomForest)"
+                    ),
+                ))
+            else:
+                flags.append(CriticFlag(
+                    column=None, rule=self.name, severity="MEDIUM",
+                    message=f"'{pair_a}' \u2194 '{pair_b}' (|r|={max_val:.2f}, VIF\u2248{vif:.1f}\u00d7)",
+                    value=max_val,
+                    suggestion=(
+                        f"Moderate collinearity \u2014 estimated VIF \u2248 {vif:.1f}\u00d7 for "
+                        f"'{pair_a}'\u2194'{pair_b}'; monitor in linear models; "
+                        f"tree-based models tolerate this without preprocessing"
+                    ),
+                ))
+        return flags
 
 
 class CategoricalNumericRedundancyRule(CriticRule):
