@@ -88,6 +88,24 @@ class TestLLMConfigFinal:
         assert price[1] == 0.015
 
 
+class TestLLMConfigFinalRest:
+    """Final-rest config uses gpt-5-mini (non-FindingsGenerator agents in final mode)."""
+
+    def test_final_rest_model_name(self):
+        import config
+
+        model = config.LLM_CONFIG_FINAL_REST["config_list"][0]["model"]
+        assert model == "gpt-5-mini"
+
+    def test_final_rest_price_matches_gpt5_mini(self):
+        import config
+
+        price = config.LLM_CONFIG_FINAL_REST["config_list"][0]["price"]
+        # Must match gpt-5-mini rates ($0.25/$2.00 per 1M), not gpt-5
+        assert price[0] == 0.00025
+        assert price[1] == 0.002
+
+
 class TestEDAModeSwitch:
     """EDA_MODE env var selects active LLM config."""
 
@@ -115,6 +133,22 @@ class TestEDAModeSwitch:
 
         importlib.reload(config)
         assert config.LLM_CONFIG["config_list"][0]["model"] == "gpt-5-mini"
+
+    def test_dev_mode_cache_seed_none(self, monkeypatch):
+        monkeypatch.delenv("EDA_MODE", raising=False)
+        import importlib
+        import config
+
+        importlib.reload(config)
+        assert config.LLM_CONFIG["config_list"][0]["cache_seed"] is None
+
+    def test_final_mode_cache_seed_42(self, monkeypatch):
+        monkeypatch.setenv("EDA_MODE", "final")
+        import importlib
+        import config
+
+        importlib.reload(config)
+        assert config.LLM_CONFIG["config_list"][0]["cache_seed"] == 42
 
 
 class TestProjectPaths:
