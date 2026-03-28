@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from typing import Annotated, Any
 
 import numpy as np
@@ -80,6 +81,8 @@ def _build_overview_section(
     duplicate_count: int = 0,
     categorical_cols: list[str] | None = None,
     numerical_cols: list[str] | None = None,
+    encoded_categorical_cols: list[str] | None = None,
+    encoded_categorical_subtypes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the overview section from EDA describe stats.
 
@@ -94,6 +97,11 @@ def _build_overview_section(
         numerical_cols: Names of numerical columns from DataProfile.  When
             supplied alongside categorical_cols, both type lists are named
             explicitly so no column type is anonymous in the overview.
+        encoded_categorical_cols: Columns reclassified from numerical to categorical
+            (subset of categorical_cols).  When present, a transparency note is added.
+        encoded_categorical_subtypes: Mapping of encoded-categorical column names
+            to their measurement subtype ("nominal" or "ordinal").  When present,
+            the transparency note distinguishes nominal from ordinal columns.
     """
     if shape is not None:
         row_count, num_columns = shape
@@ -113,20 +121,59 @@ def _build_overview_section(
         n_num = len(numerical_cols) if numerical_cols else (num_columns - n_cat)
         num_names = ", ".join(numerical_cols) if numerical_cols else ""
         cat_names = ", ".join(categorical_cols) if categorical_cols else ""
+        # Add encoded-categorical annotation to the composition line
+        enc_note = ""
+        if encoded_categorical_cols:
+            enc_names = ", ".join(encoded_categorical_cols)
+            enc_note = (
+                f" ({len(encoded_categorical_cols)} encoded as integers: {enc_names})"
+            )
         if num_names and cat_names:
             parts.append(
                 f"Column composition: {n_num} numerical ({num_names}); "
-                f"{n_cat} categorical ({cat_names})."
+                f"{n_cat} categorical{enc_note} ({cat_names})."
             )
         elif cat_names:
             parts.append(
-                f"Column composition: {n_num} numerical, {n_cat} categorical "
+                f"Column composition: {n_num} numerical, {n_cat} categorical{enc_note} "
                 f"({cat_names})."
             )
         else:
             parts.append(
                 f"Column composition: {n_num} numerical ({num_names}), "
-                f"{n_cat} categorical."
+                f"{n_cat} categorical{enc_note}."
+            )
+    if encoded_categorical_cols:
+        # Build subtype-aware transparency note (Stevens' measurement theory:
+        # nominal vs ordinal determines valid operations on the data).
+        if encoded_categorical_subtypes:
+            nominal = [c for c in encoded_categorical_cols
+                       if encoded_categorical_subtypes.get(c, "nominal") == "nominal"]
+            ordinal = [c for c in encoded_categorical_cols
+                       if encoded_categorical_subtypes.get(c) == "ordinal"]
+            subtype_parts: list[str] = []
+            if nominal:
+                subtype_parts.append(
+                    f"{len(nominal)} nominal: {', '.join(nominal)}"
+                )
+            if ordinal:
+                subtype_parts.append(
+                    f"{len(ordinal)} ordinal: {', '.join(ordinal)}"
+                )
+            if subtype_parts:
+                subtype_detail = " (" + "; ".join(subtype_parts) + ")"
+            else:
+                subtype_detail = ""
+            parts.append(
+                f"Note: {len(encoded_categorical_cols)} column(s) are numerically "
+                f"encoded but reclassified as categorical for analysis{subtype_detail}."
+            )
+        else:
+            enc_names = ", ".join(encoded_categorical_cols)
+            parts.append(
+                f"Note: {enc_names} "
+                f"{'are' if len(encoded_categorical_cols) > 1 else 'is'} "
+                f"numerically encoded but reclassified as categorical for analysis."
             )
     if duplicate_count > 0:
         dup_pct = duplicate_count / max(row_count + duplicate_count, 1) * 100
@@ -162,8 +209,22 @@ def _build_missing_section(eda: EDAResults) -> dict[str, Any]:
     return {"title": "Missing Values", "content": content}
 
 
-def _build_correlation_section(eda: EDAResults) -> dict[str, Any]:
-    """Build the correlation summary section."""
+def _build_correlation_section(
+    eda: EDAResults,
+    encoded_categorical_cols: list[str] | None = None,
+    ordinal_spearman: dict[str, dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    """Build the correlation summary section.
+
+    Args:
+        eda: EDAResults with Pearson correlation matrix.
+        encoded_categorical_cols: Columns reclassified as categorical
+            (excluded from Pearson matrix).  Used for a transparency note.
+        ordinal_spearman: Pre-computed Spearman ρ matrix among ordinal
+            encoded-categorical columns (≥3 unique values).  When provided,
+            an "Ordinal Inter-Correlation" subsection is appended showing
+            high inter-correlations relevant for feature selection.
+    """
     corr = eda.correlation
     if not corr:
         return {"title": "Correlation Analysis", "content": "No numerical columns for correlation analysis."}
@@ -186,6 +247,45 @@ def _build_correlation_section(eda: EDAResults) -> dict[str, Any]:
         )
     else:
         content = f"Pearson correlation computed for {len(cols)} numerical columns. No notable correlations found."
+
+    # Transparency note: reclassified encoded-categorical columns are excluded
+    # from the Pearson matrix (they operate on string-cast values post-reclassification).
+    if encoded_categorical_cols:
+        content += (
+            f" Note: {len(encoded_categorical_cols)} column(s) reclassified as "
+            f"categorical ({', '.join(encoded_categorical_cols)}) are excluded "
+            f"from the Pearson matrix; see Categorical Analysis and "
+            f"Feature–Target Associations for their association structure."
+        )
+
+    # Ordinal inter-correlation subsection (Spearman ρ — rank correlation,
+    # makes no equal-interval assumption; appropriate for ordinal data).
+    if ordinal_spearman:
+        ord_cols = list(ordinal_spearman.keys())
+        # Collect notable off-diagonal pairs (|ρ| ≥ 0.5)
+        notable_pairs: list[tuple[str, str, float]] = []
+        for i, col_a in enumerate(ord_cols):
+            for col_b in ord_cols[i + 1:]:
+                rho = ordinal_spearman.get(col_a, {}).get(col_b, 0.0)
+                if abs(rho) >= 0.5:
+                    notable_pairs.append((col_a, col_b, rho))
+        notable_pairs.sort(key=lambda t: abs(t[2]), reverse=True)
+
+        content += (
+            f"\n\nOrdinal Inter-Correlation (Spearman ρ): "
+            f"Computed for {len(ord_cols)} ordinal feature(s) "
+            f"({', '.join(ord_cols)})."
+        )
+        if notable_pairs:
+            pair_strs = [f"{a} ↔ {b} (ρ={v:.3f})" for a, b, v in notable_pairs]
+            content += (
+                f" Notable pairs (|ρ| ≥ 0.5): {'; '.join(pair_strs)}. "
+                f"High inter-correlations among ordinal features suggest "
+                f"multicollinearity — consider dimensionality reduction "
+                f"or sequential feature selection."
+            )
+        else:
+            content += " No pairs exceed |ρ| ≥ 0.5."
 
     return {"title": "Correlation Analysis", "content": content}
 
@@ -278,16 +378,51 @@ def _build_target_section(target_analysis_data: dict) -> dict[str, Any]:
                 f"Consider SMOTE, class weights, or undersampling."
             )
 
-        # Per-class feature stats
+        # Per-class feature stats — rank by Cohen's d (effect size) descending
         per_class = target_analysis_data.get("per_class_feature_stats", {})
         if per_class:
             paragraphs.append("Per-class feature statistics (mean ± std):")
+
+            # Compute Cohen's d across classes for each feature to rank them
+            # by discriminative power instead of using arbitrary truncation.
+            all_features: set[str] = set()
+            for feat_stats in per_class.values():
+                all_features.update(feat_stats.keys())
+
+            feature_d: dict[str, float] = {}
+            class_keys = list(per_class.keys())
+            for feat in all_features:
+                # Max pairwise Cohen's d across class pairs
+                max_d = 0.0
+                for i, c1 in enumerate(class_keys):
+                    for c2 in class_keys[i + 1:]:
+                        s1 = per_class[c1].get(feat, {})
+                        s2 = per_class[c2].get(feat, {})
+                        m1, m2 = s1.get("mean", 0), s2.get("mean", 0)
+                        sd1, sd2 = s1.get("std", 0), s2.get("std", 0)
+                        pooled = ((sd1 ** 2 + sd2 ** 2) / 2) ** 0.5
+                        if pooled > 0:
+                            d = abs(m1 - m2) / pooled
+                            max_d = max(max_d, d)
+                feature_d[feat] = max_d
+
+            ranked_features = sorted(feature_d, key=lambda f: feature_d[f], reverse=True)
+            top_n_feats = ranked_features[:10]
+            n_total = len(ranked_features)
+
             for cls_val, feat_stats in per_class.items():
                 parts = [
-                    f"{f}: {s['mean']:.2f}±{s['std']:.2f}"
-                    for f, s in list(feat_stats.items())[:5]
+                    f"{f}: {feat_stats[f]['mean']:.2f}±{feat_stats[f]['std']:.2f}"
+                    for f in top_n_feats
+                    if f in feat_stats
                 ]
                 paragraphs.append(f"  {cls_val}: {', '.join(parts)}")
+
+            if n_total > 10:
+                paragraphs.append(
+                    f"  (Showing top 10 of {n_total} features by Cohen's d; "
+                    f"{n_total - 10} omitted)"
+                )
 
     elif ptype == "regression":
         stats = target_analysis_data.get("target_stats", {})
@@ -316,6 +451,7 @@ def _build_target_section(target_analysis_data: dict) -> dict[str, Any]:
 def _build_statistical_analysis_section(
     eda: EDAResults,
     critic: "CriticReport | None" = None,
+    target_column: str | None = None,
 ) -> dict[str, Any]:
     """Build an interpretive statistical analysis section.
 
@@ -330,6 +466,11 @@ def _build_statistical_analysis_section(
                 contradict the Data Quality Assessment section.
                 Defaults to None (backward-compatible: all columns that
                 breach IQR fences are reported uniformly).
+        target_column: Optional target variable name.  When supplied, the
+                target is excluded from ``narrow_iqr_cols`` and
+                ``high_cv_cols`` diagnostics — its distributional
+                properties are Bernoulli invariants, not data quality
+                issues.
     """
     describe = eda.describe
     if not describe:
@@ -377,6 +518,13 @@ def _build_statistical_analysis_section(
                 upper_fence = q75 + 1.5 * iqr
                 if col_min < lower_fence or col_max > upper_fence:
                     potential_outlier_cols.append(col)
+
+    # Exclude target column — its distributional properties (IQR=0 for
+    # imbalanced binary, CV>1 for low-prevalence) are Bernoulli invariants,
+    # not data quality issues.
+    if target_column:
+        high_cv_cols = [c for c in high_cv_cols if c != target_column]
+        narrow_iqr_cols = [c for c in narrow_iqr_cols if c != target_column]
 
     if numeric_cols:
         paragraphs.append(
@@ -606,12 +754,15 @@ def _build_recommendations_section(
                 if val > 0.90:
                     redundant_pairs.append((col_a, col_b, val))
         if redundant_pairs:
+            worst_r = max(r for _, _, r in redundant_pairs)
+            vif_worst = round(1 / (1 - min(worst_r, 0.9999) ** 2), 1)
             recommendations.append(
-                f"FEATURE ENGINEERING — {len(redundant_pairs)} near-redundant "
-                f"feature pair(s) detected (|r|>0.90). For linear models, retain "
-                f"only one feature per pair to avoid multicollinearity. For "
-                f"tree-based models, redundancy is less critical but increases "
-                f"training time without adding predictive power."
+                f"FEATURE ENGINEERING — {len(redundant_pairs)} near-redundant feature "
+                f"pair(s) detected (|r|>0.90). For linear models, each correlated pair "
+                f"inflates VIF (worst pair: ~{vif_worst:.0f}\u00d7) \u2014 retain only one feature "
+                f"per pair to avoid unstable coefficients. Tree-based models (XGBoost, "
+                f"LightGBM, RandomForest) are unaffected by collinearity and can safely "
+                f"use all features."
             )
 
     # --- Critic-driven recommendations ---
@@ -663,6 +814,77 @@ def _build_recommendations_section(
     return {
         "title": "Recommendations & Business Implications",
         "content": "\n\n".join(recommendations),
+    }
+
+
+def _build_limitations_section(
+    eda: EDAResults,
+    critic: CriticReport,
+    *,
+    interaction_signals: dict | None = None,
+) -> dict[str, Any]:
+    """Build automated Limitations & Caveats section (D3).
+
+    Dataset-agnostic: enumerates methodological caveats based on what the
+    pipeline did (or could not do), not on domain knowledge.  LLM-generated
+    limitations text replaces this when available.
+    """
+    caveats: list[str] = []
+
+    # 1. Univariate only (unless interaction signals found)
+    if not interaction_signals or not interaction_signals.get("signals"):
+        caveats.append(
+            "This analysis is primarily univariate and bivariate. "
+            "Complex multivariate interactions, confounders, and non-linear "
+            "feature combinations are not fully captured."
+        )
+    else:
+        n_sig = len(interaction_signals["signals"])
+        caveats.append(
+            f"Interaction analysis detected {n_sig} multivariate signal(s), but "
+            f"higher-order interactions (3+ features) and confounders remain "
+            f"unexplored. Causal relationships cannot be inferred."
+        )
+
+    # 2. Missingness caveats
+    missing = eda.missing
+    cols_high = [c for c, p in missing.per_column.items() if p > 20]
+    if cols_high:
+        caveats.append(
+            f"Columns with >20% missing ({', '.join(cols_high)}) may introduce "
+            f"bias through imputation. Missing-not-at-random (MNAR) patterns "
+            f"cannot be ruled out from EDA alone."
+        )
+
+    # 3. Temporal dimensions
+    caveats.append(
+        "No temporal validation was performed. If the data has a time "
+        "dimension, concept drift and non-stationarity should be assessed "
+        "before production deployment."
+    )
+
+    # 4. Outlier caveats from critic flags
+    outlier_flags = [f for f in critic.flags if f.rule == "outliers_iqr"]
+    if outlier_flags:
+        caveats.append(
+            f"IQR-based outlier flags ({len(outlier_flags)} column(s)) may "
+            f"reflect legitimate sub-population clusters rather than true "
+            f"anomalies. Domain review is recommended before removal."
+        )
+
+    # 5. Sample size caveat
+    first_stats = next(iter(eda.describe.values()), {})
+    row_count = int(first_stats.get("count", 0))
+    if 0 < row_count < 1000:
+        caveats.append(
+            f"Small sample size (n={row_count}) limits statistical power. "
+            f"Effect size estimates may be unstable; bootstrap confidence "
+            f"intervals are recommended."
+        )
+
+    return {
+        "title": "Limitations & Caveats",
+        "content": " ".join(caveats),
     }
 
 
@@ -849,6 +1071,7 @@ def _build_categorical_inventory(cat_analysis: CategoricalAnalysis) -> str:
 
     Produces a text block with value counts, entropy, and target rates
     per column — the categorical analogue of histogram bin data.
+    Flags anomalous target rates (>2× deviation from column overall, n≥50).
     """
     if not cat_analysis.columns:
         return "  No categorical columns detected."
@@ -861,6 +1084,19 @@ def _build_categorical_inventory(cat_analysis: CategoricalAnalysis) -> str:
             f"entropy={stats.entropy_bits:.4f} bits, "
             f"rare_values(<0.5%)={stats.rare_count}"
         )
+
+        # Compute column-level overall target rates for anomaly detection.
+        # Weighted average across all top_values that have target_rates.
+        overall_rates: dict[str, float] = {}
+        total_with_rates = 0
+        for v in stats.top_values:
+            if v.get("target_rates") and v.get("count", 0) > 0:
+                for k, r in v["target_rates"].items():
+                    overall_rates[k] = overall_rates.get(k, 0) + r * v["count"]
+                total_with_rates += v["count"]
+        if total_with_rates > 0:
+            overall_rates = {k: v / total_with_rates for k, v in overall_rates.items()}
+
         for v in stats.top_values:
             parts = [f"    '{v['value']}': {v['count']} ({v['pct']:.1f}%)"]
             if v.get("is_rare"):
@@ -884,6 +1120,18 @@ def _build_categorical_inventory(cat_analysis: CategoricalAnalysis) -> str:
                     level = "VERY_LOW_N" if n_cat < 30 else "LOW_N"
                     caution = "rates unreliable" if n_cat < 30 else "interpret with caution"
                     parts.append(f"  [{level}: n={n_cat}, ±{margin:.0f}pp CI — {caution}]")
+                # Anomalous target rate flag (A3): category with n≥50 whose
+                # rate deviates >2× from the column-level overall rate.
+                n_cat_anom = int(v.get("count", 0))
+                if n_cat_anom >= 50 and overall_rates:
+                    for k, r in v["target_rates"].items():
+                        col_rate = overall_rates.get(k, 0)
+                        if col_rate > 0 and (r > col_rate * 2 or r < col_rate * 0.5):
+                            ratio = r / col_rate
+                            parts.append(
+                                f"  [ANOMALOUS_RATE: {k}={r:.1f}% vs overall "
+                                f"{col_rate:.1f}%, ratio={ratio:.1f}x]"
+                            )
             lines.append("".join(parts))
         if stats.more_values > 0:
             lines.append(f"    ... and {stats.more_values} more value(s)")
@@ -892,6 +1140,8 @@ def _build_categorical_inventory(cat_analysis: CategoricalAnalysis) -> str:
 
 def _build_categorical_section(
     cat_analysis: CategoricalAnalysis,
+    *,
+    feature_associations: FeatureAssociations | None = None,
 ) -> dict[str, Any]:
     """Build the Categorical Analysis report section (deterministic).
 
@@ -1009,6 +1259,37 @@ def _build_categorical_section(
                         f"{'; '.join(row_parts)}."
                     )
 
+            paragraphs.append(
+                "NOTE: Target-rate variation (pp range) measures how much "
+                "the target proportion swings across categories, making it "
+                "sensitive to high-frequency categories. Cramér's V "
+                "(used in the Feature–Target Associations section) is a "
+                "frequency-weighted, chi-squared-based measure that accounts "
+                "for all cells in the contingency table. Rankings may differ "
+                "because pp range highlights the single largest swing while "
+                "Cramér's V captures overall distributional dependence."
+            )
+
+            # Cross-check: flag categorical features ranked highly by Borda
+            # but absent from the pp-range top-3 (F4 fix).
+            if feature_associations and feature_associations.rows:
+                pp_top_names = {c for c, _, _, _ in top_disc}
+                borda_cats = [
+                    row for row in feature_associations.rows
+                    if row.feature_type == "categorical"
+                    and row.feature not in pp_top_names
+                    and row.feature != cat_analysis.target_column
+                ]
+                if borda_cats:
+                    borda_parts = [
+                        f"{row.feature} (Borda={row.borda_score})"
+                        for row in borda_cats[:3]
+                    ]
+                    paragraphs.append(
+                        f"Borda-ranked categorical feature(s) not in "
+                        f"pp-range top-3: {', '.join(borda_parts)}."
+                    )
+
     return {"title": "Categorical Analysis", "content": " ".join(paragraphs)}
 
 
@@ -1053,6 +1334,88 @@ def _build_feature_associations_fact_block(fa: FeatureAssociations) -> str:
             f"{row.effect_size_label:<9}  {row.effect_size_rank:>7}  "
             f"{row.borda_score:>5}  {row.p_value:>9.6f}"
         )
+    omitted = fa.total_features - len(fa.rows)
+    if omitted > 0:
+        lines.append(
+            f"  ({omitted} feature(s) outside top-{len(fa.rows)} omitted for brevity)"
+        )
+    return "\n".join(lines)
+
+
+def _build_interaction_signals_block(signals_data: dict) -> str:
+    """Render INTERACTION SIGNALS block for the fact sheet (~500 token cap)."""
+    signals = signals_data.get("signals", [])
+    if not signals:
+        note = signals_data.get("note", "No interaction signals detected.")
+        n_families = signals_data.get("n_families", 0)
+        if n_families > 0:
+            return f"  {note} ({n_families} column families found, but no significant patterns.)"
+        return f"  {note}"
+
+    lines: list[str] = [
+        f"  Overall target rate: {signals_data.get('overall_target_rate_pct', 0)}%"
+    ]
+    families_detected = signals_data.get("families_detected", {})
+    if families_detected:
+        fam_summary = ", ".join(
+            f"{k} ({len(v)} cols)" for k, v in families_detected.items()
+        )
+        lines.append(f"  Column families: {fam_summary}")
+
+    for sig in signals:
+        sig_type = sig.get("type", "unknown")
+        if sig_type == "persistence_gradient":
+            rates = sig.get("gradient_rates_pct", {})
+            counts = sig.get("gradient_counts", {})
+            lines.append(
+                f"\n  PERSISTENCE GRADIENT: family={sig['family']}, "
+                f"spread={sig['spread_pp']}pp"
+            )
+            for level in sorted(rates, key=lambda x: int(x)):
+                lines.append(
+                    f"    Level {level}: {rates[level]}% "
+                    f"(n={counts.get(level, '?')})"
+                )
+
+        elif sig_type == "trajectory":
+            trajs = sig.get("trajectories", {})
+            lines.append(
+                f"\n  TRAJECTORY: family={sig['family']}, "
+                f"{sig['first_col']} → {sig['last_col']}, "
+                f"spread={sig['spread_pp']}pp"
+            )
+            for label, info in trajs.items():
+                lines.append(
+                    f"    {label}: {info['target_rate_pct']}% "
+                    f"(n={info['count']})"
+                )
+
+        elif sig_type == "cross_feature_segments":
+            segs = sig.get("segments", {})
+            lines.append(
+                f"\n  CROSS-FEATURE SEGMENTS: {sig['feature_1']} × "
+                f"{sig['feature_2']}, spread={sig['spread_pp']}pp"
+            )
+            for label, info in segs.items():
+                lines.append(
+                    f"    {label}: {info['target_rate_pct']}% "
+                    f"(n={info['count']})"
+                )
+
+        elif sig_type == "portfolio_concentration":
+            quints = sig.get("quintiles", {})
+            lines.append(
+                f"\n  PORTFOLIO CONCENTRATION: feature={sig['feature']}, "
+                f"spread={sig['spread_pp']}pp, "
+                f"top-quintile captures {sig['top_quintile_concentration_pct']}% "
+                f"of positive class"
+            )
+            for q_label, info in quints.items():
+                lines.append(
+                    f"    {q_label}: {info['target_rate_pct']}% "
+                    f"(n={info['count']}, pos={info['positive_count']})"
+                )
+
     return "\n".join(lines)
 
 
@@ -1105,7 +1468,7 @@ def _build_feature_associations_section(
         if lbl in label_counts:
             label_counts[lbl].append(row.feature)
 
-    # Report top-3 by Borda
+    # Report ALL features by Borda (top 3 with full detail, rest compact)
     top3 = fa.rows[:3]
     top3_parts = []
     for row in top3:
@@ -1115,6 +1478,20 @@ def _build_feature_associations_section(
             f"{row.effect_size_type}={row.effect_size:.4f} [{row.effect_size_label}])"
         )
     paragraphs.append(f"Top features: {'; '.join(top3_parts)}.")
+
+    # Remaining features with Borda scores (compact listing)
+    rest = fa.rows[3:]
+    if rest:
+        rest_parts = [
+            f"{row.feature} (Borda={row.borda_score})" for row in rest
+        ]
+        paragraphs.append(f"Remaining features: {'; '.join(rest_parts)}.")
+
+    omitted = fa.total_features - len(fa.rows)
+    if omitted > 0:
+        paragraphs.append(
+            f"{omitted} feature(s) outside top-{len(fa.rows)} omitted for brevity."
+        )
 
     # Strong effect size summary
     if label_counts["strong"]:
@@ -1132,20 +1509,50 @@ def _build_feature_associations_section(
             f"{', '.join(label_counts['weak'][:5])}."
         )
 
-    # Lensing divergence: features where MI rank and effect size rank diverge > 5 positions
-    divergent = [
-        r for r in fa.rows if abs(r.mi_rank - r.effect_size_rank) > 5
-    ]
-    if divergent:
-        div_parts = [
-            f"{r.feature} (MI rank {r.mi_rank} vs effect size rank {r.effect_size_rank})"
-            for r in divergent[:3]
-        ]
+    # --- MI × Effect-Size quadrant analysis ---
+    # Each feature is classified into one of four quadrants based on two
+    # independent lenses: MI (kNN, captures any dependence including nonlinear)
+    # and effect size (eta²/Cramér's V/|Pearson r|, measures linear/group-mean component).
+    #
+    #   Q1  HIGH MI + STRONG ES  → linear / simple relationship (expected; no alert)
+    #   Q2  HIGH MI + WEAK   ES  → NONLINEAR SIGNAL: tree-based models from the start
+    #   Q3  LOW  MI + STRONG ES  → SUSPICIOUS ASSOCIATION: outlier / leakage / small-n
+    #   Q4  LOW  MI + WEAK   ES  → no relationship (no alert; already in weak ES summary)
+    #
+    # "High MI" = top half of features by MI rank: mi_rank ≤ ⌈N/2⌉.
+    # "High/Low ES" = effect_size_label is "strong" / "weak" ("moderate" is neutral).
+    mid_rank = math.ceil(fa.total_features / 2) if fa.total_features > 0 else 1
+    nonlinear_features: list[str] = []   # Q2: high MI, weak effect size
+    suspicious_features: list[str] = []  # Q3: low MI, strong effect size
+    for row in fa.rows:
+        high_mi = row.mi_rank <= mid_rank
+        if high_mi and row.effect_size_label == "weak":
+            nonlinear_features.append(
+                f"{row.feature} (MI rank {row.mi_rank}/{fa.total_features}, "
+                f"{row.effect_size_type}={row.effect_size:.4f} [weak])"
+            )
+        elif (not high_mi) and row.effect_size_label == "strong":
+            suspicious_features.append(
+                f"{row.feature} (MI rank {row.mi_rank}/{fa.total_features}, "
+                f"{row.effect_size_type}={row.effect_size:.4f} [strong])"
+            )
+    if nonlinear_features:
         paragraphs.append(
-            f"Lens divergence detected (MI rank vs effect size rank differ >5 positions): "
-            f"{'; '.join(div_parts)}. "
-            f"Possible non-linear signal (high MI, low effect size) or "
-            f"strong linear signal missed by MI sampling (high effect size, low MI)."
+            f"NONLINEAR SIGNAL -- high MI + weak effect size indicates a nonlinear "
+            f"or complex relationship not captured by linear measures. "
+            f"Use tree-based models (XGBoost, LightGBM, RandomForest) from the "
+            f"start -- linear models (OLS, Logistic, ElasticNet) will underfit. "
+            f"Affected: {'; '.join(nonlinear_features[:3])}."
+        )
+    if suspicious_features:
+        paragraphs.append(
+            f"SUSPICIOUS ASSOCIATION [red flag] -- low MI + strong effect size. "
+            f"Possible causes: (a) outliers inflating eta2/Cohen's d, "
+            f"(b) data leakage (feature partially encodes the target), "
+            f"(c) small-n instability (wide effect-size confidence intervals). "
+            f"Investigate before modeling: check scatter vs target, run a leakage "
+            f"audit, and verify with bootstrapped effect-size CIs. "
+            f"Affected: {'; '.join(suspicious_features[:3])}."
         )
 
     return {
@@ -1154,7 +1561,12 @@ def _build_feature_associations_section(
     }
 
 
-def _build_histogram_metadata(df: pd.DataFrame, num_cols: list[str]) -> str:
+def _build_histogram_metadata(
+    df: pd.DataFrame,
+    num_cols: list[str],
+    *,
+    target_col: str | None = None,
+) -> str:
     """Compute histogram bin data for every numeric column (30 bins).
 
     Returns a text block with bin edges + counts — the exact data
@@ -1264,10 +1676,17 @@ def _build_histogram_metadata(df: pd.DataFrame, num_cols: list[str]) -> str:
         nonzero_count = int(len(series) - zero_count)
         zero_pct = zero_count / len(series) * 100 if len(series) > 0 else 0
         if zero_pct >= 40:
-            lines.append(
-                f"  Zero-inflation: exact zero rows = {zero_count} ({zero_pct:.1f}%); "
-                f"non-zero rows = {nonzero_count} ({100 - zero_pct:.1f}%)"
-            )
+            if col == target_col and series.nunique() <= 2:
+                # Binary target: majority-class concentration, not zero-inflation
+                lines.append(
+                    f"  Class imbalance: class 0 = {zero_count} ({zero_pct:.1f}%); "
+                    f"class 1 = {nonzero_count} ({100 - zero_pct:.1f}%)"
+                )
+            else:
+                lines.append(
+                    f"  Zero-inflation: exact zero rows = {zero_count} ({zero_pct:.1f}%); "
+                    f"non-zero rows = {nonzero_count} ({100 - zero_pct:.1f}%)"
+                )
     return "\n".join(lines)
 
 
@@ -1393,7 +1812,11 @@ def _build_critic_block(critic: CriticReport) -> str:
     return "\n".join(lines)
 
 
-def _build_plot_inventory(plot_paths: list[str]) -> str:
+def _build_plot_inventory(
+    plot_paths: list[str],
+    *,
+    ordinal_col_names: list[str] | None = None,
+) -> str:
     """Map each plot file to its type and column."""
     from pathlib import Path
 
@@ -1403,6 +1826,18 @@ def _build_plot_inventory(plot_paths: list[str]) -> str:
         if name.startswith("hist_"):
             col = name[5:]
             lines.append(f"  {Path(pp).name} -> histogram, column={col}")
+        elif name.startswith("cat_"):
+            col = name[4:]
+            lines.append(f"  {Path(pp).name} -> categorical bar chart, column={col}")
+        elif name in ("class_distribution", "target_distribution"):
+            lines.append(f"  {Path(pp).name} -> target distribution plot")
+        elif name == "ordinal_spearman_heatmap":
+            desc = "ordinal inter-correlation heatmap (Spearman \u03c1)"
+            if ordinal_col_names:
+                desc += f", columns: {', '.join(ordinal_col_names)}"
+            lines.append(f"  {Path(pp).name} -> {desc}")
+        elif name == "feature_target_associations":
+            lines.append(f"  {Path(pp).name} -> feature\u2013target association bar chart (Borda-ranked)")
         elif name == "correlation_heatmap":
             lines.append(f"  {Path(pp).name} -> correlation heatmap (full matrix)")
         elif name == "missing_heatmap":
@@ -1461,6 +1896,8 @@ def prepare_interpretation_context() -> str:
     for key in (
         "plot_histograms", "plot_correlation_heatmap",
         "plot_missing_heatmap", "plot_class_distribution",
+        "plot_categorical_bars", "plot_ordinal_heatmap",
+        "plot_feature_target_bars",
     ):
         raw = load_state(key)
         if raw:
@@ -1480,12 +1917,14 @@ def prepare_interpretation_context() -> str:
     _total_cols = _num_numerical  # best-effort fallback
     _dtypes_raw_fs = load_state("dtypes_json")
     _schema_raw_fs = load_state("schema_json")
+    _encoded_cat_cols_fs: list[str] = []
     if _dtypes_raw_fs:
         try:
             from eda_state import DataProfile as _DataProfile
             _dp_fs = _DataProfile.model_validate_json(_dtypes_raw_fs)
             _total_cols = _dp_fs.shape[1]
             _num_categorical = len(_dp_fs.categorical_cols)
+            _encoded_cat_cols_fs = _dp_fs.encoded_categorical_cols
             row_count = _dp_fs.shape[0]  # always wins — authoritative raw shape (Strategy C)
         except Exception:
             pass
@@ -1494,9 +1933,27 @@ def prepare_interpretation_context() -> str:
             from eda_state import DataProfile as _DataProfile
             _dp_fs = _DataProfile.model_validate_json(_schema_raw_fs)
             _total_cols = _dp_fs.shape[1]
+            _encoded_cat_cols_fs = _dp_fs.encoded_categorical_cols
             row_count = _dp_fs.shape[0]  # always wins — authoritative raw shape (Strategy C)
         except Exception:
             pass
+
+    # Derive ordinal column names for plot inventory annotation (F1 fix).
+    _ordinal_col_names_fs: list[str] = []
+    if _encoded_cat_cols_fs:
+        _subtypes_raw_fs = load_state("reclassified_subtypes")
+        if _subtypes_raw_fs:
+            try:
+                _subtypes_fs: dict[str, str] = json.loads(_subtypes_raw_fs)
+                _ordinal_col_names_fs = [
+                    c for c in _encoded_cat_cols_fs
+                    if _subtypes_fs.get(c) == "ordinal"
+                ]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        else:
+            # Subtypes unavailable — treat all encoded-categorical as potential ordinal
+            _ordinal_col_names_fs = list(_encoded_cat_cols_fs)
     sections.append(
         f"\nDATASET: {row_count} rows x {_total_cols} columns "
         f"({_num_numerical} numerical, {_num_categorical} categorical)"
@@ -1538,6 +1995,13 @@ def prepare_interpretation_context() -> str:
     sections.append(_build_correlation_block(corr))
 
     # Histogram bin data (every bar in hist_<col>.png)
+    # Extract target column name for histogram metadata (F2 fix).
+    _target_col_fs: str | None = None
+    if target_info_raw:
+        try:
+            _target_col_fs = json.loads(target_info_raw).get("column")
+        except (json.JSONDecodeError, TypeError):
+            pass
     if data_raw:
         df = pd.DataFrame(json.loads(data_raw))
         num_col_names = df.select_dtypes(include="number").columns.tolist()
@@ -1545,7 +2009,9 @@ def prepare_interpretation_context() -> str:
             sections.append(
                 "\nHISTOGRAM BIN DATA (100% of hist_*.png data, 30 bins each):"
             )
-            sections.append(_build_histogram_metadata(df, num_col_names))
+            sections.append(_build_histogram_metadata(
+                df, num_col_names, target_col=_target_col_fs,
+            ))
     else:
         sections.append(
             "\nHISTOGRAM BIN DATA: raw data not available in artifact store."
@@ -1597,6 +2063,36 @@ def prepare_interpretation_context() -> str:
             "(compute_feature_target_associations not run)."
         )
 
+    # Interaction signals (A4): persistence, trajectory, cross-feature, concentration
+    # Fallback: compute deterministically if the tool was not called.
+    is_raw = load_state("interaction_signals")
+    if not is_raw:
+        _is_data_raw = load_state("data_json")
+        _is_ti_raw = load_state("target_info")
+        if _is_data_raw and _is_ti_raw:
+            try:
+                from tools.eda_tools import (  # noqa: PLC0415
+                    compute_interaction_signals as _is_fn,
+                )
+                _is_fn(_is_data_raw, _is_ti_raw)
+                is_raw = load_state("interaction_signals")
+                logger.info(
+                    "interaction_signals computed via fallback in context builder"
+                )
+            except Exception:
+                logger.warning(
+                    "interaction_signals fallback failed", exc_info=True
+                )
+    if is_raw:
+        sections.append(
+            "\nINTERACTION SIGNALS (multivariate patterns):"
+        )
+        sections.append(_build_interaction_signals_block(json.loads(is_raw)))
+    else:
+        sections.append(
+            "\nINTERACTION SIGNALS: not yet available."
+        )
+
     # Target variable analysis
     if target_analysis_raw:
         target_analysis_data = json.loads(target_analysis_raw)
@@ -1621,7 +2117,10 @@ def prepare_interpretation_context() -> str:
     # Plot inventory
     sections.append("\nPLOT INVENTORY:")
     if plot_paths:
-        sections.append(_build_plot_inventory(plot_paths))
+        sections.append(_build_plot_inventory(
+            plot_paths,
+            ordinal_col_names=_ordinal_col_names_fs or None,
+        ))
     else:
         sections.append("  No plots generated.")
 
@@ -1690,16 +2189,21 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
         captured_usage: dict[str, Any] = {}
 
         def _capturing_openai(prompt, model, base_url):
-            """Drop-in for llm_response_openai that also captures usage."""
+            """Drop-in for llm_response_openai that also captures usage.
+
+            Mirrors the original SDK helper but omits ``temperature``
+            (hardcoded to 0.0 in openlit <=1.38.x), which gpt-5 rejects
+            with HTTP 400.  See openlit/openlit#1071.
+            """
             from openai import OpenAI as _OAI
 
             client = _OAI(base_url=base_url)
             if model is None:
                 model = "gpt-4o-mini"
-            resp = client.beta.chat.completions.parse(
+            resp = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                response_format=_evals_utils.JsonOutput,
+                response_format={"type": "json_object"},
             )
             if hasattr(resp, "usage") and resp.usage:
                 captured_usage["prompt_tokens"] = resp.usage.prompt_tokens
@@ -1712,7 +2216,6 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
             evals = openlit.evals.All(
                 provider="openai",
                 model=OPENLIT_EVAL_MODEL,
-                collect_metrics=True,
             )
             result = evals.measure(
                 prompt="Expert EDA interpretation of dataset based on fact sheet",
@@ -1831,7 +2334,7 @@ def save_interpretations(
             "PART 1 — a numbered prioritised action plan (ACTION, EXPECTED OUTCOME, "
             "RISK IF SKIPPED for each item, plus monitoring recommendation and "
             "next-step checklist); AND "
-            "PART 2 — Business Problem Catalogue: 5-8 business problems each starting "
+            "PART 2 — Business Problem Catalogue: 10-20 business problems each starting "
             "with a BUSINESS QUESTION, classified High/Med/Low with EDA justification, "
             "plus full PROBLEM / METRIC / RECOMMENDATIONS / BUSINESS IMPACT deep-dives "
             "for the TOP 3 HIGH-PROBABILITY problems. "
@@ -1839,6 +2342,29 @@ def save_interpretations(
         )
 
     validated_json = interp.model_dump_json()
+
+    # --- Consistency check: NONLINEAR SIGNAL / SUSPICIOUS ASSOCIATION ---
+    # The deterministic content may contain these labels. If so, the LLM's
+    # ds_ml perspective for feature_associations must not deny them.
+    from tools._pipeline_state import load_state as _ls
+    _fa_raw = _ls("feature_associations")
+    if _fa_raw and interp.feature_associations:
+        fa_obj = FeatureAssociations.model_validate_json(_fa_raw)
+        fa_section = _build_feature_associations_section(fa_obj)
+        fa_content = fa_section.get("content", "")
+        ds_ml_text = ""
+        if isinstance(interp.feature_associations, dict):
+            ds_ml_text = (interp.feature_associations.get("ds_ml") or "").lower()
+        for label in ("NONLINEAR SIGNAL", "SUSPICIOUS ASSOCIATION"):
+            if label in fa_content and f"no {label.lower()}" in ds_ml_text.replace("'", "").replace('"', ''):
+                return (
+                    f"Error: your ds_ml perspective for feature_associations "
+                    f"denies the presence of '{label}', but the deterministic "
+                    f"content contains it. This is a factual contradiction. "
+                    f"Please revise your feature_associations ds_ml commentary "
+                    f"to acknowledge the {label} flags and call "
+                    f"save_interpretations() again."
+                )
 
     # --- Comprehensive evaluation (bias + toxicity + hallucination, OpenLIT, opt-in) ---
     _run_comprehensive_eval(validated_json)
@@ -1939,6 +2465,7 @@ def assemble_findings(
         _duplicate_count: int = 0
         _categorical_cols: list[str] | None = None
         _numerical_cols: list[str] | None = None
+        _encoded_categorical_cols: list[str] | None = None
         schema_raw = load_state("schema_json")
         if schema_raw:
             try:
@@ -1949,6 +2476,8 @@ def assemble_findings(
                     _categorical_cols = _dp.categorical_cols
                 if _dp.numerical_cols:
                     _numerical_cols = _dp.numerical_cols
+                if _dp.encoded_categorical_cols:
+                    _encoded_categorical_cols = _dp.encoded_categorical_cols
             except Exception:
                 pass  # Non-critical — overview falls back to describe
         # Fallback: try dtypes_json if schema_json omitted column lists
@@ -1961,6 +2490,8 @@ def assemble_findings(
                         _categorical_cols = _dp2.categorical_cols
                     if _numerical_cols is None and _dp2.numerical_cols:
                         _numerical_cols = _dp2.numerical_cols
+                    if _encoded_categorical_cols is None and _dp2.encoded_categorical_cols:
+                        _encoded_categorical_cols = _dp2.encoded_categorical_cols
                 except Exception:
                     pass
 
@@ -1979,30 +2510,37 @@ def assemble_findings(
             critic = CriticReport.model_validate_json(critic_report_json)
             logger.info("CriticReport resolved via fallback")
 
-        # --- Resolve plot_paths_json (may require composition) ---
-        try:
-            plot_paths_json = resolve(plot_paths_json, "plot_paths")
-            plot_paths = json.loads(plot_paths_json)
-            if not isinstance(plot_paths, list):
-                raise ValueError("plot_paths is not a list")
-        except (PipelineStateError, Exception):
-            # Compose from individual visualization artifacts
-            hist = load_state("plot_histograms")
-            corr_hm = load_state("plot_correlation_heatmap")
-            miss_hm = load_state("plot_missing_heatmap")
-            cls_dist = load_state("plot_class_distribution")
-            merged: list[str] = []
-            if hist:
-                merged.extend(json.loads(hist))
-            if corr_hm:
-                merged.extend(json.loads(corr_hm))
-            if miss_hm:
-                merged.extend(json.loads(miss_hm))
-            if cls_dist:
-                merged.extend(json.loads(cls_dist))
-            plot_paths = merged
-            plot_paths_json = json.dumps(plot_paths)
-            logger.info("plot_paths composed from %d visualization artifacts", len(plot_paths))
+        # --- Resolve plot_paths from individual visualization artifacts ---
+        # Always compose from individual artifact keys when the session is active,
+        # mirroring the EDAResults composition pattern above.  The LLM-supplied
+        # plot_paths_json parameter is intentionally ignored here: it may be an
+        # empty list "[]", a single-artifact reference (e.g. STATE_REF:plot_histograms
+        # which would only return histogram paths), or garbage — all of which would
+        # silently drop heatmap and class-distribution plots from the report.
+        hist = load_state("plot_histograms")
+        corr_hm = load_state("plot_correlation_heatmap")
+        miss_hm = load_state("plot_missing_heatmap")
+        cls_dist = load_state("plot_class_distribution")
+        cat_bars = load_state("plot_categorical_bars")
+        ord_hm = load_state("plot_ordinal_heatmap")
+        ft_bars = load_state("plot_feature_target_bars")
+        merged: list[str] = []
+        if hist:
+            merged.extend(json.loads(hist))
+        if corr_hm:
+            merged.extend(json.loads(corr_hm))
+        if miss_hm:
+            merged.extend(json.loads(miss_hm))
+        if cls_dist:
+            merged.extend(json.loads(cls_dist))
+        if cat_bars:
+            merged.extend(json.loads(cat_bars))
+        if ord_hm:
+            merged.extend(json.loads(ord_hm))
+        if ft_bars:
+            merged.extend(json.loads(ft_bars))
+        plot_paths = merged
+        logger.info("plot_paths composed from %d visualization artifacts", len(plot_paths))
     else:
         eda = EDAResults.model_validate_json(eda_results_json)
         critic = CriticReport.model_validate_json(critic_report_json)
@@ -2011,6 +2549,7 @@ def assemble_findings(
         _duplicate_count = 0
         _categorical_cols = None
         _numerical_cols = None
+        _encoded_categorical_cols = None
 
     # Determine if this is the final iteration
     is_final = critic.status == "APPROVED" or critic.iteration >= 2
@@ -2034,6 +2573,9 @@ def assemble_findings(
     corr_heatmap_paths: list[str] = []
     missing_heatmap_paths: list[str] = []
     target_plot_paths: list[str] = []
+    cat_bar_paths: list[str] = []
+    ordinal_heatmap_paths: list[str] = []
+    feature_target_paths: list[str] = []
     for pp in plot_paths:
         stem = Path(pp).stem
         if stem.startswith("hist_"):
@@ -2044,6 +2586,12 @@ def assemble_findings(
             missing_heatmap_paths.append(pp)
         elif stem in ("class_distribution", "target_distribution"):
             target_plot_paths.append(pp)
+        elif stem.startswith("cat_"):
+            cat_bar_paths.append(pp)
+        elif stem == "ordinal_spearman_heatmap":
+            ordinal_heatmap_paths.append(pp)
+        elif stem == "feature_target_associations":
+            feature_target_paths.append(pp)
 
     # --- Helper: enrich a section with LLM commentary ---
     def _enrich(
@@ -2086,12 +2634,24 @@ def assemble_findings(
                     section["plot_commentaries"] = plot_comms
         return section
 
+    # Load encoded-categorical subtypes for overview section (F3 fix)
+    _encoded_categorical_subtypes: dict[str, str] | None = None
+    if is_active():
+        _subtypes_raw = load_state("reclassified_subtypes")
+        if _subtypes_raw:
+            try:
+                _encoded_categorical_subtypes = json.loads(_subtypes_raw)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     # Build sections in report order (Option A: plots inline in parent sections)
     overview = _enrich(
         _build_overview_section(
             eda, shape=_shape, duplicate_count=_duplicate_count,
             categorical_cols=_categorical_cols,
             numerical_cols=_numerical_cols,
+            encoded_categorical_cols=_encoded_categorical_cols,
+            encoded_categorical_subtypes=_encoded_categorical_subtypes,
         ),
         "overview",
     )
@@ -2099,24 +2659,95 @@ def assemble_findings(
         _build_missing_section(eda), "missing_values",
         paired_plots=missing_heatmap_paths or None,
     )
+    # Resolve target column name for downstream sections (F2 safety fix)
+    _target_column: str | None = None
+    if is_active():
+        _ti_raw = load_state("target_info")
+        if _ti_raw:
+            try:
+                _target_column = json.loads(_ti_raw).get("column")
+            except Exception:
+                pass
+
+    # Compute Spearman ρ among ordinal encoded-categorical columns (F1 fix).
+    # Rank correlation makes no equal-interval assumption — appropriate for
+    # ordinal data.  Only columns with subtype "ordinal" AND ≥3 unique values
+    # contribute meaningful inter-correlations (nominal columns have no rank
+    # ordering; binary columns yield degenerate rank ties).
+    _ordinal_spearman: dict[str, dict[str, float]] | None = None
+    if _encoded_categorical_cols and is_active():
+        _data_raw_sp = load_state("data_json")
+        if _data_raw_sp:
+            try:
+                _df_sp = pd.DataFrame(json.loads(_data_raw_sp))
+                if _encoded_categorical_subtypes:
+                    # Subtypes known: restrict to ordinal only.
+                    _ord_cols = [
+                        c for c in _encoded_categorical_cols
+                        if c in _df_sp.columns
+                        and _df_sp[c].nunique(dropna=True) >= 3
+                        and _encoded_categorical_subtypes.get(c) == "ordinal"
+                    ]
+                else:
+                    # Subtypes unavailable (--categoricals flag / no LLM):
+                    # fall back to all columns with ≥3 unique values.
+                    _ord_cols = [
+                        c for c in _encoded_categorical_cols
+                        if c in _df_sp.columns
+                        and _df_sp[c].nunique(dropna=True) >= 3
+                    ]
+                if len(_ord_cols) >= 2:
+                    # Columns are string-cast: convert back to numeric for Spearman
+                    _df_ord = _df_sp[_ord_cols].apply(pd.to_numeric, errors="coerce")
+                    _sp_matrix = _df_ord.corr(method="spearman")
+                    _ordinal_spearman = {
+                        col: {
+                            c2: round(float(v), 4)
+                            for c2, v in row.items()
+                        }
+                        for col, row in _sp_matrix.to_dict().items()
+                    }
+            except Exception:
+                logger.warning("Spearman ordinal inter-correlation failed", exc_info=True)
+
     correlation = _enrich(
-        _build_correlation_section(eda), "correlation",
-        paired_plots=corr_heatmap_paths or None,
+        _build_correlation_section(
+            eda,
+            encoded_categorical_cols=_encoded_categorical_cols,
+            ordinal_spearman=_ordinal_spearman,
+        ),
+        "correlation",
+        paired_plots=(corr_heatmap_paths + ordinal_heatmap_paths) or None,
     )
     statistical = _enrich(
-        _build_statistical_analysis_section(eda, critic), "statistical_analysis",
+        _build_statistical_analysis_section(eda, critic, target_column=_target_column),
+        "statistical_analysis",
         paired_plots=hist_paths or None,
     )
 
     # Categorical analysis section (W4) — between Statistical and Target
+    # Pre-load feature associations for cross-check (F4 fix).
+    _fa_for_cat: FeatureAssociations | None = None
+    if is_active():
+        _fa_raw_cat = load_state("feature_associations")
+        if _fa_raw_cat:
+            try:
+                _fa_for_cat = FeatureAssociations.model_validate_json(_fa_raw_cat)
+            except Exception:
+                pass
+
     categorical_sec: dict[str, Any] | None = None
     if is_active():
         cat_raw = load_state("categorical_analysis")
         if cat_raw:
             cat_analysis = CategoricalAnalysis.model_validate_json(cat_raw)
             categorical_sec = _enrich(
-                _build_categorical_section(cat_analysis),
+                _build_categorical_section(
+                    cat_analysis,
+                    feature_associations=_fa_for_cat,
+                ),
                 "categorical_analysis",
+                paired_plots=cat_bar_paths or None,
             )
 
     # Feature–target associations section (W7) — after categorical, before target
@@ -2142,11 +2773,36 @@ def assemble_findings(
                     logger.warning(
                         "feature_associations fallback (assemble) failed", exc_info=True
                     )
+        # --- Fallback: generate FT bar chart when viz agent skipped it ---
+        if fa_raw and not feature_target_paths:
+            _ft_state = load_state("plot_feature_target_bars")
+            if not _ft_state or json.loads(_ft_state) == []:
+                try:
+                    from tools.visualization_tools import (  # noqa: PLC0415
+                        plot_feature_target_bars as _ft_plot_fn,
+                    )
+                    _plot_dir = (
+                        str(Path(merged[0]).parent) if merged else "outputs/plots"
+                    )
+                    _ft_plot_fn(_plot_dir)
+                    _ft_state = load_state("plot_feature_target_bars")
+                    if _ft_state:
+                        _ft_added = json.loads(_ft_state)
+                        feature_target_paths.extend(_ft_added)
+                        logger.info(
+                            "plot_feature_target_bars generated via fallback (%d paths)",
+                            len(_ft_added),
+                        )
+                except Exception:
+                    logger.warning(
+                        "plot_feature_target_bars fallback failed", exc_info=True
+                    )
         if fa_raw:
             fa = FeatureAssociations.model_validate_json(fa_raw)
             feature_assoc_sec = _enrich(
                 _build_feature_associations_section(fa),
                 "feature_associations",
+                paired_plots=feature_target_paths or None,
             )
 
     quality = _enrich(
@@ -2186,6 +2842,15 @@ def assemble_findings(
     if interp and interp.recommendations_and_business_implications:
         recommendations["content"] = interp.recommendations_and_business_implications
 
+    # --- Limitations & Caveats (D3) ---
+    is_data_raw = None
+    if is_active():
+        is_data_raw = load_state("interaction_signals")
+    is_data = json.loads(is_data_raw) if is_data_raw else None
+    limitations = _build_limitations_section(eda, critic, interaction_signals=is_data)
+    if interp and interp.limitations:
+        limitations["content"] = interp.limitations
+
     # --- Trustworthiness Assessment (from comprehensive eval) ---
     trust_sec: dict[str, Any] | None = None
     if is_active():
@@ -2216,6 +2881,7 @@ def assemble_findings(
         quality,
         conclusions,
         recommendations,
+        limitations,
     ])
     if trust_sec is not None:
         sections.append(trust_sec)

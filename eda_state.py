@@ -51,6 +51,23 @@ class TargetInfo(BaseModel):
     has_datetime_index: bool = False     # True if a datetime column detected
 
 
+class EncodedCategoricalSuspect(BaseModel):
+    """A numeric column suspected of being an encoded categorical.
+
+    Produced by detect_encoded_categoricals() (pre-pipeline LLM call).
+    Carries enough display data for both CLI and Streamlit confirmation UIs.
+    """
+
+    column: str
+    nunique: int
+    sample_values: list[int | float] = Field(default_factory=list)
+    min_val: float = 0.0
+    max_val: float = 0.0
+    is_all_integer: bool = False
+    reason: str = ""        # LLM-generated explanation
+    subtype: str = ""       # "nominal" | "ordinal"
+
+
 class DataProfile(BaseModel):
     """Schema and shape metadata produced by DataPrepAgent's tools."""
 
@@ -59,6 +76,7 @@ class DataProfile(BaseModel):
     dtypes: dict[str, str] = Field(default_factory=dict)
     numerical_cols: list[str] = Field(default_factory=list)
     categorical_cols: list[str] = Field(default_factory=list)
+    encoded_categorical_cols: list[str] = Field(default_factory=list)  # reclassified from numerical
     duplicate_count: int = 0  # Rows removed by load_data() dedup (W8)
 
 
@@ -211,6 +229,7 @@ class Interpretations(BaseModel):
     plot_commentaries: list[PlotCommentary] = Field(default_factory=list)
     conclusions: str = ""
     recommendations_and_business_implications: str = ""
+    limitations: str = ""
 
 
 # ---------------------------------------------------------------------------

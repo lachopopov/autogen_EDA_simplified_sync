@@ -189,7 +189,7 @@ class TestEndToEnd:
         )
         findings = Findings.model_validate_json(result)
         assert isinstance(findings, Findings)
-        assert len(findings.sections) == 7
+        assert len(findings.sections) == 8
 
     def test_chained_registration_invariant(self, wired_pair):
         """Tool appears in BOTH agent LLM tools AND proxy function_map (P6)."""

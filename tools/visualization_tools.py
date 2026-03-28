@@ -65,6 +65,8 @@ def plot_histograms(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    import re
+
     paths: list[str] = []
     for col in num_cols:
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -73,7 +75,8 @@ def plot_histograms(
         ax.set_xlabel(col)
         ax.set_ylabel("Frequency")
 
-        file_path = out / f"hist_{col}.png"
+        safe_col = re.sub(r"[^\w\-]", "_", col)
+        file_path = out / f"hist_{safe_col}.png"
         fig.savefig(file_path, dpi=100, bbox_inches="tight")
         plt.close(fig)
 
@@ -223,9 +226,9 @@ def plot_missing_heatmap(
 
 
 def plot_class_distribution(
-    data_json: Annotated[str, "JSON string (records orientation) from load_data()"],
-    target_info_json: Annotated[str, "JSON string of TargetInfo from detect_target()"],
+    target_info_json: Annotated[str, "JSON string of TargetInfo. Pass STATE_REF:target_info in pipeline mode."],
     output_dir: Annotated[str, "Directory path where PNG file will be saved"],
+    data_json: Annotated[str, "JSON string (records orientation) from load_data(). Auto-resolved from artifact store in pipeline mode; only needed for direct (non-pipeline) calls."] = "STATE_REF:data_json",
 ) -> str:
     """
     AG2 tool entry point.
@@ -235,16 +238,42 @@ def plot_class_distribution(
     For regression:     histogram + KDE of target distribution.
     For unsupervised:   returns empty list (no plot generated).
 
+    In pipeline mode (is_active() == True):
+      - data_json is always loaded directly from the artifact store (LLM need not supply it).
+      - target_info_json is loaded from the artifact store; if absent (unsupervised dataset),
+        returns an empty-list reference without raising an error.
+
     Returns:
         JSON list of saved file paths (0 or 1 element).
     """
     from eda_state import TargetInfo
 
-    # Artifact store: resolve inputs
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import (
+        PipelineStateError,
+        STATE_REF_PREFIX,
+        is_active,
+        load_state,
+        save_state,
+    )
     if is_active():
-        data_json = resolve(data_json, "data_json")
-        target_info_json = resolve(target_info_json, "target_info")
+        # data_json: always load from artifact store — LLM never needs to supply this
+        _data = load_state("data_json")
+        if _data is None:
+            raise PipelineStateError(
+                "Cannot resolve artifact 'data_json'. "
+                "DataPrepAgent may not have executed load_data()."
+            )
+        data_json = _data
+        # target_info_json: graceful skip if absent (unsupervised dataset)
+        _ti = load_state("target_info")
+        if _ti is None:
+            result = json.dumps([])
+            save_state("plot_class_distribution", result)
+            return (
+                f"No target info in artifact store — class distribution plot skipped. "
+                f"Reference: {STATE_REF_PREFIX}plot_class_distribution"
+            )
+        target_info_json = _ti
 
     df = pd.DataFrame(json.loads(data_json))
     target_info = TargetInfo.model_validate_json(target_info_json)
@@ -344,3 +373,401 @@ def plot_class_distribution(
             f"Reference: {STATE_REF_PREFIX}plot_class_distribution"
         )
     return result
+
+
+def plot_categorical_bars(
+    categorical_analysis_json: Annotated[
+        str,
+        "JSON string of CategoricalAnalysis from analyze_categoricals(). "
+        "Pass STATE_REF:categorical_analysis when running in pipeline mode.",
+    ],
+    output_dir: Annotated[str, "Directory path where PNG files will be saved"],
+) -> str:
+    """
+    AG2 tool entry point.
+    Plot a horizontal bar chart for each categorical column (top-N categories)
+    and save as PNG.
+
+    Uses the pre-computed CategoricalAnalysis artifact so no raw DataFrame
+    is needed — mirrors the architecture of the other visualization tools.
+
+    Chart design:
+      - Horizontal bars so long category labels are readable.
+      - Bars fill proportionally to category percentage (top_values[].pct).
+      - Rare categories (<0.5%, flagged as is_rare=True) rendered in a
+        distinct colour (#d9534f) to draw the analyst's attention.
+      - Annotation: "<count> (<pct>%)" to the right of each bar.
+      - Footer note when more_values > 0: "… and N more not shown."
+
+    Filename: ``cat_<safe_col>.png`` where safe_col replaces every
+    non-word character with "_" — avoids the space-in-filename problem.
+
+    Returns:
+        JSON list of saved file paths (one per categorical column that has
+        at least one top-value entry). Empty list if no categorical columns.
+    """
+    import re
+
+    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    if is_active():
+        categorical_analysis_json = resolve(
+            categorical_analysis_json, "categorical_analysis"
+        )
+
+    from eda_state import CategoricalAnalysis as _CatAnalysis
+
+    cat_analysis = _CatAnalysis.model_validate_json(categorical_analysis_json)
+
+    if not cat_analysis.columns:
+        logger.info("plot_categorical_bars: no categorical columns — skipping")
+        result = json.dumps([])
+        if is_active():
+            save_state("plot_categorical_bars", result)
+            return (
+                f"No categorical columns — bar charts skipped. "
+                f"Reference: {STATE_REF_PREFIX}plot_categorical_bars"
+            )
+        return result
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    _NORMAL_COLOR = "#5b9bd5"   # standard bar colour
+    _RARE_COLOR   = "#d9534f"   # red for rare categories
+
+    paths: list[str] = []
+
+    for col, stats in cat_analysis.columns.items():
+        if not stats.top_values:
+            logger.info("plot_categorical_bars: '%s' has no top_values — skipped", col)
+            continue
+
+        labels  = [str(entry["value"]) for entry in stats.top_values]
+        counts  = [int(entry["count"])  for entry in stats.top_values]
+        pcts    = [float(entry["pct"])  for entry in stats.top_values]
+        is_rare = [bool(entry.get("is_rare", False)) for entry in stats.top_values]
+        colors  = [_RARE_COLOR if r else _NORMAL_COLOR for r in is_rare]
+
+        # Reverse so the most-frequent category sits at the top
+        labels, counts, pcts, is_rare, colors = (
+            list(reversed(labels)),
+            list(reversed(counts)),
+            list(reversed(pcts)),
+            list(reversed(is_rare)),
+            list(reversed(colors)),
+        )
+
+        n = len(labels)
+        fig, ax = plt.subplots(figsize=(10, max(3, n * 0.55)))
+
+        bars = ax.barh(labels, pcts, color=colors, edgecolor="black", alpha=0.82)
+
+        # Annotate each bar with "count (pct%)"
+        max_pct = max(pcts) if pcts else 1.0
+        for bar, cnt, pct in zip(bars, counts, pcts):
+            ax.text(
+                bar.get_width() + max_pct * 0.015,
+                bar.get_y() + bar.get_height() / 2,
+                f"{cnt:,} ({pct:.1f}%)",
+                va="center",
+                fontsize=9,
+            )
+
+        ax.set_title(f"Category Distribution — {col}")
+        ax.set_xlabel("Percentage (%)")
+        ax.set_ylabel(col)
+        ax.set_xlim(0, max_pct * 1.25)
+
+        # Footer note for truncated columns
+        if stats.more_values > 0:
+            ax.text(
+                0.5, -0.12,
+                f"… and {stats.more_values} more not shown (top {cat_analysis.top_n} displayed)",
+                ha="center", va="top",
+                transform=ax.transAxes,
+                fontsize=8, style="italic", color="gray",
+            )
+
+        # Legend patch for rare-category colour (only if any rare bars present)
+        if any(is_rare):
+            from matplotlib.patches import Patch
+            ax.legend(
+                handles=[
+                    Patch(facecolor=_NORMAL_COLOR, edgecolor="black", label="Normal"),
+                    Patch(facecolor=_RARE_COLOR,   edgecolor="black", label="Rare (<0.5%)"),
+                ],
+                loc="lower right",
+                fontsize=8,
+            )
+
+        plt.tight_layout()
+
+        safe_col = re.sub(r"[^\w\-]", "_", col)
+        file_path = out / f"cat_{safe_col}.png"
+        fig.savefig(file_path, dpi=100, bbox_inches="tight")
+        plt.close(fig)
+
+        paths.append(str(file_path))
+        logger.info("Saved categorical bar chart: %s", file_path)
+
+    logger.info(
+        "plot_categorical_bars: generated %d chart(s) in %s", len(paths), output_dir
+    )
+    result = json.dumps(paths)
+
+    if is_active():
+        save_state("plot_categorical_bars", result)
+        return (
+            f"Generated {len(paths)} categorical bar chart(s). "
+            f"Reference: {STATE_REF_PREFIX}plot_categorical_bars"
+        )
+    return result
+
+
+def plot_ordinal_heatmap(
+    output_dir: Annotated[str, "Directory path where PNG file will be saved"],
+) -> str:
+    """
+    AG2 tool entry point.
+    Plot a Spearman rank-correlation heatmap for ordinal-encoded
+    categorical columns (≥3 unique values).
+
+    Self-contained: loads data_json, dtypes_json / schema_json, and
+    reclassified_subtypes from the artifact store, computes the Spearman
+    matrix internally, and saves the heatmap to output_dir.
+
+    Returns empty list when <2 eligible ordinal columns exist.
+
+    Returns:
+        JSON list of saved file paths (0 or 1 element).
+    """
+    from tools._pipeline_state import (
+        PipelineStateError,
+        STATE_REF_PREFIX,
+        is_active,
+        load_state,
+        save_state,
+    )
+
+    if not is_active():
+        raise RuntimeError(
+            "plot_ordinal_heatmap() requires an active pipeline session."
+        )
+
+    data_raw = load_state("data_json")
+    if data_raw is None:
+        raise PipelineStateError(
+            "Cannot resolve artifact 'data_json'. "
+            "DataPrepAgent may not have executed load_data()."
+        )
+
+    # Identify encoded-categorical columns
+    encoded_cols: list[str] = []
+    subtypes: dict[str, str] = {}
+
+    subtypes_raw = load_state("reclassified_subtypes")
+    if subtypes_raw:
+        try:
+            subtypes = json.loads(subtypes_raw)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    dtypes_raw = load_state("dtypes_json") or load_state("schema_json")
+    if dtypes_raw:
+        try:
+            from eda_state import DataProfile as _DP
+            dp = _DP.model_validate_json(dtypes_raw)
+            encoded_cols = list(dp.encoded_categorical_cols or [])
+        except Exception:
+            pass
+
+    if not encoded_cols:
+        result = json.dumps([])
+        save_state("plot_ordinal_heatmap", result)
+        return (
+            f"No encoded-categorical columns — ordinal heatmap skipped. "
+            f"Reference: {STATE_REF_PREFIX}plot_ordinal_heatmap"
+        )
+
+    df = pd.DataFrame(json.loads(data_raw))
+
+    # Filter to ordinal columns with ≥3 unique values
+    if subtypes:
+        ord_cols = [
+            c for c in encoded_cols
+            if c in df.columns
+            and df[c].nunique(dropna=True) >= 3
+            and subtypes.get(c) == "ordinal"
+        ]
+    else:
+        ord_cols = [
+            c for c in encoded_cols
+            if c in df.columns
+            and df[c].nunique(dropna=True) >= 3
+        ]
+
+    if len(ord_cols) < 2:
+        result = json.dumps([])
+        save_state("plot_ordinal_heatmap", result)
+        return (
+            f"Fewer than 2 eligible ordinal columns — heatmap skipped. "
+            f"Reference: {STATE_REF_PREFIX}plot_ordinal_heatmap"
+        )
+
+    df_ord = df[ord_cols].apply(pd.to_numeric, errors="coerce")
+    sp_matrix = df_ord.corr(method="spearman")
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(max(6, len(ord_cols) * 0.9),
+                                    max(5, len(ord_cols) * 0.75)))
+    mask = np.triu(np.ones_like(sp_matrix, dtype=bool), k=1)
+    sns.heatmap(
+        sp_matrix,
+        mask=mask,
+        annot=True,
+        fmt=".2f",
+        cmap="RdBu_r",
+        center=0,
+        vmin=-1,
+        vmax=1,
+        square=True,
+        linewidths=0.5,
+        ax=ax,
+    )
+    ax.set_title("Ordinal Inter-Correlation (Spearman ρ)")
+    plt.tight_layout()
+
+    file_path = out / "ordinal_spearman_heatmap.png"
+    fig.savefig(file_path, dpi=100, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info("Saved ordinal Spearman heatmap: %s", file_path)
+    result = json.dumps([str(file_path)])
+
+    save_state("plot_ordinal_heatmap", result)
+    return (
+        f"Saved ordinal Spearman heatmap to {file_path}. "
+        f"Reference: {STATE_REF_PREFIX}plot_ordinal_heatmap"
+    )
+
+
+def plot_feature_target_bars(
+    output_dir: Annotated[str, "Directory path where PNG file will be saved"],
+) -> str:
+    """
+    AG2 tool entry point.
+    Plot a horizontal bar chart of Borda-ranked feature–target associations.
+
+    Self-contained: loads feature_associations from the artifact store.
+    Shows MI score and effect size side-by-side per feature, sorted by
+    Borda rank.
+
+    Returns empty list when no feature_associations artifact exists.
+
+    Returns:
+        JSON list of saved file paths (0 or 1 element).
+    """
+    from tools._pipeline_state import (
+        STATE_REF_PREFIX,
+        is_active,
+        load_state,
+        save_state,
+    )
+
+    if not is_active():
+        raise RuntimeError(
+            "plot_feature_target_bars() requires an active pipeline session."
+        )
+
+    fa_raw = load_state("feature_associations")
+    if not fa_raw:
+        result = json.dumps([])
+        save_state("plot_feature_target_bars", result)
+        return (
+            f"No feature_associations artifact — bar chart skipped. "
+            f"Reference: {STATE_REF_PREFIX}plot_feature_target_bars"
+        )
+
+    from eda_state import FeatureAssociations as _FA
+    fa = _FA.model_validate_json(fa_raw)
+
+    if not fa.rows:
+        result = json.dumps([])
+        save_state("plot_feature_target_bars", result)
+        return (
+            f"No feature–target rows — bar chart skipped. "
+            f"Reference: {STATE_REF_PREFIX}plot_feature_target_bars"
+        )
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Sort by Borda score ascending (lower = more important, top at top)
+    rows_sorted = sorted(fa.rows, key=lambda r: r.borda_score)
+
+    features = [r.feature for r in rows_sorted]
+    mi_scores = [r.mi_score for r in rows_sorted]
+    es_values = [r.effect_size for r in rows_sorted]
+    borda_scores = [r.borda_score for r in rows_sorted]
+
+    n = len(features)
+    y_pos = np.arange(n)
+    bar_height = 0.35
+
+    fig, ax1 = plt.subplots(figsize=(10, max(4, n * 0.55)))
+
+    bars_mi = ax1.barh(
+        y_pos - bar_height / 2, mi_scores, bar_height,
+        label="MI score", color="#5b9bd5", edgecolor="black", alpha=0.82,
+    )
+    ax1.set_xlabel("MI Score")
+    ax1.set_ylabel("Feature")
+    ax1.set_yticks(y_pos)
+    ax1.set_yticklabels(features)
+
+    ax2 = ax1.twiny()
+    bars_es = ax2.barh(
+        y_pos + bar_height / 2, es_values, bar_height,
+        label=f"Effect Size ({fa.rows[0].effect_size_type})",
+        color="#ff7f0e", edgecolor="black", alpha=0.82,
+    )
+    ax2.set_xlabel(f"Effect Size ({rows_sorted[0].effect_size_type})")
+
+    # Annotate Borda scores
+    for i, borda in enumerate(borda_scores):
+        ax1.text(
+            max(mi_scores) * 1.02 if mi_scores else 0.01,
+            y_pos[i],
+            f"Borda={borda}",
+            va="center",
+            fontsize=8,
+            color="gray",
+        )
+
+    ax1.set_title(
+        f"Feature–Target Associations (vs '{fa.target_col}', {fa.task_type})"
+    )
+
+    # Combined legend
+    ax1.legend(
+        handles=[bars_mi[0], bars_es[0]],
+        loc="lower right",
+        fontsize=8,
+    )
+
+    plt.tight_layout()
+
+    file_path = out / "feature_target_associations.png"
+    fig.savefig(file_path, dpi=100, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info("Saved feature–target associations chart: %s", file_path)
+    result = json.dumps([str(file_path)])
+
+    save_state("plot_feature_target_bars", result)
+    return (
+        f"Saved feature–target association chart to {file_path}. "
+        f"Reference: {STATE_REF_PREFIX}plot_feature_target_bars"
+    )

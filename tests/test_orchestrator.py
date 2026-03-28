@@ -511,15 +511,15 @@ class TestToolRegistration:
         assert len(user_proxy._function_map) == 0
 
     def test_total_tool_count_across_executors(self, group_chat_components):
-        """19 total tools distributed across 6 executors (render_ipynb excluded when IPYNB_EXPORT=false)."""
+        """20 total tools distributed across 6 executors (render_ipynb excluded when IPYNB_EXPORT=false)."""
         _, _, _, _, executors_dict, _ = group_chat_components
         total = sum(len(e._function_map) for e in executors_dict.values())
-        assert total == 19
+        assert total == 22
 
     @pytest.mark.parametrize("executor_name,expected_tools", [
         ("DataPrepExecutor", {"load_data", "validate_schema", "infer_dtypes"}),
         ("EDAAnalysisExecutor", {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals", "compute_feature_target_associations"}),
-        ("VisualizationExecutor", {"plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap", "plot_class_distribution"}),
+        ("VisualizationExecutor", {"plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap", "plot_class_distribution", "plot_categorical_bars", "plot_ordinal_heatmap", "plot_feature_target_bars"}),
         ("CriticExecutor", {"run_critic_rules"}),
         ("FindingsGeneratorExecutor", {"assemble_findings", "prepare_interpretation_context", "save_interpretations"}),
         ("ReportExporterExecutor", {"render_pdf", "render_markdown"}),  # render_ipynb excluded when IPYNB_EXPORT=false
@@ -562,10 +562,10 @@ class TestAgentLLMConfig:
         names = self._get_tool_names(agents["EDAAnalysisAgent"])
         assert names == {"describe_stats", "missing_analysis", "correlation_matrix", "target_analysis", "analyze_categoricals", "compute_feature_target_associations"}
 
-    def test_visualization_has_4_tools(self, group_chat_components):
+    def test_visualization_has_7_tools(self, group_chat_components):
         _, _, _, agents, _, _ = group_chat_components
         names = self._get_tool_names(agents["VisualizationAgent"])
-        assert names == {"plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap", "plot_class_distribution"}
+        assert names == {"plot_histograms", "plot_correlation_heatmap", "plot_missing_heatmap", "plot_class_distribution", "plot_categorical_bars", "plot_ordinal_heatmap", "plot_feature_target_bars"}
 
     def test_critic_has_1_tool(self, group_chat_components):
         _, _, _, agents, _, _ = group_chat_components

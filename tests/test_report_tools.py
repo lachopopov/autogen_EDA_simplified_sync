@@ -62,6 +62,10 @@ def sample_findings() -> dict:
                 "title": "Recommendations & Business Implications",
                 "content": "NEXT STEPS — After addressing the above items: (1) Re-run EDA.",
             },
+            {
+                "title": "Limitations & Caveats",
+                "content": "This analysis is primarily univariate and bivariate.",
+            },
         ],
         "unresolved_flags": [],
     }
@@ -157,7 +161,7 @@ class TestReportRendererABC:
         """_build_sections returns the sections list from findings."""
         renderer = PDFRenderer()  # use concrete subclass to test shared method
         sections = renderer._build_sections(sample_findings)
-        assert len(sections) == 7
+        assert len(sections) == 8
         assert sections[0]["title"] == "Dataset Overview"
 
     def test_build_sections_empty_findings(self):
@@ -357,8 +361,8 @@ class TestIPYNBRenderer:
         path = str(output_dir / "report.ipynb")
         IPYNBRenderer().render(sample_findings, [], path)
         nb = nbformat.read(path, as_version=4)
-        # 1 title + 7 sections = 8 cells (no plots, no unresolved)
-        assert len(nb.cells) == 8
+        # 1 title + 8 sections = 9 cells (no plots, no unresolved)
+        assert len(nb.cells) == 9
 
     def test_section_headings_present(self, sample_findings, output_dir):
         """Each section heading appears in the notebook."""

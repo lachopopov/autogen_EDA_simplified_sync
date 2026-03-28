@@ -81,6 +81,7 @@ class TestCreateVisualizationAgent:
         assert "plot_histograms()" in viz_agent.system_message
         assert "plot_correlation_heatmap()" in viz_agent.system_message
         assert "plot_missing_heatmap()" in viz_agent.system_message
+        assert "plot_categorical_bars()" in viz_agent.system_message
 
     def test_system_message_exact(self, viz_agent):
         assert viz_agent.system_message == VISUALIZATION_SYSTEM_MESSAGE
@@ -110,7 +111,7 @@ class TestToolRegistration:
     def test_four_tools_on_agent(self, wired_pair):
         agent, _ = wired_pair
         tools = agent.llm_config.get("tools", [])
-        assert len(tools) == 4
+        assert len(tools) == 7
 
     def test_tool_names(self, wired_pair):
         agent, _ = wired_pair
@@ -120,6 +121,9 @@ class TestToolRegistration:
             "plot_correlation_heatmap",
             "plot_missing_heatmap",
             "plot_class_distribution",
+            "plot_categorical_bars",
+            "plot_ordinal_heatmap",
+            "plot_feature_target_bars",
         }
 
     def test_tool_descriptions(self, wired_pair):
@@ -134,6 +138,9 @@ class TestToolRegistration:
         assert "plot_correlation_heatmap" in proxy._function_map
         assert "plot_missing_heatmap" in proxy._function_map
         assert "plot_class_distribution" in proxy._function_map
+        assert "plot_categorical_bars" in proxy._function_map
+        assert "plot_ordinal_heatmap" in proxy._function_map
+        assert "plot_feature_target_bars" in proxy._function_map
 
     def test_plot_histograms_schema(self, wired_pair):
         agent, _ = wired_pair
@@ -154,6 +161,13 @@ class TestToolRegistration:
         tools_by_name = {t["function"]["name"]: t for t in agent.llm_config["tools"]}
         params = tools_by_name["plot_missing_heatmap"]["function"]["parameters"]
         assert "missing_json" in params["properties"]
+        assert "output_dir" in params["properties"]
+
+    def test_plot_categorical_bars_schema(self, wired_pair):
+        agent, _ = wired_pair
+        tools_by_name = {t["function"]["name"]: t for t in agent.llm_config["tools"]}
+        params = tools_by_name["plot_categorical_bars"]["function"]["parameters"]
+        assert "categorical_analysis_json" in params["properties"]
         assert "output_dir" in params["properties"]
 
 

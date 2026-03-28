@@ -23,10 +23,13 @@ from autogen import UserProxyAgent
 
 from agents import make_agent
 from tools.visualization_tools import (
+    plot_categorical_bars,
     plot_class_distribution,
     plot_correlation_heatmap,
+    plot_feature_target_bars,
     plot_histograms,
     plot_missing_heatmap,
+    plot_ordinal_heatmap,
 )
 
 # System message matches architecture.md § 4.4.
@@ -34,10 +37,22 @@ from tools.visualization_tools import (
 # (only ReportExporterAgent is allowed to emit TERMINATE — architecture.md § 4.7, § 5).
 VISUALIZATION_SYSTEM_MESSAGE = """\
 Generate and save all visualizations to outputs/plots/.
-Call all four tools in a SINGLE parallel tool_calls message:
-  plot_histograms(), plot_correlation_heatmap(), plot_missing_heatmap(), plot_class_distribution().
-plot_class_distribution() also requires target_info_json — load it from artifact store (STATE_REF:target_info).
-If no target_info artifact exists, skip plot_class_distribution().
+Call ALL seven tools in a SINGLE parallel tool_calls message — do not omit any:
+  1. plot_histograms()
+  2. plot_correlation_heatmap()
+  3. plot_missing_heatmap()
+  4. plot_class_distribution()
+  5. plot_categorical_bars()
+  6. plot_ordinal_heatmap()
+  7. plot_feature_target_bars()
+Every tool above MUST appear in your tool_calls list.
+plot_class_distribution() requires only target_info_json=STATE_REF:target_info and output_dir.
+Do NOT supply data_json for plot_class_distribution() — it is loaded automatically from the artifact store.
+ALWAYS call plot_class_distribution(); it handles the no-target case internally and returns a reference even when no plot is generated.
+plot_categorical_bars() requires categorical_analysis_json — load it from artifact store (STATE_REF:categorical_analysis).
+If no categorical_analysis artifact exists, skip plot_categorical_bars().
+plot_ordinal_heatmap() and plot_feature_target_bars() require only output_dir — they are self-contained and load all data from the artifact store.
+ALWAYS call plot_ordinal_heatmap() and plot_feature_target_bars(); they handle the no-data case internally.
 When a tool returns a confirmation message with "Reference: STATE_REF:...", the tool has SUCCEEDED.
 Do NOT re-call the same tool. After receiving results, emit a brief text summary and advance.
 Do NOT copy large JSON.
@@ -89,3 +104,18 @@ def register_visualization_tools(agent, user_proxy: UserProxyAgent) -> None:
     agent.register_for_llm(
         description="Plot target variable distribution: bar chart for classification, histogram+KDE for regression. Requires target_info_json from artifact store. Saves PNG to output_dir."
     )(user_proxy.register_for_execution()(plot_class_distribution))
+
+    # --- plot_categorical_bars ---
+    agent.register_for_llm(
+        description="Plot horizontal bar charts for each categorical column showing top-N category frequencies and percentages. Requires categorical_analysis_json from artifact store (STATE_REF:categorical_analysis). Saves one PNG per column to output_dir."
+    )(user_proxy.register_for_execution()(plot_categorical_bars))
+
+    # --- plot_ordinal_heatmap ---
+    agent.register_for_llm(
+        description="Plot Spearman rank-correlation heatmap for ordinal-encoded categorical columns. Self-contained: loads data from artifact store. Requires only output_dir."
+    )(user_proxy.register_for_execution()(plot_ordinal_heatmap))
+
+    # --- plot_feature_target_bars ---
+    agent.register_for_llm(
+        description="Plot horizontal bar chart of Borda-ranked feature–target associations (MI score + effect size). Self-contained: loads feature_associations from artifact store. Requires only output_dir."
+    )(user_proxy.register_for_execution()(plot_feature_target_bars))

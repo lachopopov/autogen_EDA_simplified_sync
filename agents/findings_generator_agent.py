@@ -91,11 +91,25 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
   For the "feature_associations" section, use ONLY values from the
   FEATURE–TARGET ASSOCIATIONS table in the fact sheet. For each of the
   top-3 features state: Borda score, MI score, effect size value + type +
-  label (weak/moderate/strong). In the "ds_ml" perspective, identify which
-  features show lens divergence (MI rank vs effect size rank differ >5) and
-  explain the implication. In the "business" perspective, translate the
-  top-ranked features into actionable signals (e.g. which features are most
-  worth collecting at data entry time).
+  label (weak/moderate/strong). In the "ds_ml" perspective: if the
+  deterministic content contains the label "NONLINEAR SIGNAL", you MUST
+  state that tree-based models (XGBoost, LightGBM, RandomForest) should be
+  the default choice and explain WHY (MI captured dependence that linear
+  effect-size measures missed -- the relationship is non-monotonic or has
+  complex feature interactions). Do NOT soften this label -- do not write
+  "possible" or "may indicate" when "NONLINEAR SIGNAL" is present. If the
+  content contains "SUSPICIOUS ASSOCIATION", you MUST name the three
+  plausible causes (outlier inflation, data leakage, small-n instability)
+  and recommend explicit verification steps (scatter plot vs target, leakage
+  audit, bootstrapped effect-size confidence intervals). In the "business"
+  perspective, translate the top-ranked features into actionable signals
+  (e.g. which features are most worth collecting at data entry time).
+  CONSISTENCY RULE: Your "ds_ml" perspective for "feature_associations" MUST
+  be consistent with the deterministic content above it. If the deterministic
+  content contains "NONLINEAR SIGNAL" or "SUSPICIOUS ASSOCIATION" labels,
+  you MUST NOT write that "no NONLINEAR SIGNAL or SUSPICIOUS ASSOCIATION
+  flags are present" or any equivalent denial. Contradicting the
+  deterministic content is a factual error that invalidates the report.
   For each plot in the PLOT INVENTORY, provide a plot_commentaries entry with
   the same three perspectives using the exact plot filename as plot_file.
 
@@ -130,16 +144,21 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
       context as signals.
       If the dataset is academic, survey, or benchmark in origin, you MUST open PART 2
       with this exact verbatim prefix (copy it word for word):
-        "NOTE: This is an academic/survey dataset. The following business problems are
-         illustrative hypotheticals, not operational use cases."
+        "NOTE: This dataset originates from an academic/survey context. The business
+         problems below demonstrate the analytical value extractable from this data
+         structure; adapt the framing to your operational context."
       For non-commercial datasets, do NOT fabricate dollar-value ROI estimates. State
       qualitative value drivers instead (e.g. "reduces manual review hours by ~30%",
       "improves model precision by ~N pp based on feature signal strength"). Never invent
       a dollar figure when the data has no verified commercial origin.
-    a) Identify ALL realistic business problems (5-8 max) this dataset could solve.
+    a) Identify ALL realistic business problems (10-20) this dataset could solve.
        Start each with a BUSINESS QUESTION.
        Classify each by solution probability: High / Med / Low, with a one-sentence
        EDA justification (cite column name and observed pattern).
+       When INTERACTION SIGNALS are available in the fact sheet, mine them for
+       additional business questions (e.g., persistence-gradient segments as
+       early-warning cohorts, trajectory groups as intervention targets,
+       portfolio concentration as resource-allocation opportunities).
     b) For the TOP 3 HIGH-PROBABILITY problems, answer all four questions:
        - PROBLEM: Business question + EDA context (what signals in the data support this?)
        - METRIC: 1-2 KPIs, defined and measurable (e.g., "churn rate: % customers lost per quarter")
@@ -150,9 +169,19 @@ STEP 2: Based on the fact sheet, generate expert commentary for EVERY section an
          For academic/survey datasets, omit dollar-value ROI entirely — state qualitative
          impact only.
     Ground ONLY in the fact sheet / assembled findings. Do NOT invent statistics.
-    Cap at 8 problems to avoid dilution.
+    Cap at 20 problems to avoid dilution.
+
+  Write "limitations" as a concise paragraph (3-5 sentences) covering:
+    - Scope: What this EDA does NOT cover (e.g., temporal validation,
+      causal inference, higher-order interactions beyond those detected)
+    - Data caveats: missingness patterns, small-n segments, potential MNAR
+    - Methodological: univariate/bivariate emphasis, no external validation
+    Match the tone of a peer-reviewed methods section — factual, not
+    apologetic. If QUALITY FLAGS mention specific issues (e.g., outlier flags
+    that may be sub-population clusters), translate those into limitations.
 
 STEP 3: Call save_interpretations() with your structured JSON commentary.
+  The JSON MUST include the "limitations" key with a non-empty string.
 
 STEP 4: Call assemble_findings() with the reference strings from prior tools.
 
@@ -169,7 +198,7 @@ RULES:
   "recommendations_and_business_implications" with a non-empty string containing
   BOTH PART 1 (prioritised action plan with ACTION/OUTCOME/RISK per item, plus
   monitoring recommendation and next-step checklist) AND PART 2 (Business Problem
-  Catalogue: 5-8 problems with BUSINESS QUESTION + High/Med/Low probability +
+  Catalogue: 10-20 problems with BUSINESS QUESTION + High/Med/Low probability +
   EDA justification, full PROBLEM/METRIC/RECOMMENDATIONS/BUSINESS IMPACT for
   TOP 3 HIGH-PROBABILITY problems). Omitting this field or providing less than
   ~200 characters will cause save_interpretations() to return an error requiring
@@ -191,13 +220,33 @@ RULES:
   note this caveat in your commentary: these are NOT true anomalies. Recommend
   binning or segmentation rather than outlier removal. Do NOT list this flag
   alongside HIGH/MEDIUM data quality concerns.
+- When the QUALITY FLAGS section of the fact sheet contains a flag with
+  rule=near_perfect_correlation, your "ds_ml" perspective for the
+  "correlation" section MUST: (1) quote the VIF estimate from the flag's
+  suggestion text, (2) explicitly name which model families are impacted
+  (linear: OLS, Logistic, ElasticNet) vs. unaffected (tree-based: XGBoost,
+  LightGBM, RandomForest), and (3) state the specific actionable remediation
+  (drop one feature per highly-correlated pair, or apply PCA for ≥3 correlated
+  features).
+- QUALITY FLAG BUSINESS IMPACT (A5): For EVERY quality flag in the QUALITY
+  FLAGS section, your "business" perspective in quality_assessment MUST
+  translate the technical finding into a concrete business consequence.
+  Example: "HIGH missing in column X → models using X will underperform,
+  costing ~Y% prediction accuracy; investigate upstream data collection."
+  Do NOT leave any quality flag without a business-impact statement.
 - PROVENANCE RULE (PART 2): Before generating PART 2, determine from filename,
   column names, and domain context whether the dataset is operational/commercial
   or academic/survey/benchmark. If academic/survey/benchmark, open PART 2 with
-  the verbatim disclaimer: "NOTE: This is an academic/survey dataset. The following
-  business problems are illustrative hypotheticals, not operational use cases."
+  the verbatim disclaimer: "NOTE: This dataset originates from an academic/survey
+  context. The business problems below demonstrate the analytical value extractable
+  from this data structure; adapt the framing to your operational context."
   Do NOT fabricate dollar-value ROI for non-commercial datasets under any
   circumstances — qualitative value drivers only.
+- COLUMN NAMING: When referencing subsets of numbered columns, always list
+  them explicitly (e.g., "PAY_0, PAY_2, PAY_3, PAY_4, PAY_5, PAY_6") instead
+  of using dash-range notation (e.g., "PAY_0–PAY_6"). Numbered column
+  sequences may have gaps; range notation falsely implies all intermediate
+  columns exist.
 Ground your answers only on data returned by your tools. If you do not have \
 the facts, state "No info available at this stage." Do NOT invent or fabricate \
 any statistics, numbers, or findings."""
@@ -252,7 +301,8 @@ def register_findings_generator_tools(agent, user_proxy: UserProxyAgent) -> None
             "target_variable_analysis, quality_assessment (each with "
             "'statistical', 'ds_ml', 'business' sub-keys), plot_commentaries "
             "(list of {plot_file, statistical, ds_ml, business}), conclusions "
-            "(string), recommendations_and_business_implications (string). "
+            "(string), recommendations_and_business_implications (string), "
+            "limitations (string). "
             "Call this AFTER studying the fact sheet."
         )
     )(user_proxy.register_for_execution()(save_interpretations))

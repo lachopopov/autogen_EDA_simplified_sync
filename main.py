@@ -19,6 +19,7 @@ Flow:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -89,6 +90,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=False,
         help="Disable OpenLIT observability even if OPENLIT_ENABLE=true.",
     )
+
+    cat_group = parser.add_mutually_exclusive_group()
+    cat_group.add_argument(
+        "--categoricals",
+        type=str,
+        default=None,
+        metavar="COL1,COL2,...",
+        help="Comma-separated list of numeric columns to reclassify as categorical "
+             "(skip LLM detection).",
+    )
+    cat_group.add_argument(
+        "--no-reclassify",
+        action="store_true",
+        default=False,
+        help="Skip encoded-categorical detection entirely.",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -98,9 +116,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def ensure_output_dirs() -> None:
-    """Create ``outputs/`` and ``outputs/plots/`` directories if they don't exist."""
+    """Create output directories and remove stale plots from prior runs."""
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    # Remove stale .png files from a previous dataset run so that the
+    # current run's plots directory is clean.
+    stale = list(PLOTS_DIR.glob("*.png"))
+    for f in stale:
+        f.unlink()
+    if stale:
+        logger.info("Cleaned %d stale plot file(s) from %s", len(stale), PLOTS_DIR)
     logger.info("Output dirs ready: %s, %s", OUTPUTS_DIR, PLOTS_DIR)
 
 
@@ -349,6 +374,109 @@ def _resolve_target(
 
 
 # ---------------------------------------------------------------------------
+# Encoded-Categorical Detection Helpers
+# ---------------------------------------------------------------------------
+
+
+def _confirm_reclassify_interactive(
+    suspects: list,
+) -> list[str]:
+    """Display LLM-suggested encoded categoricals and ask user to confirm each.
+
+    Interactive prompt (TTY only) — mirrors _confirm_target_interactive pattern.
+
+    Args:
+        suspects: List of EncodedCategoricalSuspect from detect_encoded_categoricals().
+
+    Returns:
+        List of confirmed column names to reclassify.
+    """
+    print("\n\u2501\u2501\u2501 Encoded Categorical Detection \u2501\u2501\u2501")
+    print("The following numeric columns may be encoded categoricals:\n")
+
+    accepted: list[str] = []
+    for i, s in enumerate(suspects, 1):
+        vals_str = str(s.sample_values[:10])
+        if len(s.sample_values) > 10:
+            vals_str = vals_str[:-1] + ", ...]"
+        print(f"  {i}. {s.column}  (nunique={s.nunique}, values: {vals_str})")
+        print(f"     {s.reason}  [{s.subtype}]")
+        response = input("     [Enter] Accept  |  [n] Reject: ").strip().lower()
+        if response in ("", "y", "yes"):
+            accepted.append(s.column)
+            print("     \u2713 Accepted")
+        else:
+            print("     \u2717 Rejected")
+        print()
+
+    if accepted:
+        print(f"Reclassified as categorical: {', '.join(accepted)}")
+    else:
+        print("No columns reclassified.")
+    return accepted
+
+
+def _resolve_reclassification(
+    df,
+    *,
+    target_column: str | None,
+    categoricals_flag: str | None,
+    no_reclassify_flag: bool,
+) -> tuple[list[str], dict[str, str]]:
+    """Resolve encoded-categorical reclassification using CLI flags or interactive prompt.
+
+    Mirrors _resolve_target() in structure.
+
+    Args:
+        df: The loaded DataFrame.
+        target_column: Target column name (excluded from candidates).
+        categoricals_flag: Explicit comma-separated column list from --categoricals.
+        no_reclassify_flag: If True, skip detection entirely.
+
+    Returns:
+        Tuple of (confirmed column names, subtype mapping {col: "nominal"|"ordinal"}).
+        Subtypes may be empty when using --categoricals (no LLM detection).
+    """
+    if no_reclassify_flag:
+        logger.info("Encoded-categorical detection skipped (--no-reclassify)")
+        return [], {}
+
+    if categoricals_flag:
+        cols = [c.strip() for c in categoricals_flag.split(",") if c.strip()]
+        valid = [c for c in cols if c in df.columns]
+        invalid = [c for c in cols if c not in df.columns]
+        if invalid:
+            logger.warning(
+                "--categoricals: columns not found (ignored): %s", invalid,
+            )
+        logger.info("Explicit reclassification via --categoricals: %s", valid)
+        return valid, {}
+
+    # LLM detection + interactive confirmation
+    from tools.data_loader import detect_encoded_categoricals
+
+    suspects = detect_encoded_categoricals(df, target_column=target_column)
+    if not suspects:
+        logger.info("No encoded-categorical suspects detected")
+        return [], {}
+
+    # Build subtype mapping from LLM detection results
+    _subtypes = {s.column: s.subtype or "nominal" for s in suspects}
+
+    if not sys.stdin.isatty():
+        accepted = [s.column for s in suspects]
+        logger.info(
+            "Non-interactive mode: auto-accepting %d encoded-categorical suspects "
+            "(override with --categoricals COL1,COL2 or --no-reclassify): %s",
+            len(accepted), accepted,
+        )
+        return accepted, {c: _subtypes[c] for c in accepted}
+
+    confirmed = _confirm_reclassify_interactive(suspects)
+    return confirmed, {c: _subtypes[c] for c in confirmed if c in _subtypes}
+
+
+# ---------------------------------------------------------------------------
 # OpenLIT Initialisation
 # ---------------------------------------------------------------------------
 
@@ -444,6 +572,8 @@ def run_pipeline(
     target_flag: str | None = None,
     no_target_flag: bool = False,
     enable_openlit: bool = False,
+    categoricals_flag: str | None = None,
+    no_reclassify_flag: bool = False,
 ) -> None:
     """
     Build the GroupChat and start the EDA pipeline.
@@ -459,6 +589,10 @@ def run_pipeline(
         If True, skip target detection (unsupervised mode).
     enable_openlit : bool
         If True, initialise OpenLIT observability before the pipeline runs.
+    categoricals_flag : str | None
+        Comma-separated column names to reclassify as categorical (from --categoricals).
+    no_reclassify_flag : bool
+        If True, skip encoded-categorical detection entirely.
 
     Raises
     ------
@@ -479,6 +613,10 @@ def run_pipeline(
 
     # --- OpenLIT observability (must run BEFORE any AG2 / OpenAI call) ---
     if enable_openlit:
+        # Bridge CLI flag to config so downstream code (e.g.
+        # _run_comprehensive_eval) sees the authoritative value.
+        import config as _cfg
+        _cfg.OPENLIT_ENABLE = True
         _init_openlit()
 
     # --- Pre-pipeline: load data + detect target ---
@@ -495,6 +633,15 @@ def run_pipeline(
         target_info.column, target_info.problem_type, target_info.detection_method,
     )
 
+    # --- Pre-pipeline: detect encoded categoricals ---
+    reclassified_cols, reclassified_subtypes = _resolve_reclassification(
+        df,
+        target_column=target_info.column,
+        categoricals_flag=categoricals_flag,
+        no_reclassify_flag=no_reclassify_flag,
+    )
+    logger.info("Reclassified as categorical: %s", reclassified_cols or "(none)")
+
     # Initialize artifact store session (disk-backed, UUID-scoped)
     from tools._pipeline_state import init_session, clear_session, save_state
     session_id = init_session()
@@ -502,6 +649,12 @@ def run_pipeline(
 
     # Store target_info in artifact store for downstream tools
     save_state("target_info", target_info.model_dump_json())
+
+    # Store reclassified categoricals for infer_dtypes() consumption
+    if reclassified_cols:
+        save_state("reclassified_categoricals", json.dumps(reclassified_cols))
+    if reclassified_subtypes:
+        save_state("reclassified_subtypes", json.dumps(reclassified_subtypes))
 
     # Lazy import to avoid heavy AG2 imports on --help / parse-only usage
     from orchestrator import build_group_chat
@@ -599,6 +752,8 @@ def main(argv: list[str] | None = None) -> None:
             target_flag=args.target,
             no_target_flag=args.no_target,
             enable_openlit=use_openlit,
+            categoricals_flag=args.categoricals,
+            no_reclassify_flag=args.no_reclassify,
         )
     except (FileNotFoundError, ValueError) as exc:
         logger.error("%s", exc)
