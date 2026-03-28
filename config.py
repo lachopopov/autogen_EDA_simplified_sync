@@ -25,9 +25,10 @@ load_dotenv(_ENV_PATH)
 # --- Base configuration shared across all models ---
 # Note: temperature is NOT set here. gpt-5-nano and gpt-5-mini only support
 # the default temperature (1). Setting temperature=0.0 causes a 400 error.
+# Cache: dev → None (ephemeral, no stale outputs); final → 42 (reproducible).
 _BASE: dict = {
     "api_key": os.environ["OPENAI_API_KEY"],
-    "cache_seed": None,  # ephemeral cache — no stale outputs across runs
+    "cache_seed": None if os.getenv("EDA_MODE") != "final" else 42,
 }
 
 # --- Model-specific configurations ---
@@ -53,7 +54,7 @@ LLM_CONFIG_FINAL_REST: dict = {
     "config_list": [{
         **_BASE,
         "model": "gpt-5-mini",
-        "price": [0.0025, 0.015],  # $2.5/$15.00 per 1M tokens
+        "price": [0.00025, 0.002],  # $0.25/$2.00 per 1M tokens
     }],
 }
 # --- Active configuration (selected via EDA_MODE environment variable) ---

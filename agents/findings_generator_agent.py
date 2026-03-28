@@ -255,8 +255,8 @@ any statistics, numbers, or findings."""
 def create_findings_generator_agent():
     """Factory: return a configured FindingsGeneratorAgent instance.
 
-    Uses LLM_CONFIG_FINAL (gpt-5-mini) for higher-quality interpretation.
-    All other agents in the pipeline use the default LLM_CONFIG (gpt-5-nano).
+    Uses LLM_CONFIG_FINAL (gpt-5) for higher-quality interpretation.
+    All other agents in the pipeline use the default LLM_CONFIG (gpt-5-mini).
     """
     return make_agent(
         name="FindingsGeneratorAgent",
