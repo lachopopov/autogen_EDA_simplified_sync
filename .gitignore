@@ -59,6 +59,9 @@ Thumbs.db
 # Copilot & Planning (Keep .github/workflows/)
 .github/copilot/
 
+#Claude code
+.claude/
+
 # Generated Outputs (regenerated on each run)
 outputs/
 !outputs/.gitkeep
