@@ -72,6 +72,9 @@ outputs/
 autogen_chatgpt_conversations/
 ARCHIVED_*.md
 
+# Archive old Copilot .md files
+/archive/
+
 # Markdown Files (Keep only README.md)
 *.md
 !README.md
