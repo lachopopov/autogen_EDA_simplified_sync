@@ -5,7 +5,7 @@ Architecture Reference: architecture.md § 4.7, § 5.1, § 12.1, § 12.6
 
 Role: Generate the final EDA report files (PDF + Markdown + optional IPYNB).
 Tools: render_pdf(), render_markdown(), render_ipynb()
-Output: outputs/report.pdf, outputs/report.md, optionally outputs/report.ipynb
+Output: report.pdf, report.md, optionally report.ipynb to the session directory
 
 This is the ONLY agent authorized to emit TERMINATE (architecture.md § 5.1).
 All other agents explicitly suppress TERMINATE in their system messages.
@@ -43,12 +43,12 @@ def _build_system_message(ipynb_enabled: bool) -> str:
     """
     parts = [
         "Generate the final EDA report files.",
-        'Use render_pdf(findings_json=..., output_dir="outputs/") — always pass output_dir="outputs/" exactly.',
-        'Use render_markdown(findings_json=..., output_dir="outputs/") — always call this unconditionally alongside render_pdf().',
+        'Use render_pdf(findings_json=...).',
+        'Use render_markdown(findings_json=...) — always call this unconditionally alongside render_pdf().',
     ]
     if ipynb_enabled:
         parts.append(
-            'Use render_ipynb(findings_json=..., output_dir="outputs/") '
+            'Use render_ipynb(findings_json=...) '
             "to also export the report as a Jupyter notebook."
         )
     parts += [
@@ -109,7 +109,7 @@ def register_report_exporter_tools(agent, user_proxy: UserProxyAgent) -> None:
     agent.register_for_llm(
         description=(
             "Render EDA findings as a PDF report. Accepts Findings JSON "
-            "from assemble_findings() and output directory path. "
+            "from assemble_findings(). "
             "Returns the path to the generated PDF file."
         )
     )(user_proxy.register_for_execution()(render_pdf))
@@ -118,7 +118,7 @@ def register_report_exporter_tools(agent, user_proxy: UserProxyAgent) -> None:
     agent.register_for_llm(
         description=(
             "Render EDA findings as a plain Markdown report (.md). Accepts "
-            "Findings JSON from assemble_findings() and output directory path. "
+            "Findings JSON from assemble_findings(). "
             "Always call this unconditionally — Markdown is the LLM-readable output. "
             "Returns the path to the generated report.md file."
         )
@@ -137,7 +137,7 @@ def register_report_exporter_tools(agent, user_proxy: UserProxyAgent) -> None:
         agent.register_for_llm(
             description=(
                 "Render EDA findings as a Jupyter notebook (.ipynb). Accepts "
-                "Findings JSON from assemble_findings() and output directory path. "
+                "Findings JSON from assemble_findings(). "
                 "Returns the path to the generated IPYNB file."
             )
         )(user_proxy.register_for_execution()(render_ipynb))

@@ -55,6 +55,18 @@ def missing_json():
     })
 
 
+
+@pytest.fixture(autouse=True)
+def mock_plots_dir(monkeypatch, tmp_path):
+    import config
+    # Make sure get_plots_dir points to tmp_path / "plots" unconditionally
+    def mock_get_plots(*args, **kwargs):
+        from pathlib import Path
+        d = tmp_path / "plots"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    monkeypatch.setattr(config, "get_plots_dir", mock_get_plots)
+
 @pytest.fixture()
 def plots_dir(tmp_path):
     """A temporary directory for plot output."""
@@ -68,64 +80,68 @@ def plots_dir(tmp_path):
 class TestPlotHistograms:
     """Test plot_histograms() function."""
 
-    def test_returns_json_list(self, simple_df_json, plots_dir):
-        result = plot_histograms(simple_df_json, plots_dir)
+    def test_returns_json_list(self, simple_df_json):
+        result = plot_histograms(simple_df_json)
         paths = json.loads(result)
         assert isinstance(paths, list)
 
-    def test_creates_png_per_numerical_column(self, simple_df_json, plots_dir):
-        result = plot_histograms(simple_df_json, plots_dir)
+    def test_creates_png_per_numerical_column(self, simple_df_json):
+        result = plot_histograms(simple_df_json)
         paths = json.loads(result)
         # 2 numerical columns: num_a, num_b
         assert len(paths) == 2
 
-    def test_files_exist_on_disk(self, simple_df_json, plots_dir):
-        result = plot_histograms(simple_df_json, plots_dir)
+    def test_files_exist_on_disk(self, simple_df_json):
+        result = plot_histograms(simple_df_json)
         paths = json.loads(result)
         for p in paths:
             assert Path(p).exists(), f"File not found: {p}"
 
-    def test_file_names(self, simple_df_json, plots_dir):
-        result = plot_histograms(simple_df_json, plots_dir)
+    def test_file_names(self, simple_df_json):
+        result = plot_histograms(simple_df_json)
         paths = json.loads(result)
         names = {Path(p).name for p in paths}
         assert "hist_num_a.png" in names
         assert "hist_num_b.png" in names
 
-    def test_files_are_png(self, simple_df_json, plots_dir):
-        result = plot_histograms(simple_df_json, plots_dir)
+    def test_files_are_png(self, simple_df_json):
+        result = plot_histograms(simple_df_json)
         paths = json.loads(result)
         for p in paths:
             assert Path(p).suffix == ".png"
 
-    def test_files_nonzero_size(self, simple_df_json, plots_dir):
-        result = plot_histograms(simple_df_json, plots_dir)
+    def test_files_nonzero_size(self, simple_df_json):
+        result = plot_histograms(simple_df_json)
         paths = json.loads(result)
         for p in paths:
             assert Path(p).stat().st_size > 0
 
-    def test_categorical_only_returns_empty(self, plots_dir):
+    def test_categorical_only_returns_empty(self):
         df = pd.DataFrame({"x": ["a", "b"], "y": ["c", "d"]})
-        result = plot_histograms(df.to_json(orient="records"), plots_dir)
+        result = plot_histograms(df.to_json(orient="records"))
         paths = json.loads(result)
         assert paths == []
 
-    def test_empty_dataframe_returns_empty(self, plots_dir):
-        result = plot_histograms("[]", plots_dir)
+    def test_empty_dataframe_returns_empty(self):
+        result = plot_histograms("[]")
         paths = json.loads(result)
         assert paths == []
 
-    def test_creates_output_dir(self, simple_df_json, tmp_path):
+    def test_creates_output_dir(self, monkeypatch, simple_df_json, tmp_path):
         nested = str(tmp_path / "a" / "b" / "c")
-        result = plot_histograms(simple_df_json, nested)
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        result = plot_histograms(simple_df_json)
         paths = json.loads(result)
         assert len(paths) == 2
-        assert Path(nested).is_dir()
+        assert Path().is_dir()
 
-    def test_with_missing_values(self, plots_dir):
+    def test_with_missing_values(self):
         """Histograms should handle NaN values (dropna before plotting)."""
         df = pd.DataFrame({"val": [1.0, None, 3.0, None, 5.0]})
-        result = plot_histograms(df.to_json(orient="records"), plots_dir)
+        result = plot_histograms(df.to_json(orient="records"))
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
@@ -138,69 +154,73 @@ class TestPlotHistograms:
 class TestPlotCorrelationHeatmap:
     """Test plot_correlation_heatmap() function."""
 
-    def test_returns_json_list(self, correlation_json, plots_dir):
-        result = plot_correlation_heatmap(correlation_json, plots_dir)
+    def test_returns_json_list(self, correlation_json):
+        result = plot_correlation_heatmap(correlation_json)
         paths = json.loads(result)
         assert isinstance(paths, list)
 
-    def test_creates_one_png(self, correlation_json, plots_dir):
-        result = plot_correlation_heatmap(correlation_json, plots_dir)
+    def test_creates_one_png(self, correlation_json):
+        result = plot_correlation_heatmap(correlation_json)
         paths = json.loads(result)
         assert len(paths) == 1
 
-    def test_file_exists_on_disk(self, correlation_json, plots_dir):
-        result = plot_correlation_heatmap(correlation_json, plots_dir)
+    def test_file_exists_on_disk(self, correlation_json):
+        result = plot_correlation_heatmap(correlation_json)
         paths = json.loads(result)
         assert Path(paths[0]).exists()
 
-    def test_file_name(self, correlation_json, plots_dir):
-        result = plot_correlation_heatmap(correlation_json, plots_dir)
+    def test_file_name(self, correlation_json):
+        result = plot_correlation_heatmap(correlation_json)
         paths = json.loads(result)
         assert Path(paths[0]).name == "correlation_heatmap.png"
 
-    def test_file_nonzero_size(self, correlation_json, plots_dir):
-        result = plot_correlation_heatmap(correlation_json, plots_dir)
+    def test_file_nonzero_size(self, correlation_json):
+        result = plot_correlation_heatmap(correlation_json)
         paths = json.loads(result)
         assert Path(paths[0]).stat().st_size > 0
 
-    def test_empty_correlation_returns_empty(self, plots_dir):
-        result = plot_correlation_heatmap(json.dumps({}), plots_dir)
+    def test_empty_correlation_returns_empty(self):
+        result = plot_correlation_heatmap(json.dumps({}))
         paths = json.loads(result)
         assert paths == []
 
-    def test_creates_output_dir(self, correlation_json, tmp_path):
+    def test_creates_output_dir(self, monkeypatch, correlation_json, tmp_path):
         nested = str(tmp_path / "deep" / "dir")
-        result = plot_correlation_heatmap(correlation_json, nested)
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        result = plot_correlation_heatmap(correlation_json)
         paths = json.loads(result)
         assert len(paths) == 1
-        assert Path(nested).is_dir()
+        assert Path().is_dir()
 
-    def test_single_column_correlation(self, plots_dir):
+    def test_single_column_correlation(self):
         """1×1 correlation matrix (single numerical column)."""
         corr = json.dumps({"val": {"val": 1.0}})
-        result = plot_correlation_heatmap(corr, plots_dir)
+        result = plot_correlation_heatmap(corr)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_null_values_coerced_to_float(self, plots_dir):
+    def test_null_values_coerced_to_float(self):
         """Correlation matrix with null values (NaN from JSON round-trip) must not crash."""
         corr = json.dumps({
             "a": {"a": 1.0, "b": None},
             "b": {"a": None, "b": 1.0},
         })
-        result = plot_correlation_heatmap(corr, plots_dir)
+        result = plot_correlation_heatmap(corr)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_string_values_coerced_to_nan(self, plots_dir):
+    def test_string_values_coerced_to_nan(self):
         """Correlation values that are strings should be coerced, not crash."""
         corr = json.dumps({
             "x": {"x": "1.0", "y": "0.5"},
             "y": {"x": "0.5", "y": "1.0"},
         })
-        result = plot_correlation_heatmap(corr, plots_dir)
+        result = plot_correlation_heatmap(corr)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
@@ -213,54 +233,56 @@ class TestPlotCorrelationHeatmap:
 class TestPlotMissingHeatmap:
     """Test plot_missing_heatmap() function."""
 
-    def test_returns_json_list(self, missing_json, plots_dir):
-        result = plot_missing_heatmap(missing_json, plots_dir)
+    def test_returns_json_list(self, missing_json):
+        result = plot_missing_heatmap(missing_json)
         paths = json.loads(result)
         assert isinstance(paths, list)
 
-    def test_creates_one_png(self, missing_json, plots_dir):
-        result = plot_missing_heatmap(missing_json, plots_dir)
+    def test_creates_one_png(self, missing_json):
+        result = plot_missing_heatmap(missing_json)
         paths = json.loads(result)
         assert len(paths) == 1
 
-    def test_file_exists_on_disk(self, missing_json, plots_dir):
-        result = plot_missing_heatmap(missing_json, plots_dir)
+    def test_file_exists_on_disk(self, missing_json):
+        result = plot_missing_heatmap(missing_json)
         paths = json.loads(result)
         assert Path(paths[0]).exists()
 
-    def test_file_name(self, missing_json, plots_dir):
-        result = plot_missing_heatmap(missing_json, plots_dir)
+    def test_file_name(self, missing_json):
+        result = plot_missing_heatmap(missing_json)
         paths = json.loads(result)
         assert Path(paths[0]).name == "missing_heatmap.png"
 
-    def test_file_nonzero_size(self, missing_json, plots_dir):
-        result = plot_missing_heatmap(missing_json, plots_dir)
+    def test_file_nonzero_size(self, missing_json):
+        result = plot_missing_heatmap(missing_json)
         paths = json.loads(result)
         assert Path(paths[0]).stat().st_size > 0
 
-    def test_empty_per_column_returns_empty(self, plots_dir):
+    def test_empty_per_column_returns_empty(self):
         result = plot_missing_heatmap(
-            json.dumps({"per_column": {}, "total_pct": 0.0}), plots_dir
-        )
+            json.dumps({"per_column": {}, "total_pct": 0.0}))
         paths = json.loads(result)
         assert paths == []
 
-    def test_all_zero_missing_still_creates_chart(self, plots_dir):
+    def test_all_zero_missing_still_creates_chart(self):
         """Even when no columns have missing data, the chart is produced."""
         result = plot_missing_heatmap(
             json.dumps({"per_column": {"a": 0.0, "b": 0.0}, "total_pct": 0.0}),
-            plots_dir,
         )
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_creates_output_dir(self, missing_json, tmp_path):
+    def test_creates_output_dir(self, monkeypatch, missing_json, tmp_path):
         nested = str(tmp_path / "x" / "y")
-        result = plot_missing_heatmap(missing_json, nested)
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        result = plot_missing_heatmap(missing_json)
         paths = json.loads(result)
         assert len(paths) == 1
-        assert Path(nested).is_dir()
+        assert Path().is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -310,40 +332,40 @@ class TestEndToEnd:
         df.to_csv(p, index=False)
         return str(p)
 
-    def test_load_then_histograms(self, csv_path, plots_dir):
+    def test_load_then_histograms(self, csv_path):
         from tools.data_loader import load_data
 
         data_json = load_data(csv_path)
-        result = plot_histograms(data_json, plots_dir)
+        result = plot_histograms(data_json)
         paths = json.loads(result)
         # 2 numerical columns: age, salary
         assert len(paths) == 2
         for p in paths:
             assert Path(p).exists()
 
-    def test_load_then_correlation_heatmap(self, csv_path, plots_dir):
+    def test_load_then_correlation_heatmap(self, csv_path):
         from tools.data_loader import load_data
         from tools.eda_tools import correlation_matrix
 
         data_json = load_data(csv_path)
         corr_json = correlation_matrix(data_json)
-        result = plot_correlation_heatmap(corr_json, plots_dir)
+        result = plot_correlation_heatmap(corr_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_load_then_missing_heatmap(self, csv_path, plots_dir):
+    def test_load_then_missing_heatmap(self, csv_path):
         from tools.data_loader import load_data
         from tools.eda_tools import missing_analysis
 
         data_json = load_data(csv_path)
         missing_json = missing_analysis(data_json)
-        result = plot_missing_heatmap(missing_json, plots_dir)
+        result = plot_missing_heatmap(missing_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_full_visualization_pipeline(self, csv_path, plots_dir):
+    def test_full_visualization_pipeline(self, csv_path):
         """End-to-end: load → EDA → all 3 visualization tools."""
         from tools.data_loader import load_data
         from tools.eda_tools import correlation_matrix, missing_analysis
@@ -352,9 +374,9 @@ class TestEndToEnd:
         corr_json = correlation_matrix(data_json)
         miss_json = missing_analysis(data_json)
 
-        hist_paths = json.loads(plot_histograms(data_json, plots_dir))
-        corr_paths = json.loads(plot_correlation_heatmap(corr_json, plots_dir))
-        miss_paths = json.loads(plot_missing_heatmap(miss_json, plots_dir))
+        hist_paths = json.loads(plot_histograms(data_json))
+        corr_paths = json.loads(plot_correlation_heatmap(corr_json))
+        miss_paths = json.loads(plot_missing_heatmap(miss_json))
 
         all_paths = hist_paths + corr_paths + miss_paths
         assert len(all_paths) == 4  # 2 histograms + 1 corr + 1 missing
@@ -417,47 +439,51 @@ class TestPlotClassDistribution:
             detection_method="none",
         ).model_dump_json()
 
-    def test_classification_creates_png(self, classification_df_json, classification_ti_json, plots_dir):
-        result = plot_class_distribution(classification_ti_json, plots_dir, data_json=classification_df_json)
+    def test_classification_creates_png(self, classification_df_json, classification_ti_json):
+        result = plot_class_distribution(classification_ti_json, data_json=classification_df_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
         assert Path(paths[0]).name == "class_distribution.png"
 
-    def test_classification_file_nonzero(self, classification_df_json, classification_ti_json, plots_dir):
-        result = plot_class_distribution(classification_ti_json, plots_dir, data_json=classification_df_json)
+    def test_classification_file_nonzero(self, classification_df_json, classification_ti_json):
+        result = plot_class_distribution(classification_ti_json, data_json=classification_df_json)
         paths = json.loads(result)
         assert Path(paths[0]).stat().st_size > 0
 
-    def test_regression_creates_png(self, regression_df_json, regression_ti_json, plots_dir):
-        result = plot_class_distribution(regression_ti_json, plots_dir, data_json=regression_df_json)
+    def test_regression_creates_png(self, regression_df_json, regression_ti_json):
+        result = plot_class_distribution(regression_ti_json, data_json=regression_df_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
         assert Path(paths[0]).name == "target_distribution.png"
 
-    def test_unsupervised_returns_empty(self, classification_df_json, unsupervised_ti_json, plots_dir):
-        result = plot_class_distribution(unsupervised_ti_json, plots_dir, data_json=classification_df_json)
+    def test_unsupervised_returns_empty(self, classification_df_json, unsupervised_ti_json):
+        result = plot_class_distribution(unsupervised_ti_json, data_json=classification_df_json)
         paths = json.loads(result)
         assert paths == []
 
-    def test_missing_column_returns_empty(self, classification_df_json, plots_dir):
+    def test_missing_column_returns_empty(self, classification_df_json):
         from eda_state import TargetInfo
         ti = TargetInfo(
             column="nonexistent",
             problem_type="classification",
             detection_method="name_heuristic",
         ).model_dump_json()
-        result = plot_class_distribution(ti, plots_dir, data_json=classification_df_json)
+        result = plot_class_distribution(ti, data_json=classification_df_json)
         paths = json.loads(result)
         assert paths == []
 
-    def test_creates_output_dir(self, classification_df_json, classification_ti_json, tmp_path):
+    def test_creates_output_dir(self, monkeypatch, classification_df_json, classification_ti_json, tmp_path):
         new_dir = str(tmp_path / "new" / "plots")
-        result = plot_class_distribution(classification_ti_json, new_dir, data_json=classification_df_json)
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        result = plot_class_distribution(classification_ti_json, data_json=classification_df_json)
         paths = json.loads(result)
         assert len(paths) == 1
-        assert Path(new_dir).is_dir()
+        assert Path().is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -509,29 +535,29 @@ class TestPlotCategoricalBars:
         from eda_state import CategoricalAnalysis
         return CategoricalAnalysis(columns={}, top_n=10).model_dump_json()
 
-    def test_returns_json_list(self, simple_cat_json, plots_dir):
-        result = plot_categorical_bars(simple_cat_json, plots_dir)
+    def test_returns_json_list(self, simple_cat_json):
+        result = plot_categorical_bars(simple_cat_json)
         paths = json.loads(result)
         assert isinstance(paths, list)
 
-    def test_creates_one_png_per_column(self, two_col_cat_json, plots_dir):
-        result = plot_categorical_bars(two_col_cat_json, plots_dir)
+    def test_creates_one_png_per_column(self, two_col_cat_json):
+        result = plot_categorical_bars(two_col_cat_json)
         paths = json.loads(result)
         assert len(paths) == 2
 
-    def test_files_exist_on_disk(self, two_col_cat_json, plots_dir):
-        result = plot_categorical_bars(two_col_cat_json, plots_dir)
+    def test_files_exist_on_disk(self, two_col_cat_json):
+        result = plot_categorical_bars(two_col_cat_json)
         paths = json.loads(result)
         for p in paths:
             assert Path(p).exists(), f"File not found: {p}"
 
-    def test_filename_prefix_is_cat(self, simple_cat_json, plots_dir):
-        result = plot_categorical_bars(simple_cat_json, plots_dir)
+    def test_filename_prefix_is_cat(self, simple_cat_json):
+        result = plot_categorical_bars(simple_cat_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).name == "cat_dept.png"
 
-    def test_filename_sanitizes_spaces(self, plots_dir):
+    def test_filename_sanitizes_spaces(self):
         """Column name with spaces → underscores in filename."""
         cat_json = self._make_cat_analysis_json({
             "status code": [
@@ -539,54 +565,54 @@ class TestPlotCategoricalBars:
                 {"value": "404", "count": 10, "pct": 10.0, "is_rare": False},
             ],
         })
-        result = plot_categorical_bars(cat_json, plots_dir)
+        result = plot_categorical_bars(cat_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).name == "cat_status_code.png"
 
-    def test_filename_sanitizes_special_chars(self, plots_dir):
+    def test_filename_sanitizes_special_chars(self):
         """Column with special characters → sanitized filename."""
         cat_json = self._make_cat_analysis_json({
             "col/type:raw": [
                 {"value": "a", "count": 100, "pct": 100.0, "is_rare": False},
             ],
         })
-        result = plot_categorical_bars(cat_json, plots_dir)
+        result = plot_categorical_bars(cat_json)
         paths = json.loads(result)
         assert len(paths) == 1
         fname = Path(paths[0]).name
         assert "/" not in fname and ":" not in fname
         assert fname.startswith("cat_")
 
-    def test_files_are_png(self, simple_cat_json, plots_dir):
-        result = plot_categorical_bars(simple_cat_json, plots_dir)
+    def test_files_are_png(self, simple_cat_json):
+        result = plot_categorical_bars(simple_cat_json)
         paths = json.loads(result)
         for p in paths:
             assert Path(p).suffix == ".png"
 
-    def test_files_nonzero_size(self, simple_cat_json, plots_dir):
-        result = plot_categorical_bars(simple_cat_json, plots_dir)
+    def test_files_nonzero_size(self, simple_cat_json):
+        result = plot_categorical_bars(simple_cat_json)
         paths = json.loads(result)
         for p in paths:
             assert Path(p).stat().st_size > 0
 
-    def test_empty_columns_returns_empty_list(self, empty_cat_json, plots_dir):
-        result = plot_categorical_bars(empty_cat_json, plots_dir)
+    def test_empty_columns_returns_empty_list(self, empty_cat_json):
+        result = plot_categorical_bars(empty_cat_json)
         paths = json.loads(result)
         assert paths == []
 
-    def test_column_with_empty_top_values_is_skipped(self, plots_dir):
+    def test_column_with_empty_top_values_is_skipped(self):
         """A column with no top_values entries produces no PNG."""
         from eda_state import CategoricalAnalysis, CategoricalStats
         analysis = CategoricalAnalysis(
             columns={"empty_col": CategoricalStats(cardinality=0, top_values=[])},
             top_n=10,
         )
-        result = plot_categorical_bars(analysis.model_dump_json(), plots_dir)
+        result = plot_categorical_bars(analysis.model_dump_json())
         paths = json.loads(result)
         assert paths == []
 
-    def test_rare_category_flag_does_not_crash(self, plots_dir):
+    def test_rare_category_flag_does_not_crash(self):
         """At least one is_rare=True entry renders without error."""
         cat_json = self._make_cat_analysis_json({
             "rarity_col": [
@@ -594,12 +620,12 @@ class TestPlotCategoricalBars:
                 {"value": "unusual", "count": 3,   "pct": 0.3,  "is_rare": True},
             ],
         })
-        result = plot_categorical_bars(cat_json, plots_dir)
+        result = plot_categorical_bars(cat_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_more_values_annotation_does_not_crash(self, plots_dir):
+    def test_more_values_annotation_does_not_crash(self):
         """more_values > 0 path completes without error."""
         from eda_state import CategoricalAnalysis, CategoricalStats
         analysis = CategoricalAnalysis(
@@ -615,17 +641,21 @@ class TestPlotCategoricalBars:
             },
             top_n=10,
         )
-        result = plot_categorical_bars(analysis.model_dump_json(), plots_dir)
+        result = plot_categorical_bars(analysis.model_dump_json())
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_creates_output_dir(self, simple_cat_json, tmp_path):
+    def test_creates_output_dir(self, monkeypatch, simple_cat_json, tmp_path):
         nested = str(tmp_path / "a" / "b" / "plots")
-        result = plot_categorical_bars(simple_cat_json, nested)
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        import config
+        monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
+        result = plot_categorical_bars(simple_cat_json)
         paths = json.loads(result)
         assert len(paths) == 1
-        assert Path(nested).is_dir()
+        assert Path().is_dir()
 
     def test_end_to_end_via_analyze_categoricals(self, tmp_path):
         """analyze_categoricals() → plot_categorical_bars() full chain."""
@@ -642,7 +672,7 @@ class TestPlotCategoricalBars:
 
         cat_analysis_json = analyze_categoricals(data_json, target_json)
         plots_dir = str(tmp_path / "plots")
-        result = plot_categorical_bars(cat_analysis_json, plots_dir)
+        result = plot_categorical_bars(cat_analysis_json)
         paths = json.loads(result)
         # dept and region are the 2 categorical columns
         assert len(paths) == 2

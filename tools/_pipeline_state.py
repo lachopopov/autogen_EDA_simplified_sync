@@ -39,6 +39,7 @@ import logging
 import shutil
 from pathlib import Path
 from uuid import uuid4
+import contextvars
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +63,22 @@ class PipelineStateError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Module-level session state (see scaling note in module docstring)
+# Context-local session state (thread/async safe for Streamlit)
 # ---------------------------------------------------------------------------
 
-_session_id: str | None = None
+_session_ctx = contextvars.ContextVar[str | None]('_session_ctx', default=None)
 
+
+def get_session_id() -> str | None:
+    """Return the currently active session ID, or None."""
+    return _session_ctx.get()
 
 def _session_dir() -> Path:
     """Return the current session's artifact directory.  Raises if no session."""
-    if _session_id is None:
+    session_id = get_session_id()
+    if session_id is None:
         raise PipelineStateError("No active pipeline session — call init_session() first")
-    return _BASE_STATE_DIR / _session_id
+    return _BASE_STATE_DIR / session_id
 
 
 # ---------------------------------------------------------------------------
@@ -80,41 +86,45 @@ def _session_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
-def init_session() -> str:
+def init_session(session_id: str | None = None) -> str:
     """
-    Create a fresh session directory with a UUID name.
+    Create a fresh session directory with the given ID (or generate a UUID).
+    
+    Sets the context variable ``_session_ctx`` so all subsequent calls in this
+    context target this session.
 
-    Sets the module-global ``_session_id`` so all subsequent
-    ``save_state`` / ``load_state`` / ``resolve`` calls target this session.
-
-    Returns the session ID (UUID hex string).
+    Returns the session ID.
     """
-    global _session_id  # noqa: PLW0603
-    _session_id = uuid4().hex
+    if session_id is None:
+        import datetime
+        now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        session_id = f"{now_str}_{uuid4().hex[:6]}"
+        
+    _session_ctx.set(session_id)
     _session_dir().mkdir(parents=True, exist_ok=True)
-    logger.info("Pipeline session initialized: %s", _session_id)
-    return _session_id
+    logger.info("Pipeline session initialized: %s", session_id)
+    return session_id
 
 
 def clear_session() -> None:
     """
-    Remove the current session directory and reset ``_session_id``.
+    Remove the current session directory and reset ``_session_ctx``.
 
     Idempotent — safe to call even if no session is active or the
     directory was already removed.
     """
-    global _session_id  # noqa: PLW0603
-    if _session_id is not None:
-        path = _BASE_STATE_DIR / _session_id
+    session_id = get_session_id()
+    if session_id is not None:
+        path = _BASE_STATE_DIR / session_id
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
-        logger.info("Pipeline session cleared: %s", _session_id)
-        _session_id = None
+        logger.info("Pipeline session cleared: %s", session_id)
+        _session_ctx.set(None)
 
 
 def is_active() -> bool:
     """Return ``True`` if a pipeline session is currently active."""
-    return _session_id is not None
+    return get_session_id() is not None
 
 
 # ---------------------------------------------------------------------------

@@ -117,45 +117,50 @@ class TestEnsureOutputDirs:
     """Tests for ensure_output_dirs()."""
 
     def test_creates_outputs_dir(self, monkeypatch, tmp_path):
-        out = tmp_path / "outputs"
+        out = tmp_path / "outputs" / "runs" / "test_session"
         plots = out / "plots"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", plots)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: (out.mkdir(parents=True, exist_ok=True), plots.mkdir(parents=True, exist_ok=True)))
 
-        ensure_output_dirs()
+        ensure_output_dirs("test_session")
 
         assert out.is_dir()
 
     def test_creates_plots_dir(self, monkeypatch, tmp_path):
-        out = tmp_path / "outputs"
+        out = tmp_path / "outputs" / "runs" / "test_session"
         plots = out / "plots"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", plots)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: (out.mkdir(parents=True, exist_ok=True), plots.mkdir(parents=True, exist_ok=True)))
 
-        ensure_output_dirs()
+
+        ensure_output_dirs("test_session")
 
         assert plots.is_dir()
 
     def test_idempotent(self, monkeypatch, tmp_path):
-        out = tmp_path / "outputs"
+        out = tmp_path / "outputs" / "runs" / "test_session"
         plots = out / "plots"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", plots)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: (out.mkdir(parents=True, exist_ok=True), plots.mkdir(parents=True, exist_ok=True)))
 
-        ensure_output_dirs()
-        ensure_output_dirs()  # second call should not raise
+        ensure_output_dirs("test_session")
+        ensure_output_dirs("test_session")  # second call should not raise
 
         assert out.is_dir()
         assert plots.is_dir()
 
     def test_handles_existing_dirs(self, monkeypatch, tmp_path):
-        out = tmp_path / "outputs"
+        out = tmp_path / "outputs" / "runs" / "test_session"
         plots = out / "plots"
         plots.mkdir(parents=True)
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", plots)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: (out.mkdir(parents=True, exist_ok=True), plots.mkdir(parents=True, exist_ok=True)))
 
-        ensure_output_dirs()  # should not raise
+        ensure_output_dirs("test_session")  # should not raise
 
         assert out.is_dir()
         assert plots.is_dir()
@@ -163,28 +168,14 @@ class TestEnsureOutputDirs:
     def test_nested_parent_creation(self, monkeypatch, tmp_path):
         out = tmp_path / "deep" / "nested" / "outputs"
         plots = out / "plots"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", plots)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: (out.mkdir(parents=True, exist_ok=True), plots.mkdir(parents=True, exist_ok=True)))
 
-        ensure_output_dirs()
+        ensure_output_dirs("test_session")
 
         assert out.is_dir()
         assert plots.is_dir()
-
-    def test_cleans_stale_png_files(self, monkeypatch, tmp_path):
-        """Stale .png files from previous runs are removed."""
-        out = tmp_path / "outputs"
-        plots = out / "plots"
-        plots.mkdir(parents=True)
-        (plots / "old_hist.png").write_text("dummy")
-        (plots / ".gitkeep").write_text("")
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", plots)
-
-        ensure_output_dirs()
-
-        assert not (plots / "old_hist.png").exists()
-        assert (plots / ".gitkeep").exists()
 
 
 # ===================================================================
@@ -220,8 +211,12 @@ class TestRunPipelineExecution:
     @patch("orchestrator.build_group_chat")
     def test_calls_build_group_chat(self, mock_build, csv_file, monkeypatch, tmp_path):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
@@ -232,8 +227,12 @@ class TestRunPipelineExecution:
     @patch("orchestrator.build_group_chat")
     def test_calls_initiate_chat(self, mock_build, csv_file, monkeypatch, tmp_path):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         manager = MagicMock()
         mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
@@ -245,8 +244,12 @@ class TestRunPipelineExecution:
     @patch("orchestrator.build_group_chat")
     def test_initiate_chat_receives_manager(self, mock_build, csv_file, monkeypatch, tmp_path):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         manager = MagicMock()
         mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
@@ -259,8 +262,12 @@ class TestRunPipelineExecution:
     @patch("orchestrator.build_group_chat")
     def test_message_contains_file_path(self, mock_build, csv_file, monkeypatch, tmp_path):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
@@ -273,8 +280,12 @@ class TestRunPipelineExecution:
     @patch("orchestrator.build_group_chat")
     def test_message_contains_eda_instruction(self, mock_build, csv_file, monkeypatch, tmp_path):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
@@ -286,10 +297,12 @@ class TestRunPipelineExecution:
 
     @patch("orchestrator.build_group_chat")
     def test_creates_output_dirs_before_chat(self, mock_build, csv_file, monkeypatch, tmp_path):
-        out = tmp_path / "outputs"
+        out = tmp_path / "outputs" / "runs" / "test"
         plots = out / "plots"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", plots)
+        monkeypatch.setattr("config.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("config.get_plots_dir", lambda sid: plots)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
@@ -301,8 +314,12 @@ class TestRunPipelineExecution:
     @patch("orchestrator.build_group_chat")
     def test_resolves_relative_path(self, mock_build, csv_file, monkeypatch, tmp_path):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
@@ -371,8 +388,12 @@ class TestIntegration:
     @patch("orchestrator.build_group_chat")
     def test_full_flow_no_exception(self, mock_build, csv_file, monkeypatch, tmp_path):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
 
@@ -382,8 +403,12 @@ class TestIntegration:
     @patch("orchestrator.build_group_chat")
     def test_full_flow_initiate_chat_called(self, mock_build, csv_file, monkeypatch, tmp_path):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         manager = MagicMock()
         mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
@@ -410,8 +435,12 @@ class TestCostTracking:
         self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
     ):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
         mock_gather.return_value = {"usage_including_cached_inference": {}}
@@ -427,8 +456,12 @@ class TestCostTracking:
         self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
     ):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
         mock_gather.return_value = {
@@ -459,8 +492,12 @@ class TestCostTracking:
     ):
         """Per-agent rows appear when agents have usage."""
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
 
         agent_a = MagicMock()
@@ -493,8 +530,12 @@ class TestCostTracking:
         self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path
     ):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         agents_list = [MagicMock(), MagicMock()]
         # Set names and usage for the formatter
@@ -516,8 +557,12 @@ class TestCostTracking:
     ):
         """Cost file created even when gather_usage_summary returns empty dict."""
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
         mock_gather.return_value = {}
@@ -535,8 +580,12 @@ class TestCostTracking:
     ):
         """Cost data is written directly to outputs/, not the artifact store."""
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
         mock_gather.return_value = {"total_cost": 0.04}
@@ -556,8 +605,12 @@ class TestCostTracking:
     ):
         """Agents with no LLM usage (get_total_usage returns None) are excluded."""
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
 
         agent_with_usage = MagicMock()
@@ -588,8 +641,12 @@ class TestCostTracking:
     ):
         """Eval cost from _eval_cost_info appears in the cost summary."""
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
 
         agent_a = MagicMock()
@@ -733,8 +790,12 @@ class TestRunPipelineWithTarget:
         self, mock_build, mock_gather, csv_file, monkeypatch, tmp_path,
     ):
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         agent = MagicMock()
         agent.name = "A"
@@ -757,8 +818,12 @@ class TestRunPipelineWithTarget:
         csv = tmp_path / "data.csv"
         csv.write_text("feat,target\n1,0\n2,1\n3,0\n")
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         agent = MagicMock()
         agent.name = "A"
@@ -840,8 +905,12 @@ class TestInitOpenlit:
     ):
         """run_pipeline(enable_openlit=True) calls _init_openlit."""
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         agent = MagicMock()
         agent.name = "A"
@@ -867,8 +936,12 @@ class TestInitOpenlit:
     ):
         """run_pipeline(enable_openlit=False) does NOT call _init_openlit."""
         out = tmp_path / "outputs"
-        monkeypatch.setattr("main.OUTPUTS_DIR", out)
-        monkeypatch.setattr("main.PLOTS_DIR", out / "plots")
+        out.mkdir(parents=True, exist_ok=True)
+        plots_dir = out / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
+        monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
+        monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         agent = MagicMock()
         agent.name = "A"

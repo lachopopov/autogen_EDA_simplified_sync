@@ -64,8 +64,50 @@ LLM_CONFIG: dict = (
 
 # --- Project paths ---
 PROJECT_ROOT = Path(__file__).resolve().parent
-OUTPUTS_DIR = PROJECT_ROOT / "outputs"
-PLOTS_DIR = OUTPUTS_DIR / "plots"
+GLOBAL_OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+RUNS_DIR = GLOBAL_OUTPUTS_DIR / "runs"
+
+import datetime
+import shutil
+import logging
+
+logger = logging.getLogger(__name__)
+
+def get_outputs_dir(session_id: str | None = None) -> Path:
+    """Return the output directory for a given session, or the global outputs dir."""
+    if session_id:
+        return RUNS_DIR / session_id
+    return GLOBAL_OUTPUTS_DIR
+
+def get_plots_dir(session_id: str | None = None) -> Path:
+    """Return the plots directory for a given session."""
+    return get_outputs_dir(session_id) / "plots"
+
+def cleanup_old_runs(hours: int = 24) -> None:
+    """Remove run directories older than the specified number of hours."""
+    if not RUNS_DIR.exists():
+        return
+    now = datetime.datetime.now()
+    cutoff = now - datetime.timedelta(hours=hours)
+    
+    for run_dir in RUNS_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+        try:
+            folder_time = datetime.datetime.fromtimestamp(run_dir.stat().st_mtime)
+            if folder_time < cutoff:
+                shutil.rmtree(run_dir, ignore_errors=True)
+                logger.info(f"Cleaned up old run directory: {run_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup {run_dir}: {e}")
+
+def ensure_run_dirs(session_id: str) -> None:
+    """Ensure the necessary output directories exist for the session and perform cleanup."""
+    cleanup_old_runs(hours=24)
+    out_dir = get_outputs_dir(session_id)
+    plots_dir = get_plots_dir(session_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
 
 # --- Feature toggles ---
 IPYNB_EXPORT: bool = os.getenv("IPYNB_EXPORT", "false").lower() == "true"

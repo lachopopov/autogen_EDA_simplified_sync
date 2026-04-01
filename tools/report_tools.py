@@ -4,8 +4,8 @@ tools/report_tools.py — Template Method pattern for report rendering.
 Architecture Reference: architecture.md § 4.7, § 12.5
 
 Public AG2-facing functions:
-  - render_pdf(findings_json, output_dir) -> str
-  - render_ipynb(findings_json, output_dir) -> str
+  - render_pdf(findings_json) -> str
+  - render_ipynb(findings_json) -> str
 
 Design:
   - Template Method: ReportRenderer ABC
@@ -36,9 +36,9 @@ Report structure (Option A — plots inline in parent sections):
     - plot_commentaries:  per-plot 3-lens commentary from LLM
 
 Public AG2-facing functions (complete list):
-  - render_pdf(findings_json, output_dir)      -> str  (always produced)
-  - render_markdown(findings_json, output_dir) -> str  (always produced, LLM-readable)
-  - render_ipynb(findings_json, output_dir)    -> str  (optional, IPYNB_EXPORT=true)
+  - render_pdf(findings_json)      -> str  (always produced)
+  - render_markdown(findings_json) -> str  (always produced, LLM-readable)
+  - render_ipynb(findings_json)    -> str  (optional, IPYNB_EXPORT=true)
 """
 
 from __future__ import annotations
@@ -47,6 +47,8 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
+from config import get_outputs_dir
+from tools import _pipeline_state
 from typing import Annotated, Any
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -493,10 +495,6 @@ def render_pdf(
         str,
         "JSON string of Findings from assemble_findings()",
     ],
-    output_dir: Annotated[
-        str,
-        "Output directory path — must be exactly 'outputs/' (report.pdf is created inside it)",
-    ],
 ) -> str:
     """
     AG2 tool entry point. Renders Findings as a PDF report.
@@ -514,7 +512,7 @@ def render_pdf(
 
     findings = json.loads(findings_json)
     plot_paths = _extract_plot_paths(findings)
-    output_path = str(Path(output_dir) / "report.pdf")
+    output_path = str(get_outputs_dir(_pipeline_state.get_session_id()) / "report.pdf")
 
     result = PDFRenderer().render(findings, plot_paths, output_path)
 
@@ -531,10 +529,6 @@ def render_ipynb(
     findings_json: Annotated[
         str,
         "JSON string of Findings from assemble_findings()",
-    ],
-    output_dir: Annotated[
-        str,
-        "Output directory path — must be exactly 'outputs/' (report.ipynb is created inside it)",
     ],
 ) -> str:
     """
@@ -555,7 +549,7 @@ def render_ipynb(
 
     findings = json.loads(findings_json)
     plot_paths = _extract_plot_paths(findings)
-    output_path = str(Path(output_dir) / "report.ipynb")
+    output_path = str(get_outputs_dir(_pipeline_state.get_session_id()) / "report.ipynb")
 
     result = IPYNBRenderer().render(findings, plot_paths, output_path)
 
@@ -572,10 +566,6 @@ def render_markdown(
     findings_json: Annotated[
         str,
         "JSON string of Findings from assemble_findings()",
-    ],
-    output_dir: Annotated[
-        str,
-        "Output directory path — must be exactly 'outputs/' (report.md is created inside it)",
     ],
 ) -> str:
     """
@@ -598,7 +588,7 @@ def render_markdown(
 
     findings = json.loads(findings_json)
     plot_paths = _extract_plot_paths(findings)
-    output_path = str(Path(output_dir) / "report.md")
+    output_path = str(get_outputs_dir(_pipeline_state.get_session_id()) / "report.md")
 
     result = MarkdownRenderer().render(findings, plot_paths, output_path)
 

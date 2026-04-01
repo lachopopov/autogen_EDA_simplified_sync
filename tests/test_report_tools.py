@@ -120,6 +120,18 @@ def output_dir(tmp_path) -> Path:
     return d
 
 
+
+
+@pytest.fixture()
+def mock_report_output_dir(monkeypatch, output_dir):
+    """Mock path resolution so AG2 render_*() tools write to tmp output_dir."""
+    monkeypatch.setattr(
+        "tools.report_tools.get_outputs_dir",
+        lambda session_id=None: output_dir,
+    )
+    return output_dir
+
+
 def _minimal_png() -> bytes:
     """Return bytes for a minimal valid 1×1 red PNG."""
     import struct
@@ -461,7 +473,7 @@ class TestExpertCommentaryPDF:
         # Enriched PDF should be larger due to commentary text
         assert Path(enriched_path).stat().st_size > Path(plain_path).stat().st_size
 
-    def test_inline_plots_render(self, output_dir, tmp_path):
+    def test_inline_plots_render(self, tmp_path, output_dir):
         """Plots in section plot_paths are rendered inline (not in separate block)."""
         plots_dir = tmp_path / "p"
         plots_dir.mkdir()
@@ -479,7 +491,7 @@ class TestExpertCommentaryPDF:
         PDFRenderer().render(findings, [], path)
         assert Path(path).stat().st_size > 100
 
-    def test_per_plot_commentary_renders(self, output_dir, tmp_path):
+    def test_per_plot_commentary_renders(self, tmp_path, output_dir):
         """Per-plot commentary beneath images doesn't crash and produces PDF."""
         plots_dir = tmp_path / "p"
         plots_dir.mkdir()
@@ -524,7 +536,7 @@ class TestExpertCommentaryIPYNB:
         all_src = " ".join(c.source for c in nb.cells)
         assert "Statistical Perspective" in all_src
 
-    def test_inline_plots_in_notebook(self, output_dir, tmp_path):
+    def test_inline_plots_in_notebook(self, tmp_path, output_dir):
         """Section-level plot_paths produce separate image cells."""
         plots_dir = tmp_path / "p"
         plots_dir.mkdir()
@@ -547,7 +559,7 @@ class TestExpertCommentaryIPYNB:
         assert "![" in all_src
         assert str(img) in all_src
 
-    def test_per_plot_commentary_in_notebook(self, output_dir, tmp_path):
+    def test_per_plot_commentary_in_notebook(self, tmp_path, output_dir):
         """Per-plot 3-lens commentary appears in plot cells."""
         plots_dir = tmp_path / "p"
         plots_dir.mkdir()
@@ -575,7 +587,7 @@ class TestExpertCommentaryIPYNB:
         assert "Transform needed." in all_src
         assert "Concentration risk." in all_src
 
-    def test_multiple_sections_with_different_plots(self, output_dir, tmp_path):
+    def test_multiple_sections_with_different_plots(self, tmp_path, output_dir):
         """Different sections get their own plot cells."""
         plots_dir = tmp_path / "p"
         plots_dir.mkdir()
@@ -613,40 +625,44 @@ class TestExpertCommentaryIPYNB:
 class TestRenderPdf:
     """Test the render_pdf AG2 entry point."""
 
-    def test_returns_path_string(self, findings_json, output_dir):
+    def test_returns_path_string(self, findings_json, mock_report_output_dir):
         """Function returns the output file path as a string."""
-        result = render_pdf(findings_json, str(output_dir))
+        result = render_pdf(findings_json)
         assert isinstance(result, str)
         assert result.endswith("report.pdf")
 
-    def test_creates_pdf_file(self, findings_json, output_dir):
+    def test_creates_pdf_file(self, findings_json, mock_report_output_dir):
         """PDF file is created on disk."""
-        result = render_pdf(findings_json, str(output_dir))
+        result = render_pdf(findings_json)
         assert Path(result).exists()
 
-    def test_pdf_is_valid(self, findings_json, output_dir):
+    def test_pdf_is_valid(self, findings_json, mock_report_output_dir):
         """Generated PDF starts with magic bytes."""
-        result = render_pdf(findings_json, str(output_dir))
+        result = render_pdf(findings_json)
         with open(result, "rb") as f:
             assert f.read(5) == b"%PDF-"
 
-    def test_creates_output_dir_if_missing(self, findings_json, tmp_path):
+    def test_creates_output_dir_if_missing(self, monkeypatch, findings_json, tmp_path):
         """Auto-creates output directory if it doesn't exist."""
-        nonexistent = str(tmp_path / "new_output_dir")
-        result = render_pdf(findings_json, nonexistent)
+        nonexistent = tmp_path / "new_output_dir"
+        monkeypatch.setattr(
+            "tools.report_tools.get_outputs_dir",
+            lambda session_id=None: nonexistent,
+        )
+        result = render_pdf(findings_json)
         assert Path(result).exists()
 
-    def test_extracts_plots_from_findings(self, findings_with_plots, output_dir):
+    def test_extracts_plots_from_findings(self, findings_with_plots, mock_report_output_dir):
         """Plots embedded in findings are extracted and rendered."""
         findings, _ = findings_with_plots
         fj = json.dumps(findings)
-        result = render_pdf(fj, str(output_dir))
+        result = render_pdf(fj)
         assert Path(result).stat().st_size > 0
 
-    def test_empty_findings(self, output_dir):
+    def test_empty_findings(self, mock_report_output_dir):
         """Empty findings → still produces valid PDF."""
         fj = json.dumps({"sections": [], "unresolved_flags": []})
-        result = render_pdf(fj, str(output_dir))
+        result = render_pdf(fj)
         assert Path(result).exists()
 
 
@@ -657,33 +673,37 @@ class TestRenderPdf:
 class TestRenderIpynb:
     """Test the render_ipynb AG2 entry point."""
 
-    def test_returns_path_string(self, findings_json, output_dir):
+    def test_returns_path_string(self, findings_json, mock_report_output_dir):
         """Function returns the output file path as a string."""
-        result = render_ipynb(findings_json, str(output_dir))
+        result = render_ipynb(findings_json)
         assert isinstance(result, str)
         assert result.endswith("report.ipynb")
 
-    def test_creates_ipynb_file(self, findings_json, output_dir):
+    def test_creates_ipynb_file(self, findings_json, mock_report_output_dir):
         """IPYNB file is created on disk."""
-        result = render_ipynb(findings_json, str(output_dir))
+        result = render_ipynb(findings_json)
         assert Path(result).exists()
 
-    def test_valid_notebook(self, findings_json, output_dir):
+    def test_valid_notebook(self, findings_json, mock_report_output_dir):
         """Generated file is a valid nbformat v4 notebook."""
-        result = render_ipynb(findings_json, str(output_dir))
+        result = render_ipynb(findings_json)
         nb = nbformat.read(result, as_version=4)
         assert nb.nbformat == 4
 
-    def test_creates_output_dir_if_missing(self, findings_json, tmp_path):
+    def test_creates_output_dir_if_missing(self, monkeypatch, findings_json, tmp_path):
         """Auto-creates output directory if it doesn't exist."""
-        nonexistent = str(tmp_path / "new_output_dir")
-        result = render_ipynb(findings_json, nonexistent)
+        nonexistent = tmp_path / "new_output_dir"
+        monkeypatch.setattr(
+            "tools.report_tools.get_outputs_dir",
+            lambda session_id=None: nonexistent,
+        )
+        result = render_ipynb(findings_json)
         assert Path(result).exists()
 
-    def test_empty_findings(self, output_dir):
+    def test_empty_findings(self, mock_report_output_dir):
         """Empty findings → still produces valid notebook."""
         fj = json.dumps({"sections": [], "unresolved_flags": []})
-        result = render_ipynb(fj, str(output_dir))
+        result = render_ipynb(fj)
         nb = nbformat.read(result, as_version=4)
         assert nb.nbformat == 4
 
@@ -711,25 +731,25 @@ class TestEndToEnd:
             "unresolved_flags": [],
         })
 
-    def test_findings_to_pdf(self, output_dir):
+    def test_findings_to_pdf(self, mock_report_output_dir):
         """Complete Findings JSON → PDF file."""
-        result = render_pdf(self._make_findings_json(), str(output_dir))
+        result = render_pdf(self._make_findings_json())
         assert Path(result).exists()
         with open(result, "rb") as f:
             assert f.read(5) == b"%PDF-"
 
-    def test_findings_to_ipynb(self, output_dir):
+    def test_findings_to_ipynb(self, mock_report_output_dir):
         """Complete Findings JSON → IPYNB file."""
-        result = render_ipynb(self._make_findings_json(), str(output_dir))
+        result = render_ipynb(self._make_findings_json())
         nb = nbformat.read(result, as_version=4)
         assert nb.nbformat == 4
         assert len(nb.cells) >= 8  # title + 7 sections
 
-    def test_pdf_and_ipynb_coexist(self, output_dir):
+    def test_pdf_and_ipynb_coexist(self, mock_report_output_dir):
         """Both PDF and IPYNB can be generated in the same directory."""
         fj = self._make_findings_json()
-        pdf_path = render_pdf(fj, str(output_dir))
-        ipynb_path = render_ipynb(fj, str(output_dir))
+        pdf_path = render_pdf(fj)
+        ipynb_path = render_ipynb(fj)
         assert Path(pdf_path).exists()
         assert Path(ipynb_path).exists()
         assert pdf_path != ipynb_path
@@ -887,33 +907,37 @@ class TestMarkdownRenderer:
 class TestRenderMarkdown:
     """Test the render_markdown AG2 entry point."""
 
-    def test_returns_path_string(self, findings_json, output_dir):
+    def test_returns_path_string(self, findings_json, mock_report_output_dir):
         """Function returns the output file path as a string."""
-        result = render_markdown(findings_json, str(output_dir))
+        result = render_markdown(findings_json)
         assert isinstance(result, str)
         assert result.endswith("report.md")
 
-    def test_creates_md_file(self, findings_json, output_dir):
+    def test_creates_md_file(self, findings_json, mock_report_output_dir):
         """Markdown file is created on disk."""
-        result = render_markdown(findings_json, str(output_dir))
+        result = render_markdown(findings_json)
         assert Path(result).exists()
 
-    def test_valid_utf8_content(self, findings_json, output_dir):
+    def test_valid_utf8_content(self, findings_json, mock_report_output_dir):
         """Generated file is valid UTF-8 plain text."""
-        result = render_markdown(findings_json, str(output_dir))
+        result = render_markdown(findings_json)
         text = Path(result).read_text(encoding="utf-8")
         assert "# EDA Report" in text
 
-    def test_creates_output_dir_if_missing(self, findings_json, tmp_path):
+    def test_creates_output_dir_if_missing(self, monkeypatch, findings_json, tmp_path):
         """Auto-creates output directory if it doesn't exist."""
-        nonexistent = str(tmp_path / "new_output_dir")
-        result = render_markdown(findings_json, nonexistent)
+        nonexistent = tmp_path / "new_output_dir"
+        monkeypatch.setattr(
+            "tools.report_tools.get_outputs_dir",
+            lambda session_id=None: nonexistent,
+        )
+        result = render_markdown(findings_json)
         assert Path(result).exists()
 
-    def test_empty_findings(self, output_dir):
+    def test_empty_findings(self, mock_report_output_dir):
         """Empty findings → still produces valid Markdown."""
         fj = json.dumps({"sections": [], "unresolved_flags": []})
-        result = render_markdown(fj, str(output_dir))
+        result = render_markdown(fj)
         text = Path(result).read_text(encoding="utf-8")
         assert "# EDA Report" in text
 

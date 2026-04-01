@@ -77,7 +77,6 @@ class TestCreateReportExporterAgent:
     def test_system_message(self, report_agent):
         assert "render_pdf" in report_agent.system_message
         assert "render_markdown" in report_agent.system_message
-        assert 'output_dir="outputs/"' in report_agent.system_message
         # IPYNB_EXPORT=false (default in tests) → render_ipynb must NOT appear;
         # its omission is the unambiguous instruction to the LLM not to call it.
         assert "render_ipynb" not in report_agent.system_message
@@ -165,7 +164,6 @@ class TestRegisterReportExporterTools:
             if tool["function"]["name"] == "render_pdf":
                 params = tool["function"]["parameters"]
                 assert "findings_json" in params.get("properties", {})
-                assert "output_dir" in params.get("properties", {})
                 return
         pytest.fail("render_pdf tool schema not found")
 
@@ -175,7 +173,6 @@ class TestRegisterReportExporterTools:
             if tool["function"]["name"] == "render_markdown":
                 params = tool["function"]["parameters"]
                 assert "findings_json" in params.get("properties", {})
-                assert "output_dir" in params.get("properties", {})
                 return
         pytest.fail("render_markdown tool schema not found")
 
@@ -208,7 +205,6 @@ class TestRegisterReportExporterToolsWithIPYNB:
             if tool["function"]["name"] == "render_ipynb":
                 params = tool["function"]["parameters"]
                 assert "findings_json" in params.get("properties", {})
-                assert "output_dir" in params.get("properties", {})
                 return
         pytest.fail("render_ipynb tool schema not found")
 

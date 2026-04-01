@@ -59,6 +59,9 @@ Thumbs.db
 # Copilot & Planning (Keep .github/workflows/)
 .github/copilot/
 
+# Claude code
+.claude/
+
 # Generated Outputs (regenerated on each run)
 outputs/
 !outputs/.gitkeep
@@ -68,6 +71,9 @@ outputs/
 # Archived & Historical Logs
 autogen_chatgpt_conversations/
 ARCHIVED_*.md
+
+# Archive old Copilot .md files
+/archive/
 
 # Markdown Files (Keep only README.md)
 *.md
