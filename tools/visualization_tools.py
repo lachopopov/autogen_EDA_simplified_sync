@@ -4,9 +4,6 @@ tools/visualization_tools.py — Generate and save EDA visualizations.
 Architecture Reference: architecture.md § 4.4, § 12.1
 
 Public AG2-facing functions:
-  - plot_histograms(data_json: str, output_dir: str) -> str
-  - plot_correlation_heatmap(corr_json: str, output_dir: str) -> str
-  - plot_missing_heatmap(missing_json: str, output_dir: str) -> str
 
 Design:
   - Zero AG2 imports. Zero agent references. Pure Python.
@@ -23,6 +20,8 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from config import get_plots_dir
+from tools import _pipeline_state
 from typing import Annotated
 
 import matplotlib
@@ -42,7 +41,6 @@ logger = logging.getLogger(__name__)
 
 def plot_histograms(
     data_json: Annotated[str, "JSON string (records orientation) from load_data()"],
-    output_dir: Annotated[str, "Directory path where PNG files will be saved"],
 ) -> str:
     """
     AG2 tool entry point.
@@ -62,7 +60,7 @@ def plot_histograms(
     df = pd.DataFrame(json.loads(data_json))
     num_cols = df.select_dtypes(include="number").columns.tolist()
 
-    out = Path(output_dir)
+    out = get_plots_dir(_pipeline_state.get_session_id())
     out.mkdir(parents=True, exist_ok=True)
 
     import re
@@ -83,7 +81,7 @@ def plot_histograms(
         paths.append(str(file_path))
         logger.info("Saved histogram: %s", file_path)
 
-    logger.info("Generated %d histogram(s) in %s", len(paths), output_dir)
+    logger.info("Generated %d histogram(s) in %s", len(paths), out)
     result = json.dumps(paths)
 
     if is_active():
@@ -97,7 +95,6 @@ def plot_histograms(
 
 def plot_correlation_heatmap(
     corr_json: Annotated[str, "JSON string of correlation matrix from correlation_matrix()"],
-    output_dir: Annotated[str, "Directory path where PNG file will be saved"],
 ) -> str:
     """
     AG2 tool entry point.
@@ -122,7 +119,7 @@ def plot_correlation_heatmap(
 
     corr_df = pd.DataFrame(corr_dict).apply(pd.to_numeric, errors="coerce")
 
-    out = Path(output_dir)
+    out = get_plots_dir(_pipeline_state.get_session_id())
     out.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -156,7 +153,6 @@ def plot_correlation_heatmap(
 
 def plot_missing_heatmap(
     missing_json: Annotated[str, "JSON string of MissingInfo from missing_analysis()"],
-    output_dir: Annotated[str, "Directory path where PNG file will be saved"],
 ) -> str:
     """
     AG2 tool entry point.
@@ -180,7 +176,7 @@ def plot_missing_heatmap(
         logger.info("No columns in missing info — skipping heatmap")
         return json.dumps([])
 
-    out = Path(output_dir)
+    out = get_plots_dir(_pipeline_state.get_session_id())
     out.mkdir(parents=True, exist_ok=True)
 
     columns = list(per_column.keys())
@@ -227,7 +223,6 @@ def plot_missing_heatmap(
 
 def plot_class_distribution(
     target_info_json: Annotated[str, "JSON string of TargetInfo. Pass STATE_REF:target_info in pipeline mode."],
-    output_dir: Annotated[str, "Directory path where PNG file will be saved"],
     data_json: Annotated[str, "JSON string (records orientation) from load_data(). Auto-resolved from artifact store in pipeline mode; only needed for direct (non-pipeline) calls."] = "STATE_REF:data_json",
 ) -> str:
     """
@@ -289,7 +284,7 @@ def plot_class_distribution(
             )
         return result
 
-    out = Path(output_dir)
+    out = get_plots_dir(_pipeline_state.get_session_id())
     out.mkdir(parents=True, exist_ok=True)
 
     col = target_info.column
@@ -381,7 +376,6 @@ def plot_categorical_bars(
         "JSON string of CategoricalAnalysis from analyze_categoricals(). "
         "Pass STATE_REF:categorical_analysis when running in pipeline mode.",
     ],
-    output_dir: Annotated[str, "Directory path where PNG files will be saved"],
 ) -> str:
     """
     AG2 tool entry point.
@@ -429,7 +423,7 @@ def plot_categorical_bars(
             )
         return result
 
-    out = Path(output_dir)
+    out = get_plots_dir(_pipeline_state.get_session_id())
     out.mkdir(parents=True, exist_ok=True)
 
     _NORMAL_COLOR = "#5b9bd5"   # standard bar colour
@@ -511,7 +505,7 @@ def plot_categorical_bars(
         logger.info("Saved categorical bar chart: %s", file_path)
 
     logger.info(
-        "plot_categorical_bars: generated %d chart(s) in %s", len(paths), output_dir
+        "plot_categorical_bars: generated %d chart(s) in %s", len(paths), out
     )
     result = json.dumps(paths)
 
@@ -525,7 +519,6 @@ def plot_categorical_bars(
 
 
 def plot_ordinal_heatmap(
-    output_dir: Annotated[str, "Directory path where PNG file will be saved"],
 ) -> str:
     """
     AG2 tool entry point.
@@ -617,7 +610,7 @@ def plot_ordinal_heatmap(
     df_ord = df[ord_cols].apply(pd.to_numeric, errors="coerce")
     sp_matrix = df_ord.corr(method="spearman")
 
-    out = Path(output_dir)
+    out = get_plots_dir(_pipeline_state.get_session_id())
     out.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(max(6, len(ord_cols) * 0.9),
@@ -654,7 +647,6 @@ def plot_ordinal_heatmap(
 
 
 def plot_feature_target_bars(
-    output_dir: Annotated[str, "Directory path where PNG file will be saved"],
 ) -> str:
     """
     AG2 tool entry point.
@@ -701,7 +693,7 @@ def plot_feature_target_bars(
             f"Reference: {STATE_REF_PREFIX}plot_feature_target_bars"
         )
 
-    out = Path(output_dir)
+    out = get_plots_dir(_pipeline_state.get_session_id())
     out.mkdir(parents=True, exist_ok=True)
 
     # Sort by Borda score ascending (lower = more important, top at top)

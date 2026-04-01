@@ -25,7 +25,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import OUTPUTS_DIR, PLOTS_DIR
+from config import get_outputs_dir, get_plots_dir, ensure_run_dirs
 from eda_state import TargetInfo
 
 # OpenLIT defaults from config (can be overridden by CLI --openlit flag)
@@ -115,18 +115,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 
-def ensure_output_dirs() -> None:
-    """Create output directories and remove stale plots from prior runs."""
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    # Remove stale .png files from a previous dataset run so that the
-    # current run's plots directory is clean.
-    stale = list(PLOTS_DIR.glob("*.png"))
-    for f in stale:
-        f.unlink()
-    if stale:
-        logger.info("Cleaned %d stale plot file(s) from %s", len(stale), PLOTS_DIR)
-    logger.info("Output dirs ready: %s, %s", OUTPUTS_DIR, PLOTS_DIR)
+def ensure_output_dirs(session_id: str) -> None:
+    """Create output directories for the specific run and perform cleanup."""
+    ensure_run_dirs(session_id)
+    out_dir = get_outputs_dir(session_id)
+    plots_dir = get_plots_dir(session_id)
+    logger.info("Output dirs ready: %s, %s", out_dir, plots_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -608,9 +602,6 @@ def run_pipeline(
     if not resolved.is_file():
         raise ValueError(f"Path is not a file: {resolved}")
 
-    # Ensure output directories exist before pipeline starts
-    ensure_output_dirs()
-
     # --- OpenLIT observability (must run BEFORE any AG2 / OpenAI call) ---
     if enable_openlit:
         # Bridge CLI flag to config so downstream code (e.g.
@@ -645,6 +636,7 @@ def run_pipeline(
     # Initialize artifact store session (disk-backed, UUID-scoped)
     from tools._pipeline_state import init_session, clear_session, save_state
     session_id = init_session()
+    ensure_output_dirs(session_id)
     logger.info("Pipeline session: %s", session_id)
 
     # Store target_info in artifact store for downstream tools
@@ -710,7 +702,7 @@ def run_pipeline(
         agents_list, usage_dict,
         eval_cost=_eval_cost_info if _eval_cost_info else None,
     )
-    cost_path = OUTPUTS_DIR / "cost_summary.txt"
+    cost_path = get_outputs_dir(session_id) / "cost_summary.txt"
     cost_path.write_text(cost_text, encoding="utf-8")
     logger.info("Cost summary written to %s", cost_path)
 

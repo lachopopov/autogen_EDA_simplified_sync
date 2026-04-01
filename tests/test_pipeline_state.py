@@ -50,11 +50,11 @@ def active_session():
 
 
 class TestInitSession:
-    def test_returns_uuid_hex(self):
+    def test_returns_hybrid_id(self):
         sid = init_session()
-        # UUID hex is 32 lowercase hex chars
-        assert len(sid) == 32
-        assert all(c in "0123456789abcdef" for c in sid)
+        # Hybrid id is format YYYYMMDD_HHMMSS_xxxxxx (15 + 1 + 6 = 22)
+        assert len(sid) == 22
+        assert "_" in sid
 
     def test_creates_directory(self):
         sid = init_session()
@@ -63,7 +63,7 @@ class TestInitSession:
 
     def test_sets_module_global(self):
         sid = init_session()
-        assert ps_module._session_id == sid
+        assert ps_module.get_session_id() == sid
 
     def test_activates_session(self):
         assert not is_active()
@@ -74,7 +74,7 @@ class TestInitSession:
         sid1 = init_session()
         sid2 = init_session()
         assert sid1 != sid2
-        assert ps_module._session_id == sid2
+        assert ps_module.get_session_id() == sid2
         # Both directories still exist (clear wasn't called)
         assert (_BASE_STATE_DIR / sid1).is_dir()
         assert (_BASE_STATE_DIR / sid2).is_dir()
@@ -89,7 +89,7 @@ class TestClearSession:
 
     def test_resets_to_none(self, active_session):
         clear_session()
-        assert ps_module._session_id is None
+        assert ps_module.get_session_id() is None
 
     def test_deactivates(self, active_session):
         assert is_active()

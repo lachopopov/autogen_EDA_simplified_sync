@@ -2781,10 +2781,7 @@ def assemble_findings(
                     from tools.visualization_tools import (  # noqa: PLC0415
                         plot_feature_target_bars as _ft_plot_fn,
                     )
-                    _plot_dir = (
-                        str(Path(merged[0]).parent) if merged else "outputs/plots"
-                    )
-                    _ft_plot_fn(_plot_dir)
+                    _ft_plot_fn()
                     _ft_state = load_state("plot_feature_target_bars")
                     if _ft_state:
                         _ft_added = json.loads(_ft_state)

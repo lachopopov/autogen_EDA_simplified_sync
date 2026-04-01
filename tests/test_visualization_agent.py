@@ -147,28 +147,24 @@ class TestToolRegistration:
         tools_by_name = {t["function"]["name"]: t for t in agent.llm_config["tools"]}
         params = tools_by_name["plot_histograms"]["function"]["parameters"]
         assert "data_json" in params["properties"]
-        assert "output_dir" in params["properties"]
 
     def test_plot_correlation_heatmap_schema(self, wired_pair):
         agent, _ = wired_pair
         tools_by_name = {t["function"]["name"]: t for t in agent.llm_config["tools"]}
         params = tools_by_name["plot_correlation_heatmap"]["function"]["parameters"]
         assert "corr_json" in params["properties"]
-        assert "output_dir" in params["properties"]
 
     def test_plot_missing_heatmap_schema(self, wired_pair):
         agent, _ = wired_pair
         tools_by_name = {t["function"]["name"]: t for t in agent.llm_config["tools"]}
         params = tools_by_name["plot_missing_heatmap"]["function"]["parameters"]
         assert "missing_json" in params["properties"]
-        assert "output_dir" in params["properties"]
 
     def test_plot_categorical_bars_schema(self, wired_pair):
         agent, _ = wired_pair
         tools_by_name = {t["function"]["name"]: t for t in agent.llm_config["tools"]}
         params = tools_by_name["plot_categorical_bars"]["function"]["parameters"]
         assert "categorical_analysis_json" in params["properties"]
-        assert "output_dir" in params["properties"]
 
 
 # ---------------------------------------------------------------------------
@@ -178,54 +174,70 @@ class TestToolRegistration:
 class TestToolExecution:
     """Test that registered tools can be called through the executor's function map."""
 
-    def test_plot_histograms_via_executor(self, wired_pair, csv_path, plots_dir):
+    def test_plot_histograms_via_executor(self, wired_pair, csv_path, plots_dir, monkeypatch):
         _, proxy = wired_pair
         from tools.data_loader import load_data
 
+        monkeypatch.setattr(
+            "tools.visualization_tools.get_plots_dir",
+            lambda session_id=None: Path(plots_dir),
+        )
         data_json = load_data(csv_path)
-        result = proxy._function_map["plot_histograms"](data_json, plots_dir)
+        result = proxy._function_map["plot_histograms"](data_json)
         paths = json.loads(result)
         assert len(paths) == 2  # age, salary
         for p in paths:
             assert Path(p).exists()
 
-    def test_plot_correlation_via_executor(self, wired_pair, csv_path, plots_dir):
+    def test_plot_correlation_via_executor(self, wired_pair, csv_path, plots_dir, monkeypatch):
         _, proxy = wired_pair
         from tools.data_loader import load_data
         from tools.eda_tools import correlation_matrix
 
+        monkeypatch.setattr(
+            "tools.visualization_tools.get_plots_dir",
+            lambda session_id=None: Path(plots_dir),
+        )
         data_json = load_data(csv_path)
         corr_json = correlation_matrix(data_json)
-        result = proxy._function_map["plot_correlation_heatmap"](corr_json, plots_dir)
+        result = proxy._function_map["plot_correlation_heatmap"](corr_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_plot_missing_via_executor(self, wired_pair, csv_path, plots_dir):
+    def test_plot_missing_via_executor(self, wired_pair, csv_path, plots_dir, monkeypatch):
         _, proxy = wired_pair
         from tools.data_loader import load_data
         from tools.eda_tools import missing_analysis
 
+        monkeypatch.setattr(
+            "tools.visualization_tools.get_plots_dir",
+            lambda session_id=None: Path(plots_dir),
+        )
         data_json = load_data(csv_path)
         miss_json = missing_analysis(data_json)
-        result = proxy._function_map["plot_missing_heatmap"](miss_json, plots_dir)
+        result = proxy._function_map["plot_missing_heatmap"](miss_json)
         paths = json.loads(result)
         assert len(paths) == 1
         assert Path(paths[0]).exists()
 
-    def test_full_pipeline(self, wired_pair, csv_path, plots_dir):
+    def test_full_pipeline(self, wired_pair, csv_path, plots_dir, monkeypatch):
         """End-to-end: load → EDA tools → all 3 visualization tools via executor."""
         _, proxy = wired_pair
         from tools.data_loader import load_data
         from tools.eda_tools import correlation_matrix, missing_analysis
 
+        monkeypatch.setattr(
+            "tools.visualization_tools.get_plots_dir",
+            lambda session_id=None: Path(plots_dir),
+        )
         data_json = load_data(csv_path)
         corr_json = correlation_matrix(data_json)
         miss_json = missing_analysis(data_json)
 
-        hist = json.loads(proxy._function_map["plot_histograms"](data_json, plots_dir))
-        corr = json.loads(proxy._function_map["plot_correlation_heatmap"](corr_json, plots_dir))
-        miss = json.loads(proxy._function_map["plot_missing_heatmap"](miss_json, plots_dir))
+        hist = json.loads(proxy._function_map["plot_histograms"](data_json))
+        corr = json.loads(proxy._function_map["plot_correlation_heatmap"](corr_json))
+        miss = json.loads(proxy._function_map["plot_missing_heatmap"](miss_json))
 
         all_paths = hist + corr + miss
         assert len(all_paths) == 4  # 2 hist + 1 corr + 1 missing

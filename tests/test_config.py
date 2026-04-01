@@ -162,12 +162,14 @@ class TestProjectPaths:
     def test_outputs_dir_under_project_root(self):
         import config
 
-        assert config.OUTPUTS_DIR.parent == config.PROJECT_ROOT
+        assert config.GLOBAL_OUTPUTS_DIR.parent == config.PROJECT_ROOT
 
     def test_plots_dir_under_outputs(self):
         import config
 
-        assert config.PLOTS_DIR.parent == config.OUTPUTS_DIR
+        out_dir = config.get_outputs_dir("test")
+        plots_dir = config.get_plots_dir("test")
+        assert plots_dir.parent == out_dir
 
 
 class TestFeatureToggles:
