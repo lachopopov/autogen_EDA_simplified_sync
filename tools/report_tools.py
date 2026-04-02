@@ -426,12 +426,19 @@ class MarkdownRenderer(ReportRenderer):
                 lines.append("")
 
             # Inline plot references + per-plot commentary
+            # Use relative paths (plots/<name>.png) so the report renders
+            # correctly in Markdown viewers regardless of absolute location.
             section_plots = section.get("plot_paths", [])
             plot_comms = section.get("plot_commentaries", [])
+            output_dir = Path(output_path).parent
             for plot_path in section_plots:
                 p = Path(plot_path)
                 caption = p.stem.replace("_", " ").title()
-                lines.append(f"![{caption}]({plot_path})")
+                try:
+                    rel = p.relative_to(output_dir)
+                except ValueError:
+                    rel = p
+                lines.append(f"![{caption}]({rel})")
                 fname = p.name
                 for pc in plot_comms:
                     if pc.get("plot_file") == fname:
