@@ -6,7 +6,7 @@ AG2 Version: 0.10.3
 
 Models:
   - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) — dev & iteration
-  - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) and gpt-5  ($2.50 / $15.00 per 1M tokens) for FindingsGeneratorAgent only — final validation only
+  - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) and gpt-5  ($1.25 / $10.00 per 1M tokens) for FindingsGeneratorAgent only — final validation only
 
 Usage:
   EDA_MODE=dev   → gpt-5-mini  (default)
@@ -45,7 +45,7 @@ LLM_CONFIG_FINAL: dict = {
     "config_list": [{
         **_BASE,
         "model": "gpt-5",
-        "price": [0.0025, 0.015],  # $2.5/$15.00 per 1M tokens
+        "price": [0.00125, 0.01],  # $1.25/$10.00 per 1M tokens
     }],
 }
 # For cost control during final validation, only the FindingsGeneratorAgent uses gpt-5; all other agents remain on gpt-5-mini. This allows us to validate the critical findings generation step with the more powerful model while keeping overall costs manageable.
