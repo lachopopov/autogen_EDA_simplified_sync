@@ -83,9 +83,9 @@ class TestLLMConfigFinal:
         import config
 
         price = config.LLM_CONFIG_FINAL["config_list"][0]["price"]
-        # gpt-5: $2.50/1M prompt, $15.00/1M completion → per 1K
-        assert price[0] == 0.0025
-        assert price[1] == 0.015
+        # gpt-5: $1.25/1M prompt, $10.00/1M completion → per 1K
+        assert price[0] == 0.00125
+        assert price[1] == 0.01
 
 
 class TestLLMConfigFinalRest:
