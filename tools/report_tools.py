@@ -56,6 +56,27 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Image embedding helper
+# ---------------------------------------------------------------------------
+
+def _b64_image_uri(path: Path) -> str:
+    """Return a ``data:image/png;base64,...`` URI for *path*.
+
+    Falls back to the filename if the file cannot be read (e.g. path
+    doesn't exist at render time).
+    """
+    import base64
+
+    try:
+        data = path.read_bytes()
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    except Exception:
+        logger.warning("Could not read image for base64 embedding: %s", path)
+        return str(path)
+
+
+# ---------------------------------------------------------------------------
 # Template Method ABC
 # ---------------------------------------------------------------------------
 
@@ -331,19 +352,11 @@ class IPYNBRenderer(ReportRenderer):
             for plot_path in section_plots:
                 p = Path(plot_path)
                 caption = p.stem.replace("_", " ").title()
-                # Jupyter resolves image paths relative to the notebook's own
-                # directory.  plot_path is relative to the project root (e.g.
-                # "outputs/plots/hist_age.png"), so we must convert it to be
-                # relative to the notebook parent dir ("outputs/") before
-                # embedding — otherwise Jupyter prepends the notebook dir and
-                # the image path becomes "outputs/outputs/plots/..." (broken).
-                try:
-                    nb_rel = Path(plot_path).resolve().relative_to(
-                        Path(output_path).resolve().parent
-                    )
-                except ValueError:
-                    nb_rel = p  # fallback: use as-is if paths share no common root
-                plot_lines = [f"![{caption}]({nb_rel})\n"]
+                # Embed images as base64 data URIs so the notebook is
+                # self-contained and portable (works when downloaded or
+                # moved away from the run directory).
+                img_src = _b64_image_uri(p)
+                plot_lines = [f"![{caption}]({img_src})\n"]
                 fname = p.name
                 for pc in plot_comms:
                     if pc.get("plot_file") == fname:
@@ -430,15 +443,14 @@ class MarkdownRenderer(ReportRenderer):
             # correctly in Markdown viewers regardless of absolute location.
             section_plots = section.get("plot_paths", [])
             plot_comms = section.get("plot_commentaries", [])
-            output_dir = Path(output_path).parent
             for plot_path in section_plots:
                 p = Path(plot_path)
                 caption = p.stem.replace("_", " ").title()
-                try:
-                    rel = p.relative_to(output_dir)
-                except ValueError:
-                    rel = p
-                lines.append(f"![{caption}]({rel})")
+                # Embed images as base64 data URIs so the report is
+                # self-contained and portable (renders correctly when
+                # downloaded or opened outside the run directory).
+                img_src = _b64_image_uri(p)
+                lines.append(f"![{caption}]({img_src})")
                 fname = p.name
                 for pc in plot_comms:
                     if pc.get("plot_file") == fname:

@@ -568,7 +568,8 @@ def run_pipeline(
     enable_openlit: bool = False,
     categoricals_flag: str | None = None,
     no_reclassify_flag: bool = False,
-) -> None:
+    subtypes_flag: dict[str, str] | None = None,
+) -> str:
     """
     Build the GroupChat and start the EDA pipeline.
 
@@ -587,6 +588,17 @@ def run_pipeline(
         Comma-separated column names to reclassify as categorical (from --categoricals).
     no_reclassify_flag : bool
         If True, skip encoded-categorical detection entirely.
+    subtypes_flag : dict[str, str] | None
+        Mapping of column names to "ordinal" or "nominal".  When provided
+        (e.g. from Streamlit UI), overrides subtypes returned by
+        ``_resolve_reclassification()``.
+
+    Returns
+    -------
+    str
+        The session ID for this pipeline run.  Callers (e.g. Streamlit)
+        can use this to locate output artifacts via
+        ``config.get_outputs_dir(session_id)``.
 
     Raises
     ------
@@ -631,6 +643,14 @@ def run_pipeline(
         categoricals_flag=categoricals_flag,
         no_reclassify_flag=no_reclassify_flag,
     )
+
+    # Override subtypes with Streamlit-confirmed ordinal/nominal choices
+    if subtypes_flag and reclassified_cols:
+        reclassified_subtypes = {
+            col: subtypes_flag.get(col, reclassified_subtypes.get(col, "nominal"))
+            for col in reclassified_cols
+        }
+
     logger.info("Reclassified as categorical: %s", reclassified_cols or "(none)")
 
     # Initialize artifact store session (disk-backed, UUID-scoped)
@@ -707,6 +727,7 @@ def run_pipeline(
     logger.info("Cost summary written to %s", cost_path)
 
     logger.info("EDA pipeline completed.")
+    return session_id
 
 
 # ---------------------------------------------------------------------------

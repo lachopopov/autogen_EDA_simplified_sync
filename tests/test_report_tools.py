@@ -557,7 +557,8 @@ class TestExpertCommentaryIPYNB:
         assert len(nb.cells) == 3
         all_src = " ".join(c.source for c in nb.cells)
         assert "![" in all_src
-        assert str(img) in all_src
+        # Image is embedded as base64 data URI (portable)
+        assert "data:image/png;base64," in all_src
 
     def test_per_plot_commentary_in_notebook(self, tmp_path, output_dir):
         """Per-plot 3-lens commentary appears in plot cells."""
@@ -614,8 +615,10 @@ class TestExpertCommentaryIPYNB:
         # 1 title + 2 sections + 2 plot cells = 5
         assert len(nb.cells) == 5
         all_src = " ".join(c.source for c in nb.cells)
-        assert "hist_age.png" in all_src
-        assert "correlation_heatmap.png" in all_src
+        # Captions derived from filenames appear in ![caption](data:...)
+        assert "Hist Age" in all_src
+        assert "Correlation Heatmap" in all_src
+        assert "data:image/png;base64," in all_src
 
 
 # ---------------------------------------------------------------------------

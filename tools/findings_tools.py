@@ -965,7 +965,7 @@ def _build_trustworthiness_section(
         trust_description,
         "",
         "Evaluated scope: Hallucination + Bias + Toxicity "
-        "(combined evaluation via openlit.evals.All)",
+        "(combined LLM evaluation)",
         "",
         f"Overall score: {score:.2f} (0.00 = fully grounded, "
         f"1.00 = highest risk)",
@@ -2153,8 +2153,8 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
     Uses ``openlit.evals.All`` to perform a combined evaluation of LLM-
     generated interpretations against the deterministic fact sheet.
 
-    Non-blocking: logs warnings but never raises. Skipped when OpenLIT
-    is disabled or the fact sheet is unavailable.
+    Non-blocking: logs warnings but never raises. Skipped when no
+    pipeline session is active or the fact sheet is unavailable.
 
     Side effect: populates module-level ``_eval_cost_info`` with token counts
     and cost so that ``main._format_cost_summary()`` can include the evaluator
@@ -2164,9 +2164,7 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
         Dict with keys {verdict, score, evaluation, classification, explanation}
         or None if the eval was skipped or failed.
     """
-    from config import OPENLIT_ENABLE, OPENLIT_EVAL_MODEL
-    if not OPENLIT_ENABLE:
-        return None
+    from config import OPENLIT_EVAL_MODEL
 
     from tools._pipeline_state import is_active, load_state, save_state
     if not is_active():
@@ -2191,9 +2189,9 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
         def _capturing_openai(prompt, model, base_url):
             """Drop-in for llm_response_openai that also captures usage.
 
-            Mirrors the original SDK helper but omits ``temperature``
-            (hardcoded to 0.0 in openlit <=1.38.x), which gpt-5 rejects
-            with HTTP 400.  See openlit/openlit#1071.
+            Mirrors the SDK helper to intercept ``resp.usage`` token counts
+            for pipeline cost tracking.  The original SDK function returns
+            only the content string and discards usage metadata.
             """
             from openai import OpenAI as _OAI
 
