@@ -61,12 +61,12 @@ def _resolve_md_images(md_text: str, base_dir: Path) -> str:
 # Page config
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="EDA Multi-Agent Pipeline",
+    page_title="EDA Multi-Agent AG2 Report Generator For Classification Tasks",
     page_icon="📊",
     layout="wide",
 )
 
-st.title("📊 EDA Multi-Agent Pipeline")
+st.title("📊 EDA Multi-Agent AG2 Report Generator For Classification Tasks")
 st.caption("Upload a dataset, configure target & categoricals, then run the pipeline.")
 
 
@@ -77,6 +77,11 @@ uploaded = st.file_uploader(
     "Upload dataset",
     type=["csv", "parquet", "xlsx"],
     help="Max 50 MB. Supported formats: CSV, Parquet, XLSX.",
+)
+
+st.caption(
+    "⚠️ **Required format:** The first row of the dataset must contain feature names (column headers). "
+    "Headerless files are not supported."
 )
 
 if uploaded is None:
@@ -294,6 +299,13 @@ with tab_ipynb:
         st.info("Notebook not found.")
 
 with tab_cost:
+    st.markdown(
+        "_Model pricing used for cost calculation (April 2026):_\n\n"
+        "| Model | Input | Cached input | Output |\n"
+        "|---|---|---|---|\n"
+        "| `gpt-5` | \\$1.25 / 1M tokens | \\$0.125 / 1M tokens | \\$10.00 / 1M tokens |\n"
+        "| `gpt-5-mini` | \\$0.25 / 1M tokens | \\$0.025 / 1M tokens | \\$2.00 / 1M tokens |"
+    )
     if cost_path.exists():
         st.code(cost_path.read_text(encoding="utf-8"))
     else:
