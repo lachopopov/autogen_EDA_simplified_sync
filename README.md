@@ -35,7 +35,7 @@ A comprehensive exploratory data analysis report that identifies and ranks **sol
 - **Tier 2:** Deep-dive analysis of the top 3 high-probability problems with metrics and recommendations
 - **Quality assessment:** Data readiness verdict + flagged issues + remediation steps
 - **Visualizations:** Histograms, correlation heatmaps, categorical distributions, feature importance rankings
-- **Trustworthiness Guarantee:** Every report is automatically evaluated for hallucination, bias, and toxicity using OpenLIT with an external judge model (gpt-5). The report includes a trustworthiness assessment so you know exactly how much to rely on the AI-generated insights.
+- **Trustworthiness Guarantee:** When OpenLIT is enabled (`OPENLIT_ENABLE=true`), every report is automatically evaluated for hallucination using an external judge model (gpt-5). The report includes a Trustworthiness Assessment section so you know how much to rely on the AI-generated insights.
 
 **Output formats:** Professional PDF + Markdown + interactive Jupyter notebook (optional) + individual PNG plots + cost summary
 
@@ -53,7 +53,7 @@ Access the app directly from your browser (no installation needed):
 4. **Run the analysis** — AI agents generate a complete report (~2 minutes)
 5. **View results in UI** — See the plots, Markdown version, and cost analysis by clicking Results section
 6. **Download results** — PDF report, Markdown version, Jupyter Notebook, and cost summary
-7. **Check trustworthiness** — See the hallucination/bias/toxicity score in the report
+7. **Check trustworthiness** — See the hallucination score in the report (requires OpenLIT to be enabled)
 
 **Why Streamlit Cloud?** No software installation, instant access, intuitive interface, results viewable in UI and ready to download immediately.
 
@@ -82,14 +82,6 @@ Results appear in `outputs/` (PDF, Markdown, plots, cost summary).
 - **Optional**: conda or uv for environment management
 
 ### Option 1: Conda (Recommended)
-
-```bash
-# Create environment from provided YAML
-conda env create -f environment.yml
-conda activate ag2_env
-```
-
-**Or** manually create and install:
 
 ```bash
 conda create -n ag2_env python=3.12
@@ -138,7 +130,7 @@ OPENAI_API_KEY=sk-your-actual-key-here
 
 # --- Pipeline tuning (optional) ---
 # MAX_CRITIC_ITERATIONS=2     # max critic↔revision loops before forcing report export
-# MAX_ROUNDS=50               # absolute ceiling on GroupChat rounds
+# MAX_ROUNDS=70               # absolute ceiling on GroupChat rounds
 ```
 
 
@@ -168,14 +160,14 @@ The pipeline's core output is a **Business Problem Catalogue** — a ranked list
 - **Purpose:** Action-ready guidance for immediate execution
 
 **Why two tiers?**
-- Token efficiency: Deep-dives consume 100 tokens each; brief listingsonly 20
+- Token efficiency: Deep-dives consume 100 tokens each; brief listings — only 20
 - Signal quality: HIGH-probability problems are more likely to yield ROI
 - Cognitive load: Stakeholders focus on high-impact items first
 
 **The Report Includes:**
 - Full Tier 1 + Tier 2 structure in `report.pdf` and `report.md`
 - Classification-specific analysis: Borda-ranked features (sorted by MI + effect size dual-lens voting), per-class statistics, feature-target interactions
-- Data quality assessment: 13 automated quality rules (multicollinearity, outliers, imbalance, skewness)
+- Data quality assessment: 14 automated quality rules (multicollinearity, outliers, imbalance, skewness, class imbalance)
 - Visualizations: Histograms, correlation heatmaps, feature importance, missing data patterns, categorical distributions
 
 ### For Data Analysts
@@ -183,13 +175,15 @@ The pipeline's core output is a **Business Problem Catalogue** — a ranked list
 #### Scenario 1: Basic EDA Report
 
 ```bash
-python main.py data/sales.csv
+python main.py path/to/your_dataset.csv
 ```
+
+> **Try it now with an included dataset:** `python main.py test_data/iris.csv`
 
 **What happens:**
 1. DataPrepAgent loads and validates your CSV
 2. EDAAnalysisAgent computes statistics, missing data, correlations
-3. VisualizationAgent generates 6+ charts (histograms, heatmaps)
+3. VisualizationAgent generates 7+ plots (histograms, heatmaps, feature associations, categorical distributions)
 4. CriticAgent flags data quality issues (high correlations, outliers, etc.)
 5. FindingsGeneratorAgent synthesizes 3-lens insights (statistical, ML, business)
 6. ReportExporterAgent renders PDF with inline plots + commentary
@@ -207,17 +201,19 @@ The pipeline supports CSV, Parquet, and Excel files:
 
 ```bash
 # Parquet file
-python main.py data/dataset.parquet
+python main.py path/to/dataset.parquet
 
 # Excel spreadsheet (single sheet)
-python main.py data/analysis.xlsx
+python main.py path/to/analysis.xlsx
 ```
+
+> **Try included format examples:** `python main.py test_data/iris.parquet` or `python main.py test_data/iris.xlsx`
 
 #### Scenario 3: Development vs. Production Models
 
 By default, the pipeline uses `gpt-5-mini` (fast, cost-effective for testing).
 
-For final validation, switch to `gpt-5` (higher quality, ~5× cost):
+In final mode, `FindingsGeneratorAgent` switches to `gpt-5` (higher quality); all other agents remain on `gpt-5-mini` to control cost (~5× cost for the findings step only):
 
 ```bash
 # Development (default, gpt-5-mini)
@@ -238,6 +234,10 @@ Sample datasets are included in `test_data/`:
 - **iris.csv** — Classic Iris dataset (150 rows, 5 columns, balanced, multicollinear)
 - **stress_critic.csv** — Edge case dataset for quality thresholds (tests high outlier counts, missing data)
 - **adult.csv** — UCI census dataset (250 rows sampled); `workclass` and `occupation` use `" ?"` (space + question mark) as missing-value sentinels — validates automatic sentinel-to-NaN conversion
+- **default_of_credit_card_clients.csv** — UCI credit card default dataset (30,000 rows, 25 columns); tests large dataset handling and encoded categorical detection
+- **strategy_b_synthetic.csv** — Synthetic binary-classification dataset (120 rows, 4 columns); tests mixed categorical + numeric pipelines
+- **iris.parquet** — Parquet format of the Iris dataset; validates Parquet file loading
+- **iris.xlsx** — Excel format of the Iris dataset; validates Excel file loading
 
 ```bash
 # Quick test
@@ -261,7 +261,7 @@ python main.py test_data/adult.csv
 1. **DataPrepAgent** ← Loads, validates, type-infers data; detects encoded categoricals
 2. **EDAAnalysisAgent** ← Computes 60+ statistics, correlations, missing patterns; per-class statistics for classification targets
 3. **VisualizationAgent** ← Generates 7+ plots: histograms, heatmaps, categorical distributions, feature importance
-4. **CriticAgent** ← Flags 13 data quality rules (multicollinearity, outliers, imbalance, rare categories, skewness, etc.)
+4. **CriticAgent** ← Flags 14 data quality rules (multicollinearity, outliers, imbalance, rare categories, skewness, class imbalance, etc.)
 5. **FindingsGeneratorAgent** ← LLM synthesizes TWO outputs:
    - **ACTION PLAN:** Numbered recommendations (HIGH/MEDIUM/LOW priority) with action, expected outcome, and risk if skipped
    - **BUSINESS PROBLEM CATALOGUE:** Tier 1 (all problems ranked by probability) + Tier 2 (top-3 problems deep-dives with metrics + ROI)
@@ -331,12 +331,13 @@ python main.py test_data/adult.csv
 #### 3. **Visualizations** (Plots)
 - **Location:** `outputs/plots/`
 - **Files:**
-  - `histogram_<column>.png` (1 per numeric column; 30 bins with peak detection)
+  - `hist_<column>.png` (1 per numeric column; 30 bins)
   - `correlation_heatmap.png` (Pearson r matrix, if N>1 numeric columns)
   - `missing_heatmap.png` (per-column missing % bar chart, if any missing data)
   - `class_distribution.png` (target class counts + imbalance ratio, if classification)
+  - `target_distribution.png` (target value histogram + KDE overlay, if regression)
   - `feature_target_associations.png` (Borda-ranked features with MI + effect size)
-  - `categorical_bars_<column>.png` (1 per categorical column; top values + target rates)
+  - `cat_<column>.png` (1 per categorical column; top values + target rates)
   - `ordinal_spearman_heatmap.png` (Spearman ρ matrix for ordinal features, if present)
 - **Size:** ~50–200 KB total (embedded in PDF, also standalone for presentations/dashboards)
 - **Audience:** Reports, presentations, documentation, dashboard integration
@@ -352,13 +353,13 @@ python main.py test_data/adult.csv
 - **Contents:**
   - `data_json.json` — DataFrame as records JSON (raw data for reproducibility)
   - `schema_json.json` — Column metadata (names, types, memory usage)
-  - `describe_stats.json` — 13 statistics per column (mean, std, min, max, quantiles, skewness)
+  - `describe_stats.json` — per-column statistics (count, mean, std, min, 25%/50%/75%, max; plus skewness_scipy for numeric columns)
   - `missing_analysis.json` — Null/NaN percentages per column
   - `correlation_matrix.json` — N×N Pearson correlation matrix
   - `categorical_analysis.json` — Per-column categorical distributions (cardinality, entropy, rare values, target rates)
   - `feature_associations.json` — Borda-ranked features with MI (kNN-estimated) + effect size (η²/Cramér's V)
   - `interaction_signals.json` — Multivariate patterns (persistence gradients, trajectories, cross-feature segments, portfolio concentration)
-  - `critic_report.json` — Quality flags (13 data quality rules: multicollinearity, outliers, imbalance, skewness, etc.)
+  - `critic_report.json` — Quality flags (14 data quality rules: multicollinearity, outliers, imbalance, skewness, class imbalance, etc.)
   - `interpretations.json` — LLM-generated expert commentary (statistical, DS/ML, and business perspectives)
 - **Access:** Via `tools._pipeline_state.load_state(key)` in Python (see developers section for examples)
 - **Audience:** Developers, automated workflows, data scientists building custom analyses
@@ -381,16 +382,18 @@ If IPYNB export is enabled:
 **Current mode** — CLI-based, single-file analysis:
 
 ```bash
-python main.py data/analysis.csv
+python main.py path/to/your_dataset.csv
 ```
 
 ✅ Simple, no infrastructure required  
 ✅ Fast feedback loop for prototyping  
 ⚠️ No concurrent requests, state file cleanup manual  
 
-### Web UI (Streamlit/Gradio)
+### Web UI (Streamlit)
 
-**Recommended architecture** (no code included, architectural guidance):
+A Streamlit implementation is included (`streamlit_app.py`). See [Quick Start → Option 1](#option-1-web-ui-streamlit-cloud--recommended-for-business-users) for usage instructions.
+
+For reference, the underlying architecture:
 
 ```
 Client (Streamlit/Gradio UI)
@@ -442,8 +445,9 @@ git clone <repo-url>
 cd autogen_simplified_EDA_tool
 
 # 2. Create environment
-conda env create -f environment.yml
+conda create -n ag2_env python=3.12
 conda activate ag2_env
+pip install -r requirements.txt
 
 # 3. Install dev tools (optional)
 pip install ruff mypy black pre-commit
@@ -463,7 +467,7 @@ pytest tests/ -v --tb=short
 - **[tools/](tools/)** — Pure-Python tool functions (pandas, matplotlib, analysis)
 - **[tools/_pipeline_state.py](tools/_pipeline_state.py)** — Artifact store implementation
 - **[eda_state.py](eda_state.py)** — Pydantic models (state schema)
-- **[tests/](tests/)** — 200+ unit tests
+- **[tests/](tests/)** — 1,000+ unit tests
 
 ### Code Quality
 
@@ -481,7 +485,7 @@ mypy agents/ tools/ --strict
 pytest tests/ -v --cov=. --cov-report=term-missing
 ```
 
-**Current state:** 744 tests passing, ruff clean, zero linting errors.
+**Current state:** 1,014 tests passing, ruff clean, zero linting errors.
 
 ### Adding New Tests
 
@@ -667,13 +671,14 @@ OpenLIT's default pricing JSON may not include newer models like `gpt-5-mini` an
 ```json
 {
   "chat": {
+    "gpt-5-nano": {"promptPrice": 0.00005, "completionPrice": 0.0004},
     "gpt-5-mini": {"promptPrice": 0.00025, "completionPrice": 0.002},
-    "gpt-5": {"promptPrice": 0.00125, "completionPrice": 0.01}
+    "gpt-5":      {"promptPrice": 0.00125, "completionPrice": 0.01}
   }
 }
 ```
 
-This file is automatically loaded by `_init_openlit()` in `main.py`. To add new models, edit `openlit_pricing.json` — prices are per-token.
+> Versioned model aliases (e.g. `gpt-5-mini-2025-08-07`) are also included. Edit `openlit_pricing.json` directly to add further entries — prices are per-token.
 
 ### Known Issues (openlit 1.36.8)
 
@@ -753,7 +758,7 @@ Create a pure-Python tool in `tools/` and register it programmatically in the or
 pytest tests/ -v
 ```
 
-**Coverage:** 200+ tests across 17 test files (tools, agents, orchestrator, state management, end-to-end).
+**Coverage:** 1,000+ tests across 17 test files (tools, agents, orchestrator, state management, end-to-end).
 
 ### Model Selection & Tuning
 
@@ -782,7 +787,7 @@ Pricing: gpt-5-mini ($0.25/$2.00 per 1M tokens) vs. gpt-5 ($1.25/$10.00).
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) (if available) or:
+Contributions welcome! See CONTRIBUTING.md (not yet included in this repository) or:
 
 1. Fork the repo
 2. Create a feature branch
