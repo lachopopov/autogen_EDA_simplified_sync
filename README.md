@@ -1,10 +1,10 @@
-# AG2 Multi-Agent EDA Pipeline
+# EDA Multi-Agent AG2 Report Generator For Classification Tasks
 
 **A production-ready exploratory data analysis system powered by autonomous LLM agents.**
 
 Automated end-to-end statistical analysis, visualization, quality assessment, and report generation using AI agents coordinated through AG2 StateFlow. Engineered for small-to-medium datasets (100–100K rows) with expert-validated Metadata-First Hybrid architecture.
 
-**Latest:** 744 unit tests passing, live smoke tests validated on iris.csv, stress_critic.csv, and adult.csv (UCI census — `?` sentinel handling verified). Conclusions and recommendations fortified with business-actionable insights.
+> **Branch scope:** This README documents the `main` branch — the CLI-first, general-purpose codebase for local development and custom integrations. A Streamlit-deployable version lives on the `streamlit-deploy` branch, which has its own standalone README tailored for that deployment.
 
 ---
 
@@ -13,58 +13,50 @@ Automated end-to-end statistical analysis, visualization, quality assessment, an
 - [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Usage](#usage)
+  - [How It Works](#how-it-works-business-problem-catalogue)
   - [For Data Analysts](#for-data-analysts)
-  - [For Developers & Engineers](#for-developers--engineers)
 - [Architecture Overview](#architecture-overview)
 - [Output Files & Artifacts](#output-files--artifacts)
 - [Deployment Recommendations](#deployment-recommendations)
 - [Development & Testing](#development--testing)
 - [Future Optimizations](#future-optimizations)
 - [Observability (OpenLIT)](#observability-openlit)
+- [Troubleshooting](#troubleshooting)
+- [For Developers & Engineers](#for-developers--engineers)
 - [License & Attribution](#license--attribution)
 
 ---
 
 ## Quick Start
 
-### For Data Analysts
+### What You Get
 
-Get a full EDA report in 2 minutes:
+A comprehensive exploratory data analysis report that identifies and ranks **solvable business problems** in your dataset:
+- **Tier 1:** Strategic overview of 5–20 potential business questions your data can answer
+- **Tier 2:** Deep-dive analysis of the top 3 high-probability problems with metrics and recommendations
+- **Quality assessment:** Data readiness verdict + flagged issues + remediation steps
+- **Visualizations:** Histograms, correlation heatmaps, categorical distributions, feature importance rankings
+- **Trustworthiness Guarantee:** When OpenLIT is enabled (`OPENLIT_ENABLE=true`), every report is automatically evaluated for hallucination using an external judge model (gpt-5). The report includes a Trustworthiness Assessment section so you know how much to rely on the AI-generated insights.
+
+**Output formats:** Professional PDF + Markdown + interactive Jupyter notebook (optional) + individual PNG plots + cost summary
+
+**Bottom line:** You get a data analysis report from AI agents that you can actually trust.
+
+### Command Line (CLI)
+
+For DS/ML experts and GenAI engineers building custom analyses:
 
 ```bash
-# 1. Activate the environment
-conda activate ag2_env
-
-# 2. Run the pipeline on your data
 python main.py your_dataset.csv
-
-# 3. Open the report
-open outputs/report.pdf
 ```
 
-**Output**: A professional PDF report with statistics, visualizations, quality flags, conclusions, and business recommendations.
+Results appear in `outputs/` (PDF, Markdown, plots, cost summary).
 
-### For Developers
+**Why CLI?** Integrate into scripts, automate batch processing, extend with custom tools.
 
-Set up the development environment and run tests:
+> **Want a browser UI?** See the `streamlit-deploy` branch — it contains a Streamlit Cloud deployment with file upload, interactive results, and one-click PDF/notebook download.
 
-```bash
-# 1. Clone and navigate
-cd autogen_simplified_EDA_tool
 
-# 2. Install dependencies
-conda env create -f environment.yml
-conda activate ag2_env
-
-# 3. Configure OpenAI API key
-echo "OPENAI_API_KEY=sk-..." > .env
-
-# 4. Run the test suite
-pytest tests/ -v
-
-# 5. Execute a smoke test
-python main.py test_data/iris.csv
-```
 
 ---
 
@@ -77,14 +69,6 @@ python main.py test_data/iris.csv
 - **Optional**: conda or uv for environment management
 
 ### Option 1: Conda (Recommended)
-
-```bash
-# Create environment from provided YAML
-conda env create -f environment.yml
-conda activate ag2_env
-```
-
-**Or** manually create and install:
 
 ```bash
 conda create -n ag2_env python=3.12
@@ -114,8 +98,8 @@ Create a `.env` file in the project root:
 OPENAI_API_KEY=sk-your-actual-key-here
 
 # --- Model selection (optional) ---
-# dev = gpt-5-nano (fast, ~$0.01/run)  |  final = gpt-5-mini (quality, ~$0.10/run)
-# EDA_MODE=dev
+# dev = gpt-5-mini (fast, ~$0.05–0.15/run)  |  final = gpt-5 (quality, ~$0.25–0.75/run)
+# EDA_MODE=dev or EDA_MODE=final
 
 # --- CSV / Excel missing-value sentinels (optional) ---
 # Comma-separated list overrides the built-in default set (which includes "?").
@@ -133,42 +117,70 @@ OPENAI_API_KEY=sk-your-actual-key-here
 
 # --- Pipeline tuning (optional) ---
 # MAX_CRITIC_ITERATIONS=2     # max critic↔revision loops before forcing report export
-# MAX_ROUNDS=50               # absolute ceiling on GroupChat rounds
+# MAX_ROUNDS=70               # absolute ceiling on GroupChat rounds
 ```
 
-**Security note:** Never commit `.env` to version control. Add it to `.gitignore` (already done).
 
-Alternatively, set via environment variable:
-
-```bash
-export OPENAI_API_KEY="sk-your-key"
-```
 
 ---
 
 ## Usage
+
+### How It Works: Business Problem Catalogue
+
+The pipeline's core output is a **Business Problem Catalogue** — a ranked list of all solvable business problems your data can answer, with deep-dive recommendations for high-probability ones.
+
+**Two-Tier Structure:**
+
+**Tier 1 — Strategic Overview (All Problems)**
+- All potential business questions ranked by probability: HIGH / MEDIUM / LOW
+- Each problem includes: business question + one-sentence EDA justification
+- Example: "Churn prediction (HIGH): customer tenure shows strong negative correlation"
+- **Purpose:** Gives stakeholders a complete landscape of opportunities
+
+**Tier 2 — Tactical Deep-Dives (Top 3 High-Probability Problems)**
+- Only the highest-probability problems receive full analysis:
+  - **PROBLEM statement** + EDA evidence
+  - **METRIC:** Key success measure (e.g., "churn rate = % customers lost per quarter")
+  - **RECOMMENDATIONS:** 2–3 actions + expected impact
+  - **BUSINESS IMPACT:** ROI or value driver
+- **Purpose:** Action-ready guidance for immediate execution
+
+**Why two tiers?**
+- Token efficiency: Deep-dives consume 100 tokens each; brief listings — only 20
+- Signal quality: HIGH-probability problems are more likely to yield ROI
+- Cognitive load: Stakeholders focus on high-impact items first
+
+**The Report Includes:**
+- Full Tier 1 + Tier 2 structure in `report.pdf` and `report.md`
+- Classification-specific analysis: Borda-ranked features (sorted by MI + effect size dual-lens voting), per-class statistics, feature-target interactions
+- Data quality assessment: 14 automated quality rules (multicollinearity, outliers, imbalance, skewness, class imbalance)
+- Visualizations: Histograms, correlation heatmaps, feature importance, missing data patterns, categorical distributions
 
 ### For Data Analysts
 
 #### Scenario 1: Basic EDA Report
 
 ```bash
-python main.py data/sales.csv
+python main.py path/to/your_dataset.csv
 ```
+
+> **Try it now with an included dataset:** `python main.py test_data/iris.csv`
 
 **What happens:**
 1. DataPrepAgent loads and validates your CSV
 2. EDAAnalysisAgent computes statistics, missing data, correlations
-3. VisualizationAgent generates 6+ charts (histograms, heatmaps)
+3. VisualizationAgent generates 7+ plots (histograms, heatmaps, feature associations, categorical distributions)
 4. CriticAgent flags data quality issues (high correlations, outliers, etc.)
 5. FindingsGeneratorAgent synthesizes 3-lens insights (statistical, ML, business)
 6. ReportExporterAgent renders PDF with inline plots + commentary
 
 **Output files:**
-- `outputs/report.pdf` — professional 7-page report (PDF format)
-- `outputs/report.html` — interactive HTML version (if IPYNB export available)
-- `outputs/findings.json` — raw findings data (for programmatic access)
-- `outputs/plots/` — individual PNG files for each chart
+- `outputs/report.pdf` — professional PDF report (statistics, visualizations, quality flags, findings, recommendations)
+- `outputs/report.md` — Markdown version (machine-readable, for version control and downstream systems)
+- `outputs/report.ipynb` — interactive Jupyter notebook (optional, if IPYNB_EXPORT=true)
+- `outputs/plots/` — individual PNG files (histograms, heatmaps, feature importance, categorical distributions)
+- `outputs/cost_summary.txt` — token usage and cost breakdown
 
 #### Scenario 2: Custom Dataset Formats
 
@@ -176,29 +188,31 @@ The pipeline supports CSV, Parquet, and Excel files:
 
 ```bash
 # Parquet file
-python main.py data/dataset.parquet
+python main.py path/to/dataset.parquet
 
 # Excel spreadsheet (single sheet)
-python main.py data/analysis.xlsx
+python main.py path/to/analysis.xlsx
 ```
+
+> **Try included format examples:** `python main.py test_data/iris.parquet` or `python main.py test_data/iris.xlsx`
 
 #### Scenario 3: Development vs. Production Models
 
-By default, the pipeline uses `gpt-5-nano` (fast, cost-effective for testing).
+By default, the pipeline uses `gpt-5-mini` (fast, cost-effective for testing).
 
-For final validation, switch to `gpt-5-mini` (higher quality, ~5× cost):
+In final mode, `FindingsGeneratorAgent` switches to `gpt-5` (higher quality); all other agents remain on `gpt-5-mini` to control cost (~5× cost for the findings step only):
 
 ```bash
-# Development (default, gpt-5-nano)
+# Development (default, gpt-5-mini)
 python main.py test_data/iris.csv
 
-# Production-ready reporting (gpt-5-mini)
+# Production-ready reporting (gpt-5)
 EDA_MODE=final python main.py test_data/iris.csv
 ```
 
 **Cost & timing reference:**
-- Dev mode: ~30–60 seconds, ~$0.01 per run
-- Final mode: ~60–120 seconds, ~$0.10 per run
+- Dev mode: ~30–60 seconds, ~$0.05–0.15 per run
+- Final mode: ~60–120 seconds, ~$0.25–0.75 per run
 
 #### Scenario 4: Example Datasets
 
@@ -207,6 +221,10 @@ Sample datasets are included in `test_data/`:
 - **iris.csv** — Classic Iris dataset (150 rows, 5 columns, balanced, multicollinear)
 - **stress_critic.csv** — Edge case dataset for quality thresholds (tests high outlier counts, missing data)
 - **adult.csv** — UCI census dataset (250 rows sampled); `workclass` and `occupation` use `" ?"` (space + question mark) as missing-value sentinels — validates automatic sentinel-to-NaN conversion
+- **default_of_credit_card_clients.csv** — UCI credit card default dataset (30,000 rows, 25 columns); tests large dataset handling and encoded categorical detection
+- **strategy_b_synthetic.csv** — Synthetic binary-classification dataset (120 rows, 4 columns); tests mixed categorical + numeric pipelines
+- **iris.parquet** — Parquet format of the Iris dataset; validates Parquet file loading
+- **iris.xlsx** — Excel format of the Iris dataset; validates Excel file loading
 
 ```bash
 # Quick test
@@ -223,186 +241,26 @@ python main.py test_data/adult.csv
 
 ---
 
-### For Developers & Engineers
-
-#### Understanding the Architecture
-
-This project uses **AG2 StateFlow** — a deterministic agent orchestration pattern:
-
-```
-user_proxy (initiator)
-    │
-    ├─→ DataPrepAgent ⇄ DataPrepExecutor (load_data, validate_schema, infer_dtypes)
-    │
-    ├─→ EDAAnalysisAgent ⇄ EDAAnalysisExecutor (describe_stats, missing_analysis, correlation_matrix)
-    │
-    ├─→ VisualizationAgent ⇄ VisualizationExecutor (plot_histograms, plot_heatmaps, etc.)
-    │
-    ├─→ CriticAgent ⇄ CriticExecutor (run_critic_rules)
-    │
-    ├─→ FindingsGeneratorAgent ⇄ FindingsGeneratorExecutor (prepare_interpretation_context, save_interpretations)
-    │
-    └─→ ReportExporterAgent ⇄ ReportExporterExecutor (render_pdf, finalize_report)
-```
-
-**Key architectural principles:**
-1. **Agent = Brain** — Decides which tools to call and when to advance
-2. **Executor = Hands** — Runs the tool, returns result, zero decision-making
-3. **Two-State Separation** — LLM message history ≠ artifact store (see Lessons 16–23)
-4. **Metadata-First Hybrid** — Deterministic fact sheets + LLM interpretation (Lesson 26)
-
-**Reference docs:**
-- [architecture.md](architecture.md) — System design, 13 sections
-- [lessons_learned.md](lessons_learned.md) — 33 engineering principles (Lessons 1–33)
-
-#### Extending the System: Add a New Tool
-
-**Step 1:** Create a pure-Python tool in `tools/`:
-
-```python
-# tools/custom_analysis.py
-def custom_analysis(data_json: str) -> str:
-    """Your analysis logic here."""
-    import json
-    df = pd.DataFrame(json.loads(data_json))
-    result = {...}  # compute something
-    return json.dumps(result)
-```
-
-**Step 2:** Register it programmatically in an agent factory (see Lesson #11):
-
-```python
-# agents/custom_agent.py
-from tools.custom_analysis import custom_analysis
-
-def register_custom_tools(agent, executor):
-    agent.register_for_llm(
-        description="Analyze custom aspects of the data."
-    )(executor.register_for_execution()(custom_analysis))
-```
-
-**Step 3:** Add the agent to the orchestrator and route it:
-
-```python
-# orchestrator.py
-custom_agent, custom_executor = make_agent(...), _create_executor(...)
-register_custom_tools(custom_agent, custom_executor)
-
-# In speaker_selection_method():
-# elif last_speaker == some_agent:
-#     return custom_agent if agent_needs_custom_analysis else next_agent
-```
-
-**Step 4:** Test it:
-
-```bash
-pytest tests/test_custom_agent.py -v
-```
-
-#### Accessing Intermediate Artifacts
-
-During a pipeline run, all intermediate results are saved in an artifact store:
-
-```
-outputs/.pipeline_state/<session-uuid>/
-├── data_json.json               # Loaded DataFrame as JSON
-├── schema_json.json             # Column types, memory profile
-├── describe_stats.json          # Descriptive statistics (13 metrics per column)
-├── missing_analysis.json        # Missingness percentages
-├── correlation_matrix.json      # Correlation matrix (NxN)
-├── plot_histograms.json         # Plot file paths
-├── plot_correlation_heatmap.json
-├── plot_missing_heatmap.json
-├── critic_report.json           # Quality flags + metadata
-└── findings.json                # Assembled findings with LLM commentary
-```
-
-**Access these in Python:**
-
-```python
-from tools._pipeline_state import load_state
-import json
-
-session_data = load_state("describe_stats")
-stats = json.loads(session_data)
-print(stats["sepal_length"])
-```
-
-#### Understanding the Findings JSON
-
-The `findings.json` artifact contains the synthesized report in structured form:
-
-```json
-{
-  "overview": "string",
-  "missing_data_analysis": "string",
-  "correlation_analysis": "string",
-  "statistical_analysis": "string",
-  "data_quality_assessment": "string",
-  "conclusions": "string (4-part: verdict + findings + risks + action)",
-  "recommendations_and_business_implications": "string (5 numbered items with ACTION/OUTCOME/RISK)",
-  "plot_commentaries": {
-    "histogram_sepal_length.png": "3-lens commentary (statistical, ML, business)",
-    ...
-  }
-}
-```
-
-**Use this for:**
-- Automated report generation in other formats (Word, HTML, email)
-- Feeding findings to downstream systems
-- Archival and audit trails
-
-#### Running the Test Suite
-
-```bash
-# All tests
-pytest tests/ -v
-
-# Specific test file
-pytest tests/test_eda_analysis_agent.py -v
-
-# Run with coverage
-pytest tests/ --cov=. --cov-report=html
-
-# Filter by marker (e.g., only critic tests)
-pytest -m "not slow" tests/
-```
-
-**Test inventory:** 744 tests covering tools, agents, orchestrator, state management, and end-to-end integration.
-
-#### Performance & Cost Tuning
-
-Adjust model selection via environment:
-
-```bash
-# Fast iteration (gpt-5-nano, ~$0.01/run)
-EDA_MODE=dev python main.py data.csv
-
-# High quality (gpt-5-mini, ~$0.10/run)
-EDA_MODE=final python main.py data.csv
-```
-
-**Pricing reference (per 1M tokens):**
-- gpt-5-nano: $0.05 (input) / $0.40 (output)
-- gpt-5-mini: $0.25 (input) / $2.00 (output)
-
-Typical run: ~2K input tokens, ~500 output tokens = $0.01–0.05 depending on mode.
-
----
-
 ## Architecture Overview
 
-### 6-Stage Pipeline
+### 6-Stage Pipeline (Classification Task Focused)
 
-1. **DataPrepAgent** ← Loads, validates, type-infers data
-2. **EDAAnalysisAgent** ← Computes 60+ statistics, correlations, missing pattern
-3. **VisualizationAgent** ← Generates 6 plots (histograms, heatmaps)
-4. **CriticAgent** ← Flags 13 data quality rules (outliers, multicollinearity, skew)
-5. **FindingsGeneratorAgent** ← LLM synthesizes 3-lens insights from metadata (deterministic facts + LLM reasoning)
-6. **ReportExporterAgent** ← Renders PDF/IPYNB with plots + commentary
+1. **DataPrepAgent** ← Loads, validates, type-infers data; detects encoded categoricals
+2. **EDAAnalysisAgent** ← Computes 60+ statistics, correlations, missing patterns; per-class statistics for classification targets
+3. **VisualizationAgent** ← Generates 7+ plots: histograms, heatmaps, categorical distributions, feature importance
+4. **CriticAgent** ← Flags 14 data quality rules (multicollinearity, outliers, imbalance, rare categories, skewness, class imbalance, etc.)
+5. **FindingsGeneratorAgent** ← LLM synthesizes TWO outputs:
+   - **ACTION PLAN:** Numbered recommendations (HIGH/MEDIUM/LOW priority) with action, expected outcome, and risk if skipped
+   - **BUSINESS PROBLEM CATALOGUE:** Tier 1 (all problems ranked by probability) + Tier 2 (top-3 problems deep-dives with metrics + ROI)
+6. **ReportExporterAgent** ← Renders PDF + Markdown + optional Jupyter notebook with inline plots
 
-### Metadata-First Hybrid (Lesson 26)
+**Classification-Task Specialization:**
+- **Per-class target statistics:** Mean/std of each feature broken down by target class (imbalance ratio reported)
+- **Borda-ranked features:** Dual-lens voting combines Mutual Information (kNN-estimated, detects any dependence) + effect size (η² numerical/classification, Cramér's V categorical), ranked by Borda score (lower = more important)
+- **Feature-target associations:** Detects nonlinear signals (high MI + weak effect size → use tree-based models) and suspicious associations (low MI + strong effect size → investigate outliers/leakage)
+- **Interaction detection:** Trajectories (monotone patterns across feature levels), segments (cross-feature cohorts with distinct target rates), portfolio concentration (which quantiles drive outcomes)
+
+### Metadata-First Hybrid
 
 **Problem:** Raw data overflows LLM context. Vision hallucinations on exact values.
 
@@ -417,7 +275,7 @@ Typical run: ~2K input tokens, ~500 output tokens = $0.01–0.05 depending on mo
 
 **Result:** 100% data coverage + expert-quality interpretation.
 
-### Two-State Separation (Lesson 16)
+### Two-State Separation
 
 | Aspect | Conversation State | Pipeline State |
 |--------|------------------|-----------------|
@@ -426,9 +284,9 @@ Typical run: ~2K input tokens, ~500 output tokens = $0.01–0.05 depending on mo
 | **LLM role** | Author/consumer (reasoning) | Neither (infrastructure) |
 | **Example** | "I'll call describe_stats next" | 17KB DataFrame JSON, 898B stats dict |
 
-**Why this matters:** Small LLMs (gpt-5-nano) cannot copy large JSON from messages into tool parameters. Instead, tools save to disk and return `STATE_REF:key` references. Downstream tools load from disk. LLM only handles 30-char references, not 15KB blobs.
+**Why this matters:** Small LLMs (gpt-5-mini dev mode) cannot copy large JSON from messages into tool parameters. Instead, tools save to disk and return `STATE_REF:key` references. Downstream tools load from disk. LLM only handles 30-char references, not 15KB blobs.
 
-See [lessons_learned.md](lessons_learned.md) Lessons 16–23 for full details.
+
 
 ---
 
@@ -450,33 +308,48 @@ See [lessons_learned.md](lessons_learned.md) Lessons 16–23 for full details.
   - Recommendations (5 numbered items with ACTION/OUTCOME/RISK)
 - **Audience:** Non-technical stakeholders, decision-makers
 
-#### 2. **findings.json** (Structured Data)
-- **Location:** `outputs/findings.json`
-- **Format:** Pydantic model serialized to JSON
-- **Contents:** 7 main sections + per-plot 3-lens commentary
-- **Audience:** Developers, downstream systems, APIs
+#### 2. **report.md** (Markdown Report)
+- **Location:** `outputs/report.md`
+- **Format:** Plain Markdown text
+- **Contents:** Identical structure to PDF (sections + expert commentary from LLM)
+- **Use:** Machine-readable for downstream systems, documentation, version control, feeding to other LLMs
+- **Audience:** DS/ML experts, technical teams, automation, continuous integration
 
 #### 3. **Visualizations** (Plots)
 - **Location:** `outputs/plots/`
 - **Files:**
-  - `histogram_<column>.png` (1 per numeric column)
-  - `correlation_heatmap.png` (1, if N>1 numeric columns)
-  - `missing_heatmap.png` (1, if any missing data)
-- **Size:** ~50–100 KB total (embedded in PDF, also standalone)
-- **Audience:** Reports, presentations, documentation
+  - `hist_<column>.png` (1 per numeric column; 30 bins)
+  - `correlation_heatmap.png` (Pearson r matrix, if N>1 numeric columns)
+  - `missing_heatmap.png` (per-column missing % bar chart, if any missing data)
+  - `class_distribution.png` (target class counts + imbalance ratio, if classification)
+  - `target_distribution.png` (target value histogram + KDE overlay, if regression)
+  - `feature_target_associations.png` (Borda-ranked features with MI + effect size)
+  - `cat_<column>.png` (1 per categorical column; top values + target rates)
+  - `ordinal_spearman_heatmap.png` (Spearman ρ matrix for ordinal features, if present)
+- **Size:** ~50–200 KB total (embedded in PDF, also standalone for presentations/dashboards)
+- **Audience:** Reports, presentations, documentation, dashboard integration
 
-#### 4. **Session Artifacts** (Developer Access)
-- **Location:** `outputs/.pipeline_state/<uuid>/`
+#### 4. **cost_summary.txt** (Cost Report)
+- **Location:** `outputs/cost_summary.txt`
+- **Format:** Plain text
+- **Contents:** Per-agent token usage, cost breakdown by model, and grand total (including hallucination eval if OpenLIT enabled)
+- **Audience:** Finance tracking, cost analysis, billing
+
+#### 5. **Session Artifacts** (Developer Access)
+- **Location:** `outputs/.pipeline_state/<session-uuid>/`
 - **Contents:**
-  - `data_json.json` — DataFrame as records JSON
-  - `schema_json.json` — Column metadata
-  - `describe_stats.json` — 13 statistics per column
-  - `missing_analysis.json` — Null/NaN percentages
-  - `correlation_matrix.json` — N×N correlation matrix
-  - `critic_report.json` — Quality flags
-  - `findings.json` — Assembled findings
-- **Access:** Via `tools._pipeline_state.load_state(key)`
-- **Audience:** Developers, automated workflows
+  - `data_json.json` — DataFrame as records JSON (raw data for reproducibility)
+  - `schema_json.json` — Column metadata (names, types, memory usage)
+  - `describe_stats.json` — per-column statistics (count, mean, std, min, 25%/50%/75%, max; plus skewness_scipy for numeric columns)
+  - `missing_analysis.json` — Null/NaN percentages per column
+  - `correlation_matrix.json` — N×N Pearson correlation matrix
+  - `categorical_analysis.json` — Per-column categorical distributions (cardinality, entropy, rare values, target rates)
+  - `feature_associations.json` — Borda-ranked features with MI (kNN-estimated) + effect size (η²/Cramér's V)
+  - `interaction_signals.json` — Multivariate patterns (persistence gradients, trajectories, cross-feature segments, portfolio concentration)
+  - `critic_report.json` — Quality flags (14 data quality rules: multicollinearity, outliers, imbalance, skewness, class imbalance, etc.)
+  - `interpretations.json` — LLM-generated expert commentary (statistical, DS/ML, and business perspectives)
+- **Access:** Via `tools._pipeline_state.load_state(key)` in Python (see developers section for examples)
+- **Audience:** Developers, automated workflows, data scientists building custom analyses
 
 ### Optional Outputs
 
@@ -496,16 +369,18 @@ If IPYNB export is enabled:
 **Current mode** — CLI-based, single-file analysis:
 
 ```bash
-python main.py data/analysis.csv
+python main.py path/to/your_dataset.csv
 ```
 
 ✅ Simple, no infrastructure required  
 ✅ Fast feedback loop for prototyping  
 ⚠️ No concurrent requests, state file cleanup manual  
 
-### Web UI (Streamlit/Gradio)
+### Web UI (Streamlit)
 
-**Recommended architecture** (no code included, architectural guidance):
+A browser-based interface is maintained on the `streamlit-deploy` branch (`streamlit_app.py`). That branch has its own README with full setup and usage instructions — see it for Streamlit Cloud deployment, file upload workflow, and UI-specific configuration.
+
+For building a custom web UI on top of `main`, the recommended architecture:
 
 ```
 Client (Streamlit/Gradio UI)
@@ -557,8 +432,9 @@ git clone <repo-url>
 cd autogen_simplified_EDA_tool
 
 # 2. Create environment
-conda env create -f environment.yml
+conda create -n ag2_env python=3.12
 conda activate ag2_env
+pip install -r requirements.txt
 
 # 3. Install dev tools (optional)
 pip install ruff mypy black pre-commit
@@ -578,9 +454,7 @@ pytest tests/ -v --tb=short
 - **[tools/](tools/)** — Pure-Python tool functions (pandas, matplotlib, analysis)
 - **[tools/_pipeline_state.py](tools/_pipeline_state.py)** — Artifact store implementation
 - **[eda_state.py](eda_state.py)** — Pydantic models (state schema)
-- **[tests/](tests/)** — 744 unit tests
-- **[lessons_learned.md](lessons_learned.md)** — 33 engineering lessons
-- **[architecture.md](architecture.md)** — System design (13 sections)
+- **[tests/](tests/)** — 1,000+ unit tests
 
 ### Code Quality
 
@@ -598,7 +472,7 @@ mypy agents/ tools/ --strict
 pytest tests/ -v --cov=. --cov-report=term-missing
 ```
 
-**Current state:** 744 tests passing, ruff clean, zero linting errors.
+**Current state:** 1,014 tests passing, ruff clean, zero linting errors.
 
 ### Adding New Tests
 
@@ -751,7 +625,7 @@ The pipeline includes **automated hallucination detection** for FindingsGenerato
 
 **How it works:**
 1. `prepare_interpretation_context()` (called by **FindingsGeneratorExecutor**) produces a deterministic fact sheet: all statistics, histogram bin data, correlation matrix, missing percentages, critic flags
-2. **FindingsGeneratorAgent** (gpt-5-nano in `dev` mode / gpt-5-mini in `final` mode, controlled by `EDA_MODE`) generates expert commentary grounded in the fact sheet
+2. **FindingsGeneratorAgent** (gpt-5-mini in `dev` mode / gpt-5 in `final` mode, controlled by `EDA_MODE`) generates expert commentary grounded in the fact sheet
 3. `save_interpretations()` (called by **FindingsGeneratorExecutor**, only when OpenLIT session is active) runs `openlit.evals.Hallucination` with the judge model (`OPENLIT_EVAL_MODEL`, default `gpt-5`) comparing the generated text against the fact sheet as ground truth
 4. Evaluation results are persisted in the artifact store (`hallucination_eval` key) and forwarded as OTel metrics to the OpenLIT dashboard via `collect_metrics=True`
 5. `assemble_findings()` builds a **Trustworthiness Assessment** section at the end of the report based on the persisted eval score
@@ -779,18 +653,19 @@ OPENLIT_EVAL_MODEL=gpt-5
 
 ### Custom Pricing for New Models
 
-OpenLIT's default pricing JSON may not include newer models like `gpt-5-nano` and `gpt-5-mini`. The project includes `openlit_pricing.json` with correct pricing:
+OpenLIT's default pricing JSON may not include newer models like `gpt-5-mini` and `gpt-5`. The project includes `openlit_pricing.json` with correct pricing:
 
 ```json
 {
   "chat": {
     "gpt-5-nano": {"promptPrice": 0.00005, "completionPrice": 0.0004},
-    "gpt-5-mini": {"promptPrice": 0.00025, "completionPrice": 0.002}
+    "gpt-5-mini": {"promptPrice": 0.00025, "completionPrice": 0.002},
+    "gpt-5":      {"promptPrice": 0.00125, "completionPrice": 0.01}
   }
 }
 ```
 
-This file is automatically loaded by `_init_openlit()` in `main.py`. To add new models, edit `openlit_pricing.json` — prices are per-token.
+> Versioned model aliases (e.g. `gpt-5-mini-2025-08-07`) are also included. Edit `openlit_pricing.json` directly to add further entries — prices are per-token.
 
 ### Known Issues (openlit 1.36.8)
 
@@ -803,8 +678,6 @@ Three bugs exist in openlit 1.36.8 that are patched locally in the conda environ
 Additionally, the **Agno instrumentor** is disabled (`disabled_instrumentors=["agno"]`) since AG2 does not use the Agno framework, and the buggy instrumentor would cause initialization failures.
 
 > **Note:** These patches live in the installed package and will be lost on `pip install --upgrade openlit`. Re-apply them if upgrading, or check if the upstream fix has been released.
-
-See [lessons_learned.md](lessons_learned.md) Lessons 29–33 for full details.
 
 ---
 
@@ -820,7 +693,7 @@ See [lessons_learned.md](lessons_learned.md) Lessons 29–33 for full details.
 - Use full path or place file in project root
 - Or copy to `test_data/`: `cp my_data.csv test_data/`
 
-**"gpt-5-nano not available" / HTTP 400 error**
+**"gpt-5-mini not available" / HTTP 400 error**
 - Check OpenAI account has access to latest models
 - Verify API key is correct: `curl https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY"`
 
@@ -840,39 +713,71 @@ See [lessons_learned.md](lessons_learned.md) Lessons 29–33 for full details.
 
 ---
 
+## For Developers & Engineers
+
+### Understanding the Architecture
+
+This project uses **AG2 StateFlow** — a deterministic agent orchestration pattern:
+
+```
+user_proxy (initiator)
+    ├─→ DataPrepAgent ⇄ DataPrepExecutor
+    ├─→ EDAAnalysisAgent ⇄ EDAAnalysisExecutor
+    ├─→ VisualizationAgent ⇄ VisualizationExecutor
+    ├─→ CriticAgent ⇄ CriticExecutor
+    ├─→ FindingsGeneratorAgent ⇄ FindingsGeneratorExecutor
+    └─→ ReportExporterAgent ⇄ ReportExporterExecutor
+```
+
+**Key principles:**
+1. **Agent = Brain** — Decides which tools to call
+2. **Executor = Hands** — Runs the tool, returns result
+3. **Two-State Separation** — LLM message history ≠ artifact store (state stored on disk)
+4. **Metadata-First Hybrid** — Deterministic fact sheets + LLM interpretation (prevents hallucination)
+
+### Extending the System
+
+Create a pure-Python tool in `tools/` and register it programmatically in the orchestrator. See `agents/data_prep_agent.py` for examples.
+
+### Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+**Coverage:** 1,000+ tests across 17 test files (tools, agents, orchestrator, state management, end-to-end).
+
+### Model Selection & Tuning
+
+```bash
+# Fast (gpt-5-mini, dev mode)
+python main.py data.csv
+
+# High quality (gpt-5, final mode)  
+EDA_MODE=final python main.py data.csv
+```
+
+Pricing: gpt-5-mini ($0.25/$2.00 per 1M tokens) vs. gpt-5 ($1.25/$10.00).
+
+---
+
 ## License & Attribution
 
 **AG2 Framework:** [Apache 2.0](https://github.com/ag2ai/ag2)  
 **Project:** MIT (your choice)
 
-**Design Principles Reference:**  
-- StateFlow controller pattern (Lesson 1)
-- Dedicated executor architecture (Lesson 2)
-- Artifact store pattern (Lessons 16–23)
-- Metadata-First Hybrid (Lesson 26)
 
-See [lessons_learned.md](lessons_learned.md) for full architectural documentation.
+
+
 
 ---
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) (if available) or:
+Contributions welcome! See CONTRIBUTING.md (not yet included in this repository) or:
 
 1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/my-agent`)
-3. Add tests (`pytest tests/test_my_agent.py`)
-4. Run full test suite (`pytest tests/ -v`)
+2. Create a feature branch
+3. Add tests
+4. Run full test suite
 5. Commit & push
-6. Open a PR with reference to specific Lessons if architectural changes
-
----
-
-## Questions?
-
-- **Architecture:** See [architecture.md](architecture.md)
-- **Engineering details:** See [lessons_learned.md](lessons_learned.md) (33 lessons)
-- **Agent development:** Lesson #11 (tool registration) + Lesson #1 (agent decision flow)
-- **Performance tuning:** Config EDA_MODE, adjust model selection
-
-Happy analyzing! 🚀
