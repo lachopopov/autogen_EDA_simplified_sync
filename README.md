@@ -627,11 +627,11 @@ The pipeline includes **automated hallucination detection** for FindingsGenerato
 **How it works:**
 1. `prepare_interpretation_context()` (called by **FindingsGeneratorExecutor**) produces a deterministic fact sheet: all statistics, histogram bin data, correlation matrix, missing percentages, critic flags
 2. **FindingsGeneratorAgent** (gpt-5-mini in `dev` mode / gpt-5 in `final` mode, controlled by `EDA_MODE`) generates expert commentary grounded in the fact sheet
-3. `save_interpretations()` (called by **FindingsGeneratorExecutor**, only when OpenLIT session is active) runs `openlit.evals.Hallucination` with the judge model (`OPENLIT_EVAL_MODEL`, default `gpt-5`) comparing the generated text against the fact sheet as ground truth
-4. Evaluation results are persisted in the artifact store (`hallucination_eval` key) and forwarded as OTel metrics to the OpenLIT dashboard via `collect_metrics=True`
+3. `save_interpretations()` (called by **FindingsGeneratorExecutor**, only when OpenLIT session is active) runs `openlit.evals.All` with the judge model (`OPENLIT_EVAL_MODEL`, default `gpt-5`), performing a **combined hallucination + bias + toxicity evaluation** against the fact sheet as ground truth
+4. Evaluation results are persisted in the artifact store (`comprehensive_eval` key) and logged via the OTel tracer
 5. `assemble_findings()` builds a **Trustworthiness Assessment** section at the end of the report based on the persisted eval score
 
-**Trustworthiness levels** (based on hallucination score):
+**Trustworthiness levels** (based on comprehensive eval score — hallucination + bias + toxicity):
 
 | Score Range | Level | Meaning |
 |---|---|---|
@@ -639,7 +639,7 @@ The pipeline includes **automated hallucination detection** for FindingsGenerato
 | 0.3 – 0.7 | **Medium Trustworthiness** | Some claims may not be fully supported; cross-check recommended |
 | 0.7 – 1.0 | **Low Trustworthiness** | Significant hallucination detected; treat with caution |
 
-**Telemetry:** `_shutdown_openlit()` flushes both the `TracerProvider` and `MeterProvider` before exit, ensuring the eval counter created by `collect_metrics=True` is exported to the OTLP collector (default `PeriodicExportingMetricReader` interval is 60 s — longer than a typical pipeline run).
+**Telemetry:** `_shutdown_openlit()` flushes both the `TracerProvider` and `MeterProvider` before exit, ensuring all pending spans and metrics are exported to the OTLP collector before the process terminates (default `PeriodicExportingMetricReader` interval is 60 s — longer than a typical pipeline run).
 
 **Non-blocking:** The evaluation logs warnings but never fails the pipeline.
 
@@ -668,17 +668,7 @@ OpenLIT's default pricing JSON may not include newer models like `gpt-5-mini` an
 
 > Versioned model aliases (e.g. `gpt-5-mini-2025-08-07`) are also included. Edit `openlit_pricing.json` directly to add further entries — prices are per-token.
 
-### Known Issues (openlit 1.36.8)
-
-Three bugs exist in openlit 1.36.8 that are patched locally in the conda environment:
-
-1. **`async_agno.py` line 783** — `return await result` inside an async generator (invalid Python). Patched to `await result`.
-2. **`__init__.py` tracer=None** — `config.update_config()` passes user-provided `otel_tracer` (always None) instead of the internally created `configured_tracer`. Patched to pass `configured_tracer`.
-3. **`evals/utils.py` line 155** — `temperature=0.0` hardcoded in `client.beta.chat.completions.parse()`. gpt-5 family models reject `temperature=0.0` with HTTP 400. Patched by removing the `temperature` parameter.
-
-Additionally, the **Agno instrumentor** is disabled (`disabled_instrumentors=["agno"]`) since AG2 does not use the Agno framework, and the buggy instrumentor would cause initialization failures.
-
-> **Note:** These patches live in the installed package and will be lost on `pip install --upgrade openlit`. Re-apply them if upgrading, or check if the upstream fix has been released.
+> **Agno instrumentor:** `openlit.init()` is called with `disabled_instrumentors=["agno"]` since this project does not use the Agno framework. This is a precaution — openlit 1.39.0+ also auto-skips instrumentors whose packages are not installed, so it is effectively a no-op if `agno` is absent from the environment.
 
 ---
 
