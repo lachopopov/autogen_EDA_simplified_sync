@@ -20,6 +20,7 @@ Automated end-to-end statistical analysis, visualization, quality assessment, an
 - [Development & Testing](#development--testing)
 - [Future Optimizations](#future-optimizations)
 - [Observability (OpenLIT)](#observability-openlit)
+  - [Hallucination, Toxicity and Bias Evaluation](#hallucination-toxicity-and-bias-evaluation)
 - [Troubleshooting](#troubleshooting)
 - [For Developers & Engineers](#for-developers--engineers)
 - [License & Attribution](#license--attribution)
@@ -633,6 +634,16 @@ The dashboard shows:
 - **Cost tracking** — per-request and cumulative costs
 
 ### Hallucination Evaluation
+
+#### Hallucination, Bias, and Toxicity — All Evaluated (Combined)
+
+All three are evaluated in a single pass via `openlit.evals.All` when `OPENLIT_ENABLE=true`. There are no separate evaluator calls — the combined evaluator returns one unified score, verdict, and a per-type breakdown (Hallucination / Bias / Toxicity) that is embedded in the report's **Trustworthiness Assessment** section.
+
+When the judge model finds no issues, the report states: _"No significant bias, toxicity, or hallucination detected."_
+
+See [Observability → Hallucination Evaluation](#hallucination-evaluation) for the full flow, scoring table, and configuration. The scope described there covers all three dimensions.
+
+---
 
 The pipeline includes **automated hallucination detection** for FindingsGenerator output using OpenLIT's programmatic evaluations. When OpenLIT is enabled, the LLM-generated interpretations are evaluated against the deterministic fact sheet (ground truth) using a stronger judge model.
 
