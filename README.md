@@ -21,6 +21,7 @@ Automated end-to-end statistical analysis, visualization, quality assessment, an
 - [Development & Testing](#development--testing)
 - [Future Optimizations](#future-optimizations)
 - [Observability (OpenLIT)](#observability-openlit)
+- [Hallucination, Toxicity and Bias Evaluation](#hallucination-toxicity-and-bias-evaluation)
 - [Troubleshooting](#troubleshooting)
 - [For Developers & Engineers](#for-developers--engineers)
 - [License & Attribution](#license--attribution)
@@ -678,6 +679,22 @@ Three bugs exist in openlit 1.36.8 that are patched locally in the conda environ
 Additionally, the **Agno instrumentor** is disabled (`disabled_instrumentors=["agno"]`) since AG2 does not use the Agno framework, and the buggy instrumentor would cause initialization failures.
 
 > **Note:** These patches live in the installed package and will be lost on `pip install --upgrade openlit`. Re-apply them if upgrading, or check if the upstream fix has been released.
+
+---
+
+## Hallucination, Toxicity and Bias Evaluation
+
+### Hallucination
+
+Automated hallucination detection is fully implemented. See [Observability → Hallucination Evaluation](#hallucination-evaluation) for the complete flow, trustworthiness scoring table, and configuration.
+
+### Toxicity
+
+Not currently evaluated. Planned: pipe `FindingsGeneratorAgent` output through `openlit.evals.Toxicity` (same judge model) and surface a toxicity score in the Trustworthiness Assessment section.
+
+### Bias
+
+Not currently evaluated. Planned: run `openlit.evals.Bias` against generated interpretations to flag demographic or framing bias in AI-produced insights.
 
 ---
 
