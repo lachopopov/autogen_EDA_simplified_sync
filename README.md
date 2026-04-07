@@ -635,7 +635,7 @@ The dashboard shows:
 
 ### Hallucination Evaluation
 
-#### Hallucination, Bias, and Toxicity — All Evaluated (Combined)
+#### Hallucination, Toxicity and Bias Evaluation
 
 All three are evaluated in a single pass via `openlit.evals.All` when `OPENLIT_ENABLE=true`. There are no separate evaluator calls — the combined evaluator returns one unified score, verdict, and a per-type breakdown (Hallucination / Bias / Toxicity) that is embedded in the report's **Trustworthiness Assessment** section.
 
