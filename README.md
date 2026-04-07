@@ -684,17 +684,13 @@ Additionally, the **Agno instrumentor** is disabled (`disabled_instrumentors=["a
 
 ## Hallucination, Toxicity and Bias Evaluation
 
-### Hallucination
+### Hallucination, Bias, and Toxicity — All Evaluated (Combined)
 
-Automated hallucination detection is fully implemented. See [Observability → Hallucination Evaluation](#hallucination-evaluation) for the complete flow, trustworthiness scoring table, and configuration.
+All three are evaluated in a **single pass** via `openlit.evals.All` when `OPENLIT_ENABLE=true`. There are no separate evaluator calls — the combined evaluator returns one unified score, verdict, and a per-type breakdown (Hallucination / Bias / Toxicity) that is embedded in the report's **Trustworthiness Assessment** section.
 
-### Toxicity
+When the judge model finds no issues, the report states: *"No significant bias, toxicity, or hallucination detected."*
 
-Not currently evaluated. Planned: pipe `FindingsGeneratorAgent` output through `openlit.evals.Toxicity` (same judge model) and surface a toxicity score in the Trustworthiness Assessment section.
-
-### Bias
-
-Not currently evaluated. Planned: run `openlit.evals.Bias` against generated interpretations to flag demographic or framing bias in AI-produced insights.
+See [Observability → Hallucination Evaluation](#hallucination-evaluation) for the full flow, scoring table, and configuration. The scope described there covers all three dimensions.
 
 ---
 
