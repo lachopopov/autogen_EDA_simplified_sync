@@ -54,7 +54,7 @@ Access the app directly from your browser (no installation needed):
 4. **Run the analysis** — AI agents generate a complete report (~2 minutes)
 5. **View results in UI** — See the plots, Markdown version, and cost analysis by clicking Results section
 6. **Download results** — PDF report, Markdown version, Jupyter Notebook, and cost summary
-7. **Check trustworthiness** — See the hallucination score in the report (requires OpenLIT to be enabled)
+7. **Check trustworthiness** — See the hallucination score in the report.
 
 **Why Streamlit Cloud?** No software installation, instant access, intuitive interface, results viewable in UI and ready to download immediately.
 
