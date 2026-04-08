@@ -4,7 +4,6 @@
 
 Automated end-to-end statistical analysis, visualization, quality assessment, and report generation using AI agents coordinated through AG2 StateFlow. Engineered for small-to-medium datasets (100–100K rows) with expert-validated Metadata-First Hybrid architecture.
 
-> **Branch scope:** This README documents the `main` branch — the CLI-first, general-purpose codebase for local development and custom integrations. A Streamlit-deployable version lives on the `streamlit-deploy` branch, which has its own standalone README tailored for that deployment.
 
 ---
 
@@ -21,7 +20,7 @@ Automated end-to-end statistical analysis, visualization, quality assessment, an
 - [Development & Testing](#development--testing)
 - [Future Optimizations](#future-optimizations)
 - [Observability (OpenLIT)](#observability-openlit)
-- [Hallucination, Toxicity and Bias Evaluation](#hallucination-toxicity-and-bias-evaluation)
+  - [Hallucination, Toxicity and Bias Evaluation](#hallucination-toxicity-and-bias-evaluation)
 - [Troubleshooting](#troubleshooting)
 - [For Developers & Engineers](#for-developers--engineers)
 - [License & Attribution](#license--attribution)
@@ -43,7 +42,23 @@ A comprehensive exploratory data analysis report that identifies and ranks **sol
 
 **Bottom line:** You get a data analysis report from AI agents that you can actually trust.
 
-### Command Line (CLI)
+### For Business Stakeholders & Analysts
+
+#### Option 1: Web UI (Streamlit Cloud) — Recommended for Business Users
+
+Access the app directly from your browser (no installation needed):
+
+1. **Upload your dataset** — CSV, Parquet, or Excel format (first row = feature names)
+2. **Confirm target variable** — AI agents suggest a target; you confirm, reassign, or skip
+3. **Validate encoded categoricals** — AI detects numeric columns that might be encoded categories; you confirm each and label it as nominal or ordinal
+4. **Run the analysis** — AI agents generate a complete report (~2 minutes)
+5. **View results in UI** — See the plots, Markdown version, and cost analysis by clicking Results section
+6. **Download results** — PDF report, Markdown version, Jupyter Notebook, and cost summary
+7. **Check trustworthiness** — See the hallucination score in the report (requires OpenLIT to be enabled)
+
+**Why Streamlit Cloud?** No software installation, instant access, intuitive interface, results viewable in UI and ready to download immediately.
+
+#### Option 2: Command Line (CLI) — For Local Development
 
 For DS/ML experts and GenAI engineers building custom analyses:
 
@@ -54,8 +69,6 @@ python main.py your_dataset.csv
 Results appear in `outputs/` (PDF, Markdown, plots, cost summary).
 
 **Why CLI?** Integrate into scripts, automate batch processing, extend with custom tools.
-
-> **Want a browser UI?** See the `streamlit-deploy` branch — it contains a Streamlit Cloud deployment with file upload, interactive results, and one-click PDF/notebook download.
 
 
 
@@ -101,12 +114,6 @@ OPENAI_API_KEY=sk-your-actual-key-here
 # --- Model selection (optional) ---
 # dev = gpt-5-mini (fast, ~$0.05–0.15/run)  |  final = gpt-5 (quality, ~$0.25–0.75/run)
 # EDA_MODE=dev or EDA_MODE=final
-
-# --- AG2 LLM cache (optional) ---
-# Decoupled from EDA_MODE so true production (EDA_MODE=final) gets fresh LLM responses.
-# Set to any integer to enable AG2's prompt-level cache (cost-saving validation runs).
-# Omit entirely (default) to disable — recommended for production.
-# AG2_CACHE_SEED=42
 
 # --- CSV / Excel missing-value sentinels (optional) ---
 # Comma-separated list overrides the built-in default set (which includes "?").
@@ -210,25 +217,12 @@ By default, the pipeline uses `gpt-5-mini` (fast, cost-effective for testing).
 In final mode, `FindingsGeneratorAgent` switches to `gpt-5` (higher quality); all other agents remain on `gpt-5-mini` to control cost (~5× cost for the findings step only):
 
 ```bash
-# Development (default, gpt-5-mini) — no caches
+# Development (default, gpt-5-mini)
 python main.py test_data/iris.csv
 
-# True production (gpt-5 findings, app cache on, AG2 LLM cache off → fresh responses)
+# Production-ready reporting (gpt-5)
 EDA_MODE=final python main.py test_data/iris.csv
-
-# Validation / cost-saving re-run (both caches on — AG2 replays cached LLM responses)
-EDA_MODE=final AG2_CACHE_SEED=42 python main.py test_data/iris.csv
 ```
-
-**Cache matrix:**
-
-| Mode | App cache (`outputs/.cache/`) | AG2 LLM cache (`~/.cache/autogen/`) |
-|---|---|---|
-| dev (default) | off | off |
-| `EDA_MODE=final` | **on** | off |
-| `EDA_MODE=final AG2_CACHE_SEED=42` | **on** | **on** |
-
-`AG2_CACHE_SEED` is intentionally decoupled from `EDA_MODE`: production always gets fresh LLM responses; validation runs opt in explicitly.
 
 **Cost & timing reference:**
 - Dev mode: ~30–60 seconds, ~$0.05–0.15 per run
@@ -398,9 +392,9 @@ python main.py path/to/your_dataset.csv
 
 ### Web UI (Streamlit)
 
-A browser-based interface is maintained on the `streamlit-deploy` branch (`streamlit_app.py`). That branch has its own README with full setup and usage instructions — see it for Streamlit Cloud deployment, file upload workflow, and UI-specific configuration.
+A Streamlit implementation is included (`streamlit_app.py`). See [Quick Start → Option 1](#option-1-web-ui-streamlit-cloud--recommended-for-business-users) for usage instructions.
 
-For building a custom web UI on top of `main`, the recommended architecture:
+For reference, the underlying architecture:
 
 ```
 Client (Streamlit/Gradio UI)
@@ -641,16 +635,26 @@ The dashboard shows:
 
 ### Hallucination Evaluation
 
+#### Hallucination, Toxicity and Bias Evaluation
+
+All three are evaluated in a single pass via `openlit.evals.All` when `OPENLIT_ENABLE=true`. There are no separate evaluator calls — the combined evaluator returns one unified score, verdict, and a per-type breakdown (Hallucination / Bias / Toxicity) that is embedded in the report's **Trustworthiness Assessment** section.
+
+When the judge model finds no issues, the report states: _"No significant bias, toxicity, or hallucination detected."_
+
+See [Observability → Hallucination Evaluation](#hallucination-evaluation) for the full flow, scoring table, and configuration. The scope described there covers all three dimensions.
+
+---
+
 The pipeline includes **automated hallucination detection** for FindingsGenerator output using OpenLIT's programmatic evaluations. When OpenLIT is enabled, the LLM-generated interpretations are evaluated against the deterministic fact sheet (ground truth) using a stronger judge model.
 
 **How it works:**
 1. `prepare_interpretation_context()` (called by **FindingsGeneratorExecutor**) produces a deterministic fact sheet: all statistics, histogram bin data, correlation matrix, missing percentages, critic flags
 2. **FindingsGeneratorAgent** (gpt-5-mini in `dev` mode / gpt-5 in `final` mode, controlled by `EDA_MODE`) generates expert commentary grounded in the fact sheet
-3. `save_interpretations()` (called by **FindingsGeneratorExecutor**, only when OpenLIT session is active) runs `openlit.evals.All` with the judge model (`OPENLIT_EVAL_MODEL`, default `gpt-5`), performing a **combined hallucination + bias + toxicity evaluation** against the fact sheet as ground truth
-4. Evaluation results are persisted in the artifact store (`comprehensive_eval` key) and logged via the OTel tracer
+3. `save_interpretations()` (called by **FindingsGeneratorExecutor**, only when OpenLIT session is active) runs `openlit.evals.Hallucination` with the judge model (`OPENLIT_EVAL_MODEL`, default `gpt-5`) comparing the generated text against the fact sheet as ground truth
+4. Evaluation results are persisted in the artifact store (`hallucination_eval` key) and forwarded as OTel metrics to the OpenLIT dashboard via `collect_metrics=True`
 5. `assemble_findings()` builds a **Trustworthiness Assessment** section at the end of the report based on the persisted eval score
 
-**Trustworthiness levels** (based on comprehensive eval score — hallucination + bias + toxicity):
+**Trustworthiness levels** (based on hallucination score):
 
 | Score Range | Level | Meaning |
 |---|---|---|
@@ -658,7 +662,7 @@ The pipeline includes **automated hallucination detection** for FindingsGenerato
 | 0.3 – 0.7 | **Medium Trustworthiness** | Some claims may not be fully supported; cross-check recommended |
 | 0.7 – 1.0 | **Low Trustworthiness** | Significant hallucination detected; treat with caution |
 
-**Telemetry:** `_shutdown_openlit()` flushes both the `TracerProvider` and `MeterProvider` before exit, ensuring all pending spans and metrics are exported to the OTLP collector before the process terminates (default `PeriodicExportingMetricReader` interval is 60 s — longer than a typical pipeline run).
+**Telemetry:** `_shutdown_openlit()` flushes both the `TracerProvider` and `MeterProvider` before exit, ensuring the eval counter created by `collect_metrics=True` is exported to the OTLP collector (default `PeriodicExportingMetricReader` interval is 60 s — longer than a typical pipeline run).
 
 **Non-blocking:** The evaluation logs warnings but never fails the pipeline.
 
@@ -687,19 +691,17 @@ OpenLIT's default pricing JSON may not include newer models like `gpt-5-mini` an
 
 > Versioned model aliases (e.g. `gpt-5-mini-2025-08-07`) are also included. Edit `openlit_pricing.json` directly to add further entries — prices are per-token.
 
-> **Agno instrumentor:** `openlit.init()` is called with `disabled_instrumentors=["agno"]` since this project does not use the Agno framework. This is a precaution — openlit 1.39.0+ also auto-skips instrumentors whose packages are not installed, so it is effectively a no-op if `agno` is absent from the environment.
+### Known Issues (openlit 1.36.8)
 
----
+Three bugs exist in openlit 1.36.8 that are patched locally in the conda environment:
 
-## Hallucination, Toxicity and Bias Evaluation
+1. **`async_agno.py` line 783** — `return await result` inside an async generator (invalid Python). Patched to `await result`.
+2. **`__init__.py` tracer=None** — `config.update_config()` passes user-provided `otel_tracer` (always None) instead of the internally created `configured_tracer`. Patched to pass `configured_tracer`.
+3. **`evals/utils.py` line 155** — `temperature=0.0` hardcoded in `client.beta.chat.completions.parse()`. gpt-5 family models reject `temperature=0.0` with HTTP 400. Patched by removing the `temperature` parameter.
 
-### Hallucination, Bias, and Toxicity — All Evaluated (Combined)
+Additionally, the **Agno instrumentor** is disabled (`disabled_instrumentors=["agno"]`) since AG2 does not use the Agno framework, and the buggy instrumentor would cause initialization failures.
 
-All three are evaluated in a **single pass** via `openlit.evals.All` when `OPENLIT_ENABLE=true`. There are no separate evaluator calls — the combined evaluator returns one unified score, verdict, and a per-type breakdown (Hallucination / Bias / Toxicity) that is embedded in the report's **Trustworthiness Assessment** section.
-
-When the judge model finds no issues, the report states: *"No significant bias, toxicity, or hallucination detected."*
-
-See [Observability → Hallucination Evaluation](#hallucination-evaluation) for the full flow, scoring table, and configuration. The scope described there covers all three dimensions.
+> **Note:** These patches live in the installed package and will be lost on `pip install --upgrade openlit`. Re-apply them if upgrading, or check if the upstream fix has been released.
 
 ---
 
@@ -795,9 +797,6 @@ the terms of the **GNU General Public License v3.0** as published by the Free
 Software Foundation. Any derivative work distributed to others must also be
 released under GPL-v3 — this ensures the codebase and all improvements remain
 open. See [LICENSE](LICENSE) for the full terms.
-
-
-
 
 
 ---
