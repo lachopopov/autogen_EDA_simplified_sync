@@ -788,10 +788,15 @@ Pricing: gpt-5-mini ($0.25/$2.00 per 1M tokens) vs. gpt-5 ($1.25/$10.00).
 ## License & Attribution
 
 **AG2 Framework:** [Apache 2.0](https://github.com/ag2ai/ag2)  
-**Project:** MIT (your choice)
+**Project:** [GNU General Public License v3.0](LICENSE)
 
+Copyright (C) 2026 Lachezar Popov
 
-
+This project is free software: you can redistribute it and/or modify it under
+the terms of the **GNU General Public License v3.0** as published by the Free
+Software Foundation. Any derivative work distributed to others must also be
+released under GPL-v3 — this ensures the codebase and all improvements remain
+open. See [LICENSE](LICENSE) for the full terms.
 
 
 ---
