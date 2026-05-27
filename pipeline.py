@@ -556,7 +556,7 @@ def run_pipeline(
 
             from orchestrator import build_group_chat
 
-            _groupchat, manager, user_proxy, _agents, _executors, agents_list = build_group_chat()
+            _groupchat, manager, user_proxy, _agents, _executors, agents_list, flush_agent_timers = build_group_chat()
 
             target_ctx = ""
             if target_info.column:
@@ -582,6 +582,10 @@ def run_pipeline(
 
             with metrics.span("initiate_chat"):
                 user_proxy.initiate_chat(manager, message=initial_message)
+            # Flush any agent span whose _finish_agent was not reached because
+            # AG2 terminated the groupchat (via is_termination_msg) before the
+            # router fired one last time (typically ReportExporterAgent).
+            flush_agent_timers()
 
             # Cost tracking
             from autogen import gather_usage_summary

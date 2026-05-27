@@ -26,7 +26,7 @@ from orchestrator import (
 @pytest.fixture()
 def group_chat_components():
     """Build the full GroupChat and return all components (6-tuple)."""
-    groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list = build_group_chat()
+    groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list, flush_agent_timers = build_group_chat()
     return groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list
 
 
@@ -79,7 +79,7 @@ def mock_user_proxy():
 @pytest.fixture()
 def router(mock_agents, mock_executors, mock_user_proxy):
     """A state_flow_transition function with mock agents and executors."""
-    return _make_state_flow_transition(
+    router_fn, _flush = _make_state_flow_transition(
         user_proxy=mock_user_proxy,
         data_prep_agent=mock_agents["DataPrepAgent"],
         data_prep_executor=mock_executors["DataPrepExecutor"],
@@ -94,6 +94,7 @@ def router(mock_agents, mock_executors, mock_user_proxy):
         report_exporter_agent=mock_agents["ReportExporterAgent"],
         report_executor=mock_executors["ReportExporterExecutor"],
     )
+    return router_fn
 
 
 @pytest.fixture()

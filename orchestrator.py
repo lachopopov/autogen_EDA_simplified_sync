@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 from autogen import AssistantAgent, GroupChat, GroupChatManager, UserProxyAgent
 
@@ -169,6 +170,18 @@ def _make_state_flow_transition(
                 (time.perf_counter() - start) * 1000,
             )
 
+    def flush_agent_timers() -> None:
+        """Write spans for any agents still in-flight when the groupchat ends.
+
+        AG2 terminates the conversation (via ``is_termination_msg``) before
+        calling ``state_flow_transition`` for the final ReportExporterAgent
+        message.  This means ``_finish_agent("ReportExporterAgent")`` is
+        never reached from the router.  Call this function immediately after
+        ``user_proxy.initiate_chat()`` returns to capture any pending spans.
+        """
+        for agent_name in list(_agent_timers):
+            _finish_agent(agent_name)
+
     def state_flow_transition(last_speaker, groupchat):
         """Deterministic speaker selection using (agent, executor) pairs."""
         messages = groupchat.messages
@@ -268,7 +281,7 @@ def _make_state_flow_transition(
         logger.error("Unknown speaker '%s' — returning None", name)
         return None
 
-    return state_flow_transition
+    return state_flow_transition, flush_agent_timers
 
 
 # ---------------------------------------------------------------------------
@@ -283,16 +296,22 @@ def build_group_chat() -> tuple[
     dict[str, AssistantAgent],
     dict[str, UserProxyAgent],
     list[AssistantAgent],
+    Callable[[], None],
 ]:
     """
     Wire all agents, register all tools, and build the GroupChat.
 
     Returns:
-        (groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list)
+        (groupchat, manager, user_proxy, agents_dict, executors_dict,
+         agents_list, flush_agent_timers)
 
         agents_dict maps AssistantAgent names to instances.
         executors_dict maps executor names to their UserProxyAgent instances.
         agents_list is a list of all AssistantAgent instances (for cost tracking).
+        flush_agent_timers() must be called immediately after
+        ``user_proxy.initiate_chat()`` returns; it writes the wall-clock span
+        for any agent (typically ReportExporterAgent) that was in-flight when
+        AG2 terminated the groupchat before the router could call _finish_agent.
 
     Architecture References:
       - § 4.1: UserProxyAgent config
@@ -353,7 +372,7 @@ def build_group_chat() -> tuple[
         )
 
     # --- 4. Build state_flow_transition router (§ 6) ---
-    router = _make_state_flow_transition(
+    router, flush_agent_timers = _make_state_flow_transition(
         user_proxy=user_proxy,
         data_prep_agent=data_prep,
         data_prep_executor=data_prep_executor,
@@ -409,4 +428,4 @@ def build_group_chat() -> tuple[
         report_exporter,
     ]
 
-    return groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list
+    return groupchat, manager, user_proxy, agents_dict, executors_dict, agents_list, flush_agent_timers
