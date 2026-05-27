@@ -34,12 +34,13 @@ State directory: ``outputs/.pipeline_state/<session_id>/``
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import shutil
+import threading
 from pathlib import Path
 from uuid import uuid4
-import contextvars
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,16 @@ class PipelineStateError(RuntimeError):
 
 _session_ctx = contextvars.ContextVar[str | None]('_session_ctx', default=None)
 
+# Process-wide registry of all currently active session IDs.
+_active_sessions: set[str] = set()
+_active_lock: threading.Lock = threading.Lock()
+
+
+def get_active_sessions() -> frozenset[str]:
+    """Return a snapshot of all session IDs currently active in this process."""
+    with _active_lock:
+        return frozenset(_active_sessions)
+
 
 def get_session_id() -> str | None:
     """Return the currently active session ID, or None."""
@@ -89,19 +100,27 @@ def _session_dir() -> Path:
 def init_session(session_id: str | None = None) -> str:
     """
     Create a fresh session directory with the given ID (or generate a UUID).
-    
+
     Sets the context variable ``_session_ctx`` so all subsequent calls in this
     context target this session.
 
     Returns the session ID.
     """
+    # Deregister the previous session in this context (if any) before replacing it.
+    old_id = get_session_id()
+    if old_id is not None:
+        with _active_lock:
+            _active_sessions.discard(old_id)
+
     if session_id is None:
         import datetime
         now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         session_id = f"{now_str}_{uuid4().hex[:6]}"
-        
+
     _session_ctx.set(session_id)
     _session_dir().mkdir(parents=True, exist_ok=True)
+    with _active_lock:
+        _active_sessions.add(session_id)
     logger.info("Pipeline session initialized: %s", session_id)
     return session_id
 
@@ -118,6 +137,8 @@ def clear_session() -> None:
         path = _BASE_STATE_DIR / session_id
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
+        with _active_lock:
+            _active_sessions.discard(session_id)
         logger.info("Pipeline session cleared: %s", session_id)
         _session_ctx.set(None)
 

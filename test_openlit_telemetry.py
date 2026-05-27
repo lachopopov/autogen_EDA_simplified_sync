@@ -23,6 +23,7 @@ from pathlib import Path
 
 # Load .env from project root
 from dotenv import load_dotenv
+
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import openlit  # noqa: E402

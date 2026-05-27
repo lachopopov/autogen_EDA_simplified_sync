@@ -147,9 +147,7 @@ def _make_state_flow_transition(
         """Return True if *message* requests a tool / function call."""
         if message.get("tool_calls"):
             return True
-        if message.get("function_call"):
-            return True
-        return False
+        return bool(message.get("function_call"))
 
     def state_flow_transition(last_speaker, groupchat):
         """Deterministic speaker selection using (agent, executor) pairs."""

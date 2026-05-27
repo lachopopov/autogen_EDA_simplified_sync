@@ -42,7 +42,6 @@ from tools.findings_tools import (
     assemble_findings,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -874,7 +873,10 @@ class TestCatBarRouting:
     ):
         """cat_*.png paths land in Categorical Analysis section plot_paths."""
         from tools._pipeline_state import (
-            init_session, clear_session, save_state, load_state,
+            clear_session,
+            init_session,
+            load_state,
+            save_state,
         )
 
         monkeypatch.setattr(
@@ -958,7 +960,10 @@ class TestCatBarRouting:
     ):
         """Mixed hist_ and cat_ paths: each goes to its own section only."""
         from tools._pipeline_state import (
-            init_session, clear_session, save_state, load_state,
+            clear_session,
+            init_session,
+            load_state,
+            save_state,
         )
 
         monkeypatch.setattr(
@@ -1125,7 +1130,10 @@ class TestAssembleFindingsTargetFallback:
         """When target_analysis is missing but target_info exists,
         the Target Variable Analysis section should still appear."""
         from tools._pipeline_state import (
-            init_session, clear_session, save_state, load_state,
+            clear_session,
+            init_session,
+            load_state,
+            save_state,
         )
 
         monkeypatch.setattr(
@@ -1178,7 +1186,10 @@ class TestAssembleFindingsTargetFallback:
         """When neither target_analysis nor target_info exists,
         the Target Variable Analysis section should NOT appear."""
         from tools._pipeline_state import (
-            init_session, clear_session, save_state, load_state,
+            clear_session,
+            init_session,
+            load_state,
+            save_state,
         )
 
         monkeypatch.setattr(
@@ -1208,7 +1219,10 @@ class TestAssembleFindingsTargetFallback:
         """When both target_analysis and target_info exist,
         target_analysis (richer data) is used."""
         from tools._pipeline_state import (
-            init_session, clear_session, save_state, load_state,
+            clear_session,
+            init_session,
+            load_state,
+            save_state,
         )
 
         monkeypatch.setattr(
@@ -1266,7 +1280,10 @@ class TestAssembleFindingsTargetFallback:
     ):
         """Fallback target section pairs class_distribution.png plot."""
         from tools._pipeline_state import (
-            init_session, clear_session, save_state, load_state,
+            clear_session,
+            init_session,
+            load_state,
+            save_state,
         )
 
         monkeypatch.setattr(
@@ -1313,10 +1330,14 @@ class TestAssembleFindingsTargetFallback:
         """When target_analysis is missing but data_json is present, the fallback
         computes per_class_feature_stats on the fly so the section is as rich as
         if the LLM had called target_analysis()."""
-        from tools._pipeline_state import (
-            init_session, clear_session, save_state, load_state,
-        )
         import pandas as pd
+
+        from tools._pipeline_state import (
+            clear_session,
+            init_session,
+            load_state,
+            save_state,
+        )
 
         monkeypatch.setattr(
             "tools._pipeline_state._BASE_STATE_DIR", tmp_path / ".state",
@@ -1389,8 +1410,8 @@ class TestRunComprehensiveEval:
         """No-op when _interpretation_context artifact is missing."""
         import config
         monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
+        from tools._pipeline_state import clear_session, init_session
         from tools.findings_tools import _run_comprehensive_eval
-        from tools._pipeline_state import init_session, clear_session
         try:
             init_session()
             # No fact sheet saved → should skip
@@ -1404,7 +1425,7 @@ class TestRunComprehensiveEval:
         monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
         monkeypatch.setattr(config, "OPENLIT_EVAL_MODEL", "gpt-5")
 
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
 
         # Mock openlit.evals.All
         class FakeResult:
@@ -1461,10 +1482,10 @@ class TestRunComprehensiveEval:
         import config
         monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
 
-        from tools._pipeline_state import init_session, clear_session, save_state
-
         # Mock openlit to raise
         import types
+
+        from tools._pipeline_state import clear_session, init_session, save_state
         fake_openlit = types.ModuleType("openlit")
         fake_evals = types.ModuleType("openlit.evals")
         fake_evals_utils = types.ModuleType("openlit.evals.utils")
@@ -1508,7 +1529,7 @@ class TestRunComprehensiveEval:
         monkeypatch.setattr(config, "OPENLIT_ENABLE", True)
         monkeypatch.setattr(config, "OPENLIT_EVAL_MODEL", "gpt-5")
 
-        from tools._pipeline_state import init_session, clear_session, save_state
+        from tools._pipeline_state import clear_session, init_session, save_state
 
         class FakeResult:
             verdict = "no"
@@ -1570,7 +1591,7 @@ class TestRunComprehensiveEval:
 
         monkeypatch.setattr("openai.OpenAI", lambda **kw: FakeClient())
 
-        from tools.findings_tools import _run_comprehensive_eval, _eval_cost_info
+        from tools.findings_tools import _eval_cost_info, _run_comprehensive_eval
 
         try:
             init_session()
@@ -1697,9 +1718,10 @@ class TestAssembleFindingsTrustworthiness:
     def test_trustworthiness_section_included_when_eval_present(self):
         """Findings include a Trustworthiness Assessment section when comprehensive_eval artifact exists."""
         import json
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+
+        from eda_state import CriticReport, EDAResults
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         from tools.findings_tools import assemble_findings
-        from eda_state import EDAResults, CriticReport
 
         try:
             init_session()
@@ -1742,9 +1764,10 @@ class TestAssembleFindingsTrustworthiness:
     def test_no_trustworthiness_section_when_no_eval(self):
         """Findings omit trustworthiness section when no comprehensive_eval artifact."""
         import json
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+
+        from eda_state import CriticReport, EDAResults
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         from tools.findings_tools import assemble_findings
-        from eda_state import EDAResults, CriticReport
 
         try:
             init_session()
@@ -1799,7 +1822,7 @@ class TestW1W2W3ArtifactComposition:
 
     def test_w1_overview_uses_dataprofile_shape(self):
         """W1: overview row/col count comes from DataProfile.shape, not describe[count]."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         try:
             init_session()
             eda = EDAResults(
@@ -1829,7 +1852,7 @@ class TestW1W2W3ArtifactComposition:
 
     def test_w1_overview_fallback_when_no_schema(self):
         """W1 fallback: no schema_json → row count inferred from describe[count]."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         try:
             init_session()
             eda = EDAResults(
@@ -1849,7 +1872,7 @@ class TestW1W2W3ArtifactComposition:
 
     def test_w2_correlation_section_populated(self):
         """W2: correlation section shows actual pairs, not 'No numerical columns'."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         try:
             init_session()
             eda = EDAResults(
@@ -1877,7 +1900,7 @@ class TestW1W2W3ArtifactComposition:
 
     def test_w3_missing_section_populated(self):
         """W3: missing section shows actual percentages, not 'No missing values detected'."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         try:
             init_session()
             eda = EDAResults(
@@ -1905,7 +1928,7 @@ class TestW1W2W3ArtifactComposition:
         """Core regression: even when eda_results_json is a garbage/wrong ref,
         assemble_findings must compose from individual artifacts (not silently
         produce empty EDAResults with default zero values)."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         try:
             init_session()
             eda = EDAResults(

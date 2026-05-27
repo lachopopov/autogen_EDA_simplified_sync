@@ -47,10 +47,11 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from config import get_outputs_dir
-from tools import _pipeline_state
 from typing import Annotated, Any
 from xml.sax.saxutils import escape as _xml_escape
+
+from config import get_outputs_dir
+from tools import _pipeline_state
 
 logger = logging.getLogger(__name__)
 

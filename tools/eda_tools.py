@@ -59,7 +59,7 @@ def describe_stats(
         Validated through EDAResults(describe=...) before return.
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
 
@@ -124,7 +124,7 @@ def missing_analysis(
         JSON string of a MissingInfo model (per_column, total_pct).
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
 
@@ -171,7 +171,7 @@ def correlation_matrix(
         Validated through EDAResults(correlation=...) before return.
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
 
@@ -233,7 +233,7 @@ def target_analysis(
     import numpy as np
 
     # Artifact store: resolve inputs
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
         target_info_json = resolve(target_info_json, "target_info")
@@ -360,7 +360,7 @@ def analyze_categoricals(
     """
     import math
 
-    from tools._pipeline_state import is_active, resolve, load_state, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, load_state, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
         target_info_json = resolve(target_info_json, "target_info")
@@ -378,10 +378,9 @@ def analyze_categoricals(
     if is_active() and not target_info.column:
         _ti_raw = load_state("target_info")
         if _ti_raw:
-            try:
+            import contextlib
+            with contextlib.suppress(Exception):
                 target_info = TargetInfo.model_validate_json(_ti_raw)
-            except Exception:
-                pass
     target_col = target_info.column if target_info.column and target_info.column in df.columns else None
     is_classification = target_col is not None and target_info.problem_type == "classification"
 
@@ -675,7 +674,7 @@ def compute_feature_target_associations(
         mutual_info_regression,
     )
 
-    from tools._pipeline_state import is_active, resolve, load_state, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, load_state, resolve, save_state
 
     if is_active():
         data_json = resolve(data_json, "data_json")
@@ -1040,7 +1039,7 @@ def compute_interaction_signals(
         JSON string with interaction signal results, or empty dict
         if insufficient structure is detected.
     """
-    from tools._pipeline_state import is_active, resolve, load_state, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, load_state, resolve, save_state
 
     if is_active():
         data_json = resolve(data_json, "data_json")
@@ -1266,7 +1265,7 @@ def compute_interaction_signals(
     result_dict = {
         "signals": signals,
         "n_families": len(families),
-        "families_detected": {k: v for k, v in families.items()},
+        "families_detected": dict(families),
         "overall_target_rate_pct": round(overall_rate * 100, 1),
     }
     result = json.dumps(result_dict)

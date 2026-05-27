@@ -16,8 +16,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from main import ensure_output_dirs, main, parse_args, run_pipeline, _resolve_target, _build_target_info, _init_openlit, _shutdown_openlit, _confirm_reclassify_interactive, _resolve_reclassification
-
+from main import (
+    _build_target_info,
+    _confirm_reclassify_interactive,
+    _init_openlit,
+    _resolve_reclassification,
+    _resolve_target,
+    _shutdown_openlit,
+    ensure_output_dirs,
+    main,
+    parse_args,
+    run_pipeline,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures

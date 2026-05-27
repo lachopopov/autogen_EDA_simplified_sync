@@ -13,7 +13,11 @@ Usage:
   EDA_MODE=final → gpt-5-mini + gpt-5 for FindingsGeneratorAgent
 """
 
+import datetime
+import logging
 import os
+import shutil
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,7 +44,7 @@ LLM_CONFIG_DEV: dict = {
     }],
 }
 
-#sets the config of FindingsGeneratorAgent to use gpt-5 instead of gpt-5-mini, while keeping the rest of the agents on gpt-5-mini. 
+#sets the config of FindingsGeneratorAgent to use gpt-5 instead of gpt-5-mini, while keeping the rest of the agents on gpt-5-mini.
 LLM_CONFIG_FINAL: dict = {
     "config_list": [{
         **_BASE,
@@ -67,16 +71,29 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 GLOBAL_OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 RUNS_DIR = GLOBAL_OUTPUTS_DIR / "runs"
 
-import datetime
-import shutil
-import logging
-
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Once-per-process cleanup guard
+# ---------------------------------------------------------------------------
+_cleanup_done: bool = False
+_cleanup_lock: threading.Lock = threading.Lock()
+
 def get_outputs_dir(session_id: str | None = None) -> Path:
-    """Return the output directory for a given session, or the global outputs dir."""
+    """Return the output directory for a given session, or the global outputs dir.
+
+    Falls back to the cache directory when *session_id* corresponds to a
+    cached run (i.e. the value returned by run_pipeline() on a cache hit).
+    """
     if session_id:
-        return RUNS_DIR / session_id
+        run_dir = RUNS_DIR / session_id
+        if run_dir.exists():
+            return run_dir
+        # Fall back to cache dir for cached session_ids (Step 3 contract).
+        cache_dir = GLOBAL_OUTPUTS_DIR / ".cache" / session_id
+        if cache_dir.exists():
+            return cache_dir
+        return run_dir  # caller will mkdir
     return GLOBAL_OUTPUTS_DIR
 
 def get_plots_dir(session_id: str | None = None) -> Path:
@@ -89,7 +106,7 @@ def cleanup_old_runs(hours: int = 24) -> None:
         return
     now = datetime.datetime.now()
     cutoff = now - datetime.timedelta(hours=hours)
-    
+
     for run_dir in RUNS_DIR.iterdir():
         if not run_dir.is_dir():
             continue
@@ -102,8 +119,22 @@ def cleanup_old_runs(hours: int = 24) -> None:
             logger.warning(f"Failed to cleanup {run_dir}: {e}")
 
 def ensure_run_dirs(session_id: str) -> None:
-    """Ensure the necessary output directories exist for the session and perform cleanup."""
-    cleanup_old_runs(hours=24)
+    """Ensure the necessary output directories exist for the session.
+
+    Cleanup (old runs + cache) is performed at most once per process using a
+    double-checked lock, so repeated calls within the same process are cheap.
+    """
+    global _cleanup_done
+    if not _cleanup_done:
+        with _cleanup_lock:
+            if not _cleanup_done:  # double-checked locking pattern
+                cleanup_old_runs(hours=24)
+                try:
+                    from core import cache as _cache  # lazy — avoids import cycle
+                    _cache.cleanup()
+                except Exception:  # noqa: BLE001
+                    logger.warning("core.cache.cleanup() failed; continuing without cache cleanup")
+                _cleanup_done = True
     out_dir = get_outputs_dir(session_id)
     plots_dir = get_plots_dir(session_id)
     out_dir.mkdir(parents=True, exist_ok=True)

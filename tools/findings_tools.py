@@ -160,10 +160,7 @@ def _build_overview_section(
                 subtype_parts.append(
                     f"{len(ordinal)} ordinal: {', '.join(ordinal)}"
                 )
-            if subtype_parts:
-                subtype_detail = " (" + "; ".join(subtype_parts) + ")"
-            else:
-                subtype_detail = ""
+            subtype_detail = " (" + "; ".join(subtype_parts) + ")" if subtype_parts else ""
             parts.append(
                 f"Note: {len(encoded_categorical_cols)} column(s) are numerically "
                 f"encoded but reclassified as categorical for analysis{subtype_detail}."
@@ -450,7 +447,7 @@ def _build_target_section(target_analysis_data: dict) -> dict[str, Any]:
 
 def _build_statistical_analysis_section(
     eda: EDAResults,
-    critic: "CriticReport | None" = None,
+    critic: CriticReport | None = None,
     target_column: str | None = None,
 ) -> dict[str, Any]:
     """Build an interpretive statistical analysis section.
@@ -954,10 +951,7 @@ def _build_trustworthiness_section(
 
     # Determine the issue type label for display
     eval_label = _EVAL_TYPE_LABELS.get(evaluation, evaluation)
-    if verdict == "yes":
-        verdict_text = f"issue detected ({eval_label})"
-    else:
-        verdict_text = "no issues detected"
+    verdict_text = f"issue detected ({eval_label})" if verdict == "yes" else "no issues detected"
 
     lines: list[str] = [
         f"Assessment: {trust_label}",
@@ -1864,8 +1858,7 @@ def prepare_interpretation_context() -> str:
     Returns:
         A structured text fact sheet for LLM interpretation.
     """
-    from tools._pipeline_state import is_active, load_state, save_state, \
-        PipelineStateError
+    from tools._pipeline_state import PipelineStateError, is_active, load_state, save_state
 
     if not is_active():
         raise RuntimeError(
@@ -1998,10 +1991,9 @@ def prepare_interpretation_context() -> str:
     # Extract target column name for histogram metadata (F2 fix).
     _target_col_fs: str | None = None
     if target_info_raw:
-        try:
+        import contextlib
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
             _target_col_fs = json.loads(target_info_raw).get("column")
-        except (json.JSONDecodeError, TypeError):
-            pass
     if data_raw:
         df = pd.DataFrame(json.loads(data_raw))
         num_col_names = df.select_dtypes(include="number").columns.tolist()
@@ -2313,7 +2305,7 @@ def save_interpretations(
     Returns:
         Confirmation message with artifact reference.
     """
-    from tools._pipeline_state import is_active, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, save_state
 
     if not is_active():
         raise RuntimeError(
@@ -2422,8 +2414,14 @@ def assemble_findings(
         JSON string of a Findings model (sections, unresolved_flags).
     """
     # Artifact store: resolve inputs with schema validation + composition fallback
-    from tools._pipeline_state import is_active, resolve, load_state, save_state, \
-        STATE_REF_PREFIX, PipelineStateError
+    from tools._pipeline_state import (
+        STATE_REF_PREFIX,
+        PipelineStateError,
+        is_active,
+        load_state,
+        resolve,
+        save_state,
+    )
 
     if is_active():
         # --- Compose EDAResults directly from individual artifacts (W1/W2/W3 fix) ---
@@ -2505,7 +2503,7 @@ def assemble_findings(
                 raise PipelineStateError(
                     "Cannot resolve 'critic_report' artifact. "
                     "CriticAgent may not have executed run_critic_rules()."
-                )
+                ) from None
             critic_report_json = fallback
             critic = CriticReport.model_validate_json(critic_report_json)
             logger.info("CriticReport resolved via fallback")
@@ -2639,10 +2637,9 @@ def assemble_findings(
     if is_active():
         _subtypes_raw = load_state("reclassified_subtypes")
         if _subtypes_raw:
-            try:
+            import contextlib
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
                 _encoded_categorical_subtypes = json.loads(_subtypes_raw)
-            except (json.JSONDecodeError, TypeError):
-                pass
 
     # Build sections in report order (Option A: plots inline in parent sections)
     overview = _enrich(
@@ -2664,10 +2661,9 @@ def assemble_findings(
     if is_active():
         _ti_raw = load_state("target_info")
         if _ti_raw:
-            try:
+            import contextlib
+            with contextlib.suppress(Exception):
                 _target_column = json.loads(_ti_raw).get("column")
-            except Exception:
-                pass
 
     # Compute Spearman ρ among ordinal encoded-categorical columns (F1 fix).
     # Rank correlation makes no equal-interval assumption — appropriate for
@@ -2731,10 +2727,9 @@ def assemble_findings(
     if is_active():
         _fa_raw_cat = load_state("feature_associations")
         if _fa_raw_cat:
-            try:
+            import contextlib
+            with contextlib.suppress(Exception):
                 _fa_for_cat = FeatureAssociations.model_validate_json(_fa_raw_cat)
-            except Exception:
-                pass
 
     categorical_sec: dict[str, Any] | None = None
     if is_active():

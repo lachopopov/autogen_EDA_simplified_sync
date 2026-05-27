@@ -20,7 +20,6 @@ from tools.eda_tools import (
     target_analysis,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -654,7 +653,7 @@ class TestAnalyzeCategoricalsIntegration:
 
     def test_uses_dtypes_json_when_available(self, mixed_df):
         """Pipeline path reads categorical_cols from dtypes_json artifact."""
-        from tools._pipeline_state import init_session, clear_session, save_state
+        from tools._pipeline_state import clear_session, init_session, save_state
         try:
             init_session()
             data_json = mixed_df.to_json(orient="records")
@@ -681,7 +680,7 @@ class TestAnalyzeCategoricalsIntegration:
         This is the exact bug from the production run: validate_schema() saves
         schema_json with categorical_cols=[] and the old code returned 0 columns.
         """
-        from tools._pipeline_state import init_session, clear_session, save_state
+        from tools._pipeline_state import clear_session, init_session, save_state
         try:
             init_session()
             data_json = mixed_df.to_json(orient="records")
@@ -706,8 +705,8 @@ class TestAnalyzeCategoricalsIntegration:
 
     def test_empty_dtypes_json_categorical_cols_falls_back(self, mixed_df):
         """dtypes_json exists but has empty categorical_cols → fallback fires."""
-        from tools._pipeline_state import init_session, clear_session, save_state
         from eda_state import DataProfile
+        from tools._pipeline_state import clear_session, init_session, save_state
         try:
             init_session()
             data_json = mixed_df.to_json(orient="records")
@@ -834,8 +833,9 @@ class TestComputeInteractionSignals:
 
     def test_regression_target_median_split(self):
         """Regression targets are median-split into binary for segment analysis."""
-        from tools.eda_tools import compute_interaction_signals
         import numpy as np
+
+        from tools.eda_tools import compute_interaction_signals
         np.random.seed(42)
         n = 200
         df = pd.DataFrame({

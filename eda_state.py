@@ -18,7 +18,7 @@ AG2 Version: 0.10.3
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -174,7 +174,7 @@ class EDAResults(BaseModel):
 class CriticFlag(BaseModel):
     """A single quality flag raised by the Critic's rule engine."""
 
-    column: Optional[str] = None  # None = dataset-level flag
+    column: str | None = None  # None = dataset-level flag
     rule: str = ""
     severity: str = ""  # BLOCKER | HIGH | MEDIUM | LOW
     message: str = ""
@@ -218,14 +218,14 @@ class Interpretations(BaseModel):
     actual PNG images.  Not implemented — metadata coverage is 100%.
     """
 
-    overview: Optional[dict[str, str]] = None
-    missing_values: Optional[dict[str, str]] = None
-    correlation: Optional[dict[str, str]] = None
-    statistical_analysis: Optional[dict[str, str]] = None
-    categorical_analysis: Optional[dict[str, str]] = None
-    feature_associations: Optional[dict[str, str]] = None   # W7
-    target_variable_analysis: Optional[dict[str, str]] = None
-    quality_assessment: Optional[dict[str, str]] = None
+    overview: dict[str, str] | None = None
+    missing_values: dict[str, str] | None = None
+    correlation: dict[str, str] | None = None
+    statistical_analysis: dict[str, str] | None = None
+    categorical_analysis: dict[str, str] | None = None
+    feature_associations: dict[str, str] | None = None   # W7
+    target_variable_analysis: dict[str, str] | None = None
+    quality_assessment: dict[str, str] | None = None
     plot_commentaries: list[PlotCommentary] = Field(default_factory=list)
     conclusions: str = ""
     recommendations_and_business_implications: str = ""
