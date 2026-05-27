@@ -228,7 +228,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
 
         run_pipeline(csv_file, no_target_flag=True)
 
@@ -245,7 +245,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         manager = MagicMock()
-        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [], MagicMock())
 
         run_pipeline(csv_file, no_target_flag=True)
 
@@ -262,7 +262,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         manager = MagicMock()
-        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [], MagicMock())
 
         run_pipeline(csv_file, no_target_flag=True)
 
@@ -279,7 +279,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
 
         run_pipeline(csv_file, no_target_flag=True)
 
@@ -297,7 +297,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
 
         run_pipeline(csv_file, no_target_flag=True)
 
@@ -314,7 +314,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.get_outputs_dir", lambda sid: out)
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
 
         run_pipeline(csv_file, no_target_flag=True)
 
@@ -331,7 +331,7 @@ class TestRunPipelineExecution:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
 
         run_pipeline(csv_file, no_target_flag=True)
 
@@ -405,7 +405,7 @@ class TestIntegration:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
 
         # Should not raise
         main(["--no-target", str(csv_file)])
@@ -421,7 +421,7 @@ class TestIntegration:
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
         manager = MagicMock()
-        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), manager, proxy, {}, {}, [], MagicMock())
 
         main(["--no-target", str(csv_file)])
 
@@ -452,7 +452,7 @@ class TestCostTracking:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
         mock_gather.return_value = {"usage_including_cached_inference": {}}
 
         run_pipeline(csv_file, no_target_flag=True)
@@ -473,7 +473,7 @@ class TestCostTracking:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
         mock_gather.return_value = {
             "usage_including_cached_inference": {
                 "total_cost": 0.04,
@@ -521,7 +521,7 @@ class TestCostTracking:
             "gpt-5-mini": {"cost": 0.03, "prompt_tokens": 5000, "completion_tokens": 2000},
         }
 
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent_a, agent_b])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent_a, agent_b], MagicMock())
         mock_gather.return_value = {
             "usage_including_cached_inference": {"total_cost": 0.031},
         }
@@ -553,7 +553,7 @@ class TestCostTracking:
         agents_list[0].get_total_usage.return_value = None
         agents_list[1].name = "AgentB"
         agents_list[1].get_total_usage.return_value = None
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, agents_list)
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, agents_list, MagicMock())
         mock_gather.return_value = {}
 
         run_pipeline(csv_file, no_target_flag=True)
@@ -574,7 +574,7 @@ class TestCostTracking:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
         mock_gather.return_value = {}
 
         run_pipeline(csv_file, no_target_flag=True)
@@ -597,7 +597,7 @@ class TestCostTracking:
         monkeypatch.setattr("main.get_plots_dir", lambda sid: plots_dir)
         monkeypatch.setattr("main.ensure_run_dirs", lambda sid: None)
         proxy = MagicMock()
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [], MagicMock())
         mock_gather.return_value = {"total_cost": 0.04}
 
         run_pipeline(csv_file, no_target_flag=True)
@@ -634,7 +634,7 @@ class TestCostTracking:
 
         mock_build.return_value = (
             MagicMock(), MagicMock(), proxy, {}, {},
-            [agent_with_usage, agent_no_usage],
+            [agent_with_usage, agent_no_usage], MagicMock(),
         )
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0.002}}
 
@@ -664,7 +664,7 @@ class TestCostTracking:
         agent_a.get_total_usage.return_value = {
             "gpt-5-mini": {"cost": 0.001, "prompt_tokens": 500, "completion_tokens": 100},
         }
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent_a])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent_a], MagicMock())
         mock_gather.return_value = {
             "usage_including_cached_inference": {"total_cost": 0.001},
         }
@@ -810,7 +810,7 @@ class TestRunPipelineWithTarget:
         agent = MagicMock()
         agent.name = "A"
         agent.get_total_usage.return_value = None
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent], MagicMock())
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
 
         run_pipeline(csv_file, no_target_flag=True)
@@ -838,7 +838,7 @@ class TestRunPipelineWithTarget:
         agent = MagicMock()
         agent.name = "A"
         agent.get_total_usage.return_value = None
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent], MagicMock())
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
 
         run_pipeline(csv, target_flag="target")
@@ -925,7 +925,7 @@ class TestInitOpenlit:
         agent = MagicMock()
         agent.name = "A"
         agent.get_total_usage.return_value = None
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent], MagicMock())
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
 
         import config as _cfg
@@ -956,7 +956,7 @@ class TestInitOpenlit:
         agent = MagicMock()
         agent.name = "A"
         agent.get_total_usage.return_value = None
-        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent])
+        mock_build.return_value = (MagicMock(), MagicMock(), proxy, {}, {}, [agent], MagicMock())
         mock_gather.return_value = {"usage_including_cached_inference": {"total_cost": 0}}
 
         with patch("main._init_openlit") as mock_init, \
