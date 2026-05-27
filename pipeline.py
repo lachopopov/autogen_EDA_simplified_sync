@@ -73,7 +73,7 @@ def _format_cost_summary(
 ) -> str:
     # Intentionally identical to original implementation in main.py
     lines: list[str] = []
-    lines.append("EDA Pipeline — Cost Summary")
+    lines.append("EDA Pipeline — Cost & Timing Summary")
     lines.append("=" * 40)
     lines.append(f"Date: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     lines.append("")
@@ -142,6 +142,50 @@ def _format_cost_summary(
 
     lines.append(f"  {'':28}  ----------")
     lines.append(f"  {'Pipeline total:':<28}  ${grand_total:<10.4f}")
+    lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def _format_timings(timings_path: Path) -> str:
+    """Read timings.jsonl for the session and return a formatted Phase Timings block.
+
+    Returns an empty string if the file does not exist or has no records.
+    """
+    if not timings_path.exists():
+        return ""
+
+    records: list[dict] = []
+    with timings_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+    if not records:
+        return ""
+
+    lines: list[str] = []
+    lines.append("Phase Timings")
+    lines.append("-" * 40)
+
+    total_ms = 0.0
+    for rec in records:
+        phase = rec.get("phase", "unknown")
+        duration_ms = rec.get("duration_ms", 0.0)
+        total_ms += duration_ms
+        if duration_ms >= 1_000:
+            formatted = f"{duration_ms:>12,.1f} ms"
+        else:
+            formatted = f"{duration_ms:>12.1f} ms"
+        lines.append(f"  {phase:<32}  {formatted}")
+
+    lines.append("  " + "─" * 50)
+    total_s = total_ms / 1000
+    lines.append(f"  {'total':<32}  {total_ms:>12,.1f} ms  ({total_s:.1f} s)")
     lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -528,9 +572,13 @@ def run_pipeline(
                     agents_list, usage_dict,
                     eval_cost=_eval_cost_info if _eval_cost_info else None,
                 )
+                timings_path = _main.get_outputs_dir(session_id) / "timings.jsonl"
+                timing_text = _format_timings(timings_path)
+                full_summary = cost_text + timing_text
                 cost_path = _main.get_outputs_dir(session_id) / "cost_summary.txt"
-                cost_path.write_text(cost_text, encoding="utf-8")
+                cost_path.write_text(full_summary, encoding="utf-8")
                 logger.info("Cost summary written to %s", cost_path)
+                print(full_summary)
 
             if cache.is_enabled():
                 cache.store(key, run_dir=_main.get_outputs_dir(session_id))

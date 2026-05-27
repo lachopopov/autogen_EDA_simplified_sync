@@ -5,8 +5,13 @@ Verifies:
   * run_pipeline is importable from both `pipeline` and `main` and is the
     same object (re-export contract).
   * PIPELINE_VERSION and PROMPT_VERSION are present with expected shapes.
+  * _format_timings produces correct output for valid and edge-case inputs.
 """
 from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
 
 
 class TestReexport:
@@ -46,3 +51,78 @@ class TestVersionConstants:
 
         p2 = importlib.import_module("pipeline")
         assert p.PROMPT_VERSION == p2.PROMPT_VERSION
+
+
+class TestFormatTimings:
+    """Unit tests for _format_timings()."""
+
+    def _write_timings(self, tmp_path: Path, records: list[dict]) -> Path:
+        p = tmp_path / "timings.jsonl"
+        with p.open("w", encoding="utf-8") as fh:
+            for rec in records:
+                fh.write(json.dumps(rec) + "\n")
+        return p
+
+    def test_returns_empty_string_when_file_missing(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        result = _format_timings(tmp_path / "nonexistent.jsonl")
+        assert result == ""
+
+    def test_returns_empty_string_for_empty_file(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        p = tmp_path / "timings.jsonl"
+        p.write_text("", encoding="utf-8")
+        assert _format_timings(p) == ""
+
+    def test_phase_timings_header_present(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        p = self._write_timings(tmp_path, [
+            {"phase": "file_load", "duration_ms": 23.7},
+        ])
+        result = _format_timings(p)
+        assert "Phase Timings" in result
+
+    def test_all_phases_listed(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        records = [
+            {"phase": "file_load", "duration_ms": 23.7},
+            {"phase": "initiate_chat", "duration_ms": 84210.5},
+            {"phase": "cost_summary", "duration_ms": 18.3},
+        ]
+        p = self._write_timings(tmp_path, records)
+        result = _format_timings(p)
+        assert "file_load" in result
+        assert "initiate_chat" in result
+        assert "cost_summary" in result
+
+    def test_total_line_present_and_correct(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        records = [
+            {"phase": "file_load", "duration_ms": 100.0},
+            {"phase": "initiate_chat", "duration_ms": 200.0},
+        ]
+        p = self._write_timings(tmp_path, records)
+        result = _format_timings(p)
+        assert "total" in result
+        # 300 ms total → 0.3 s
+        assert "300" in result
+        assert "0.3 s" in result
+
+    def test_skips_malformed_json_lines(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        p = tmp_path / "timings.jsonl"
+        p.write_text(
+            '{"phase": "file_load", "duration_ms": 10.0}\n'
+            "not-valid-json\n"
+            '{"phase": "cost_summary", "duration_ms": 5.0}\n',
+            encoding="utf-8",
+        )
+        result = _format_timings(p)
+        assert "file_load" in result
+        assert "cost_summary" in result
