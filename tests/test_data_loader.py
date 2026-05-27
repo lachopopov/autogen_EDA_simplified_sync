@@ -11,22 +11,21 @@ import pandas as pd
 import pytest
 
 from tools.data_loader import (
+    _LOADERS,
     CSVLoader,
     DataLoader,
     ExcelLoader,
     ParquetLoader,
-    _LOADERS,
     _build_column_profiles,
+    _classify_target,
     _get_loader,
     _has_datetime_column,
-    _classify_target,
     detect_encoded_categoricals,
     detect_target,
     infer_dtypes,
     load_data,
     validate_schema,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures — tiny DataFrames written to various formats
@@ -469,7 +468,7 @@ class TestDuplicateCountArtifact:
 
     def test_load_data_saves_duplicate_count_artifact(self, csv_with_duplicates):
         """load_data() stores the pre-dedup duplicate count in the artifact store."""
-        from tools._pipeline_state import init_session, clear_session, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state
         try:
             init_session()
             load_data(csv_with_duplicates)
@@ -481,7 +480,7 @@ class TestDuplicateCountArtifact:
 
     def test_load_data_saves_zero_for_clean_csv(self, csv_path):
         """load_data() stores 0 when there are no duplicates."""
-        from tools._pipeline_state import init_session, clear_session, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state
         try:
             init_session()
             load_data(csv_path)
@@ -492,7 +491,7 @@ class TestDuplicateCountArtifact:
 
     def test_validate_schema_includes_duplicate_count(self, csv_with_duplicates):
         """validate_schema() exposes duplicate_count in the DataProfile JSON."""
-        from tools._pipeline_state import init_session, clear_session, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state
         try:
             init_session()
             data_json = load_data(csv_with_duplicates)
@@ -507,7 +506,7 @@ class TestDuplicateCountArtifact:
 
     def test_validate_schema_duplicate_count_zero_clean_data(self, csv_path):
         """validate_schema() returns duplicate_count=0 for a clean dataset."""
-        from tools._pipeline_state import init_session, clear_session, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state
         try:
             init_session()
             data_json = load_data(csv_path)
@@ -714,7 +713,7 @@ class TestInferDtypesReclassification:
     """Test that infer_dtypes() applies reclassification from the artifact store."""
 
     def test_reclassified_columns_move_to_categorical(self):
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({
             "SEX": [1, 2, 1, 2],
             "AGE": [25, 30, 35, 40],
@@ -736,7 +735,7 @@ class TestInferDtypesReclassification:
             clear_session()
 
     def test_encoded_categorical_cols_populated(self):
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({
             "SEX": [1, 2, 1, 2],
             "EDUCATION": [1, 2, 3, 4],
@@ -754,7 +753,7 @@ class TestInferDtypesReclassification:
             clear_session()
 
     def test_no_reclassification_without_artifact(self):
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({"SEX": [1, 2], "name": ["a", "b"]})
         data_json = df.to_json(orient="records")
         try:
@@ -769,7 +768,7 @@ class TestInferDtypesReclassification:
             clear_session()
 
     def test_invalid_column_in_artifact_ignored(self):
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({"SEX": [1, 2], "name": ["a", "b"]})
         data_json = df.to_json(orient="records")
         try:
@@ -790,7 +789,7 @@ class TestInferDtypesStringCasting:
 
     def test_artifact_data_json_has_string_values(self):
         """After casting, the data_json artifact should contain string values."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({
             "SEX": [1, 2, 1, 2],
             "AGE": [25, 30, 35, 40],
@@ -814,7 +813,7 @@ class TestInferDtypesStringCasting:
 
     def test_select_dtypes_excludes_cast_columns(self):
         """Downstream select_dtypes('number') must not include cast columns."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({
             "SEX": [1, 2, 1, 2],
             "EDUCATION": [1, 2, 3, 4],
@@ -840,7 +839,7 @@ class TestInferDtypesStringCasting:
 
     def test_nan_preserved_through_cast(self):
         """NaN values must survive the int→str cast (not become the string 'nan')."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({
             "SEX": [1, 2, None, 1],
             "AGE": [25, 30, 35, 40],
@@ -865,7 +864,7 @@ class TestInferDtypesStringCasting:
 
     def test_dataprofile_dtypes_reflect_object(self):
         """DataProfile.dtypes dict should show 'object' for cast columns."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({
             "SEX": [1, 2, 1, 2],
             "AGE": [25, 30, 35, 40],
@@ -884,7 +883,7 @@ class TestInferDtypesStringCasting:
 
     def test_no_cast_without_reclassification(self):
         """When no columns are reclassified, data_json remains unmodified."""
-        from tools._pipeline_state import init_session, clear_session, save_state, load_state
+        from tools._pipeline_state import clear_session, init_session, load_state, save_state
         df = pd.DataFrame({"SEX": [1, 2], "AGE": [25, 30]})
         data_json = df.to_json(orient="records")
         try:

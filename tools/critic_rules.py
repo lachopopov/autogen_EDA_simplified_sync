@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
-from typing import Annotated, Optional
+from typing import Annotated
 
 import numpy as np
 import pandas as pd
@@ -173,7 +173,7 @@ class DuplicateRowsRule(CriticRule):
 
 
 
-def _iqr_unreliability_hint(series: "pd.Series") -> str:
+def _iqr_unreliability_hint(series: pd.Series) -> str:
     """Return a distribution-shape hint explaining WHY the IQR outlier rate is high.
 
     Uses excess kurtosis as a cheap, dependency-free secondary signal to
@@ -247,7 +247,7 @@ class OutlierRule(CriticRule):
         num = df.select_dtypes("number")
         if num.empty:
             return []
-        worst_col: Optional[str] = None
+        worst_col: str | None = None
         worst_pct = 0.0
         for col in num.columns:
             series = num[col].dropna()
@@ -897,7 +897,7 @@ def run_critic_rules(
     All OOP is encapsulated — AG2 sees only this flat function.
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
 

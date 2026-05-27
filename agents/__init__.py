@@ -20,6 +20,7 @@ from autogen import AssistantAgent
 
 from config import LLM_CONFIG
 
+
 # Keyword-based termination guard — shared by all agents.
 # Layer 1 of the three-layer termination system (architecture.md § 5).
 def _TERMINATION_GUARD(x: dict) -> bool:

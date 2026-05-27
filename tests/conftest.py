@@ -24,12 +24,12 @@ def _ensure_openai_key(monkeypatch):
 def reset_pipeline_state_contextvars():
     """Reset ContextVars after each test to prevent state bleeding between tests."""
     from tools._pipeline_state import _session_ctx
-    
+
     # Store initial token
     token = _session_ctx.set(None)
-    
+
     yield
-    
+
     # Reset back after test (also force to None to be extra safe)
     _session_ctx.reset(token)
     _session_ctx.set(None)

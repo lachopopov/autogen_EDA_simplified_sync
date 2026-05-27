@@ -12,19 +12,19 @@ import json
 
 import pytest
 
+import tools._pipeline_state as ps_module
 from tools._pipeline_state import (
-    PipelineStateError,
-    STATE_REF_PREFIX,
     _BASE_STATE_DIR,
+    STATE_REF_PREFIX,
+    PipelineStateError,
     clear_session,
+    get_active_sessions,
     init_session,
     is_active,
     load_state,
     resolve,
     save_state,
 )
-import tools._pipeline_state as ps_module
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -409,3 +409,43 @@ class TestEdgeCases:
         passed_json = '{"from_llm": true}'
         result = resolve(passed_json, "data_json")
         assert json.loads(result) == {"from_llm": True}
+
+
+# ---------------------------------------------------------------------------
+# Active sessions registry
+# ---------------------------------------------------------------------------
+
+
+class TestActiveSessions:
+    def test_empty_initially(self):
+        """No sessions active at test start (autouse fixture clears state)."""
+        assert get_active_sessions() == frozenset()
+
+    def test_registered_after_init(self):
+        sid = init_session()
+        assert sid in get_active_sessions()
+
+    def test_deregistered_after_clear(self):
+        sid = init_session()
+        assert sid in get_active_sessions()
+        clear_session()
+        assert sid not in get_active_sessions()
+
+    def test_empty_after_clear(self):
+        init_session()
+        clear_session()
+        assert get_active_sessions() == frozenset()
+
+    def test_returns_frozenset(self):
+        init_session()
+        result = get_active_sessions()
+        assert isinstance(result, frozenset)
+
+    def test_snapshot_is_independent(self):
+        """Modifying the returned frozenset does not affect the registry."""
+        sid = init_session()
+        snap = get_active_sessions()
+        assert sid in snap
+        # frozensets are immutable — this verifies the return type is correct
+        with pytest.raises(AttributeError):
+            snap.add("phantom")  # type: ignore[attr-defined]

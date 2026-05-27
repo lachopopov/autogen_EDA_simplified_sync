@@ -1,0 +1,38 @@
+{
+  "model_info": {
+    "model_name": "Claude Haiku 4.5",
+    "context_window_tokens": 200000,
+    "pricing_per_million_input": 0.80,
+    "pricing_per_million_output": 4.00
+  },
+  "sessions": [
+    {
+      "session_id": "session_2026_05_22_01",
+      "date": "2026-05-22",
+      "start_time": "initial_setup",
+      "tokens_used": 0,
+      "tokens_in_context": 0,
+      "context_usage_percent": 0,
+      "context_status": "green",
+      "estimated_cost_usd": 0,
+      "notes": "Tracking system initialized"
+    },
+    {
+      "session_id": "session_2026_05_22_02",
+      "date": "2026-05-22",
+      "start_time": "setup_and_configuration",
+      "tokens_used": 30500,
+      "tokens_in_context": 30500,
+      "context_usage_percent": 15.25,
+      "context_status": "green",
+      "estimated_cost_usd": 0.0254,
+      "notes": "CLI installation, statusline config, cache metrics added, token logging setup"
+    }
+  ],
+  "cumulative_totals": {
+    "total_tokens": 30500,
+    "total_cost_usd": 0.0254,
+    "context_peak_percent": 15.25,
+    "last_updated": "2026-05-22"
+  }
+}

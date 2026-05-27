@@ -17,7 +17,6 @@ from agents.findings_generator_agent import (
 )
 from eda_state import CriticReport, EDAResults, Findings, MissingInfo
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

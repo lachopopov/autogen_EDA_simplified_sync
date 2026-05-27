@@ -1,0 +1,35 @@
+# ruff.toml — Linter configuration for autogen_simplified_EDA_tool
+target-version = "py312"
+line-length = 100
+exclude = [
+    "testing_workflow_statemanagement/",
+]
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # function calls in default arguments — used in Pydantic
+    "SIM117", # nested with statements — readability preference
+    "UP007",  # X | Y union syntax — keep Optional for AG2 compat
+]
+
+[lint.per-file-ignores]
+"tests/*" = [
+    "S101",   # assert allowed in tests
+    "F401",   # unused imports in test helpers
+    "F841",   # unused variables in test helpers
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"

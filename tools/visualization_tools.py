@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
-from config import get_plots_dir
-from tools import _pipeline_state
 from typing import Annotated
 
 import matplotlib
+
+from config import get_plots_dir
+from tools import _pipeline_state
+
 matplotlib.use("Agg")  # Force non-interactive backend before any pyplot import
 
 import matplotlib.pyplot as plt  # noqa: E402
@@ -53,7 +54,7 @@ def plot_histograms(
         JSON list of saved file paths (absolute strings).
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
 
@@ -107,7 +108,7 @@ def plot_correlation_heatmap(
         JSON list of saved file paths (0 or 1 element).
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         corr_json = resolve(corr_json, "correlation_matrix")
 
@@ -165,7 +166,7 @@ def plot_missing_heatmap(
         JSON list of saved file paths (0 or 1 element).
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         missing_json = resolve(missing_json, "missing_analysis")
 
@@ -186,7 +187,7 @@ def plot_missing_heatmap(
     bars = ax.bar(columns, values, color="salmon", edgecolor="black", alpha=0.8)
 
     # Annotate bars with percentage values
-    for bar, val in zip(bars, values):
+    for bar, val in zip(bars, values, strict=False):
         if val > 0:
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
@@ -242,10 +243,9 @@ def plot_class_distribution(
         JSON list of saved file paths (0 or 1 element).
     """
     from eda_state import TargetInfo
-
     from tools._pipeline_state import (
-        PipelineStateError,
         STATE_REF_PREFIX,
+        PipelineStateError,
         is_active,
         load_state,
         save_state,
@@ -303,7 +303,7 @@ def plot_class_distribution(
         )
 
         # Annotate with count + percentage
-        for bar, cnt in zip(bars, counts.values):
+        for bar, cnt in zip(bars, counts.values, strict=False):
             pct = cnt / total * 100
             ax.text(
                 bar.get_width() + max(counts.values) * 0.02,
@@ -402,7 +402,7 @@ def plot_categorical_bars(
     """
     import re
 
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         categorical_analysis_json = resolve(
             categorical_analysis_json, "categorical_analysis"
@@ -458,7 +458,7 @@ def plot_categorical_bars(
 
         # Annotate each bar with "count (pct%)"
         max_pct = max(pcts) if pcts else 1.0
-        for bar, cnt, pct in zip(bars, counts, pcts):
+        for bar, cnt, pct in zip(bars, counts, pcts, strict=False):
             ax.text(
                 bar.get_width() + max_pct * 0.015,
                 bar.get_y() + bar.get_height() / 2,
@@ -535,8 +535,8 @@ def plot_ordinal_heatmap(
         JSON list of saved file paths (0 or 1 element).
     """
     from tools._pipeline_state import (
-        PipelineStateError,
         STATE_REF_PREFIX,
+        PipelineStateError,
         is_active,
         load_state,
         save_state,
@@ -560,10 +560,9 @@ def plot_ordinal_heatmap(
 
     subtypes_raw = load_state("reclassified_subtypes")
     if subtypes_raw:
-        try:
+        import contextlib
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
             subtypes = json.loads(subtypes_raw)
-        except (json.JSONDecodeError, TypeError):
-            pass
 
     dtypes_raw = load_state("dtypes_json") or load_state("schema_json")
     if dtypes_raw:

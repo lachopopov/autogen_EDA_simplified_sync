@@ -37,7 +37,6 @@ from tools.critic_rules import (
     run_critic_rules,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -231,7 +230,7 @@ class TestDuplicateRowsRule:
 
     def test_pipeline_artifact_used_over_df(self):
         """In pipeline mode the artifact-based count is used, not df.duplicated()."""
-        from tools._pipeline_state import init_session, clear_session, save_state
+        from tools._pipeline_state import clear_session, init_session, save_state
         try:
             init_session()
             # Store 500 duplicate count in artifact — high enough to trigger HIGH
@@ -248,7 +247,7 @@ class TestDuplicateRowsRule:
 
     def test_pipeline_artifact_zero_no_flag(self):
         """Artifact count of 0 → no flag even in pipeline mode."""
-        from tools._pipeline_state import init_session, clear_session, save_state
+        from tools._pipeline_state import clear_session, init_session, save_state
         try:
             init_session()
             save_state("duplicate_count", "0")

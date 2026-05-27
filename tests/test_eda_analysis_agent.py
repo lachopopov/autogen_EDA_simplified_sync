@@ -18,7 +18,6 @@ from agents.eda_analysis_agent import (
 )
 from eda_state import EDAResults, MissingInfo
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

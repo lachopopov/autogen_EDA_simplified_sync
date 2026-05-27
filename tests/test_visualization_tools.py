@@ -21,7 +21,6 @@ from tools.visualization_tools import (
     plot_missing_heatmap,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -128,7 +127,7 @@ class TestPlotHistograms:
         assert paths == []
 
     def test_creates_output_dir(self, monkeypatch, simple_df_json, tmp_path):
-        nested = str(tmp_path / "a" / "b" / "c")
+        _nested = str(tmp_path / "a" / "b" / "c")
         import config
         monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
         import config
@@ -185,7 +184,7 @@ class TestPlotCorrelationHeatmap:
         assert paths == []
 
     def test_creates_output_dir(self, monkeypatch, correlation_json, tmp_path):
-        nested = str(tmp_path / "deep" / "dir")
+        _nested = str(tmp_path / "deep" / "dir")
         import config
         monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
         import config
@@ -274,7 +273,7 @@ class TestPlotMissingHeatmap:
         assert Path(paths[0]).exists()
 
     def test_creates_output_dir(self, monkeypatch, missing_json, tmp_path):
-        nested = str(tmp_path / "x" / "y")
+        _nested = str(tmp_path / "x" / "y")
         import config
         monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
         import config
@@ -475,7 +474,7 @@ class TestPlotClassDistribution:
         assert paths == []
 
     def test_creates_output_dir(self, monkeypatch, classification_df_json, classification_ti_json, tmp_path):
-        new_dir = str(tmp_path / "new" / "plots")
+        _new_dir = str(tmp_path / "new" / "plots")
         import config
         monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
         import config
@@ -647,7 +646,7 @@ class TestPlotCategoricalBars:
         assert Path(paths[0]).exists()
 
     def test_creates_output_dir(self, monkeypatch, simple_cat_json, tmp_path):
-        nested = str(tmp_path / "a" / "b" / "plots")
+        _nested = str(tmp_path / "a" / "b" / "plots")
         import config
         monkeypatch.setattr(config, 'get_plots_dir', lambda *args: Path())
         import config
@@ -660,6 +659,7 @@ class TestPlotCategoricalBars:
     def test_end_to_end_via_analyze_categoricals(self, tmp_path):
         """analyze_categoricals() → plot_categorical_bars() full chain."""
         import pandas as pd
+
         from tools.eda_tools import analyze_categoricals
 
         df = pd.DataFrame({
@@ -671,7 +671,7 @@ class TestPlotCategoricalBars:
         target_json = '{"column": null, "problem_type": "unsupervised", "detection_method": "none"}'
 
         cat_analysis_json = analyze_categoricals(data_json, target_json)
-        plots_dir = str(tmp_path / "plots")
+        _plots_dir = str(tmp_path / "plots")
         result = plot_categorical_bars(cat_analysis_json)
         paths = json.loads(result)
         # dept and region are the 2 categorical columns

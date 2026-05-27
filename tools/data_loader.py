@@ -135,7 +135,7 @@ def load_data(
     result = df.to_json(orient="records")
 
     # Artifact store: persist for downstream tools
-    from tools._pipeline_state import is_active, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, save_state
     if is_active():
         save_state("data_json", result)
         save_state("duplicate_count", str(dup_count))
@@ -158,7 +158,7 @@ def validate_schema(
         JSON string of a DataProfile (shape, dtypes, memory_mb).
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, load_state, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, load_state, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
 
@@ -169,10 +169,9 @@ def validate_schema(
     if is_active():
         dup_raw = load_state("duplicate_count")
         if dup_raw is not None:
-            try:
+            import contextlib
+            with contextlib.suppress(ValueError, TypeError):
                 dup_count = int(dup_raw)
-            except (ValueError, TypeError):
-                pass
 
     profile = DataProfile(
         shape=(df.shape[0], df.shape[1]),
@@ -206,7 +205,7 @@ def infer_dtypes(
         JSON string of a DataProfile with numerical_cols and categorical_cols populated.
     """
     # Artifact store: resolve input
-    from tools._pipeline_state import is_active, resolve, save_state, STATE_REF_PREFIX
+    from tools._pipeline_state import STATE_REF_PREFIX, is_active, resolve, save_state
     if is_active():
         data_json = resolve(data_json, "data_json")
 
@@ -529,6 +528,7 @@ def detect_encoded_categoricals(
 
     try:
         from openai import OpenAI
+
         from config import RECLASSIFY_MODEL
         client = OpenAI()
         resp = client.chat.completions.create(
