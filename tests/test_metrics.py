@@ -157,3 +157,64 @@ class TestSpanWithSession:
         # Must not raise, even though the write fails.
         with metrics.span("io_error_test"):
             pass
+
+
+# ---------------------------------------------------------------------------
+# record_span() — direct write variant
+# ---------------------------------------------------------------------------
+
+
+class TestRecordSpanNoSession:
+    """record_span() must be a complete no-op when no session is active."""
+
+    def test_no_file_created(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("core.metrics.get_outputs_dir", lambda sid: tmp_path)
+        metrics.record_span("noop_agent", 123.4)
+        assert not (tmp_path / "timings.jsonl").exists()
+
+
+class TestRecordSpanWithSession:
+    """record_span() writes a JSONL record when a session is active."""
+
+    def test_jsonl_written(self, active_session):
+        session_id, tmp_path = active_session
+        metrics.record_span("agent.DataPrepAgent", 12340.5)
+
+        timings = tmp_path / "timings.jsonl"
+        assert timings.exists()
+        record = json.loads(timings.read_text().strip())
+        assert record["phase"] == "agent.DataPrepAgent"
+        assert record["session_id"] == session_id
+        assert record["duration_ms"] == 12340.5
+
+    def test_duration_rounded_to_3dp(self, active_session):
+        _, tmp_path = active_session
+        metrics.record_span("agent.X", 99.99999)
+        record = json.loads((tmp_path / "timings.jsonl").read_text().strip())
+        assert record["duration_ms"] == 100.0
+
+    def test_extra_dict_included(self, active_session):
+        _, tmp_path = active_session
+        metrics.record_span("agent.Y", 50.0, extra={"iteration": 2})
+        record = json.loads((tmp_path / "timings.jsonl").read_text().strip())
+        assert record["extra"] == {"iteration": 2}
+
+    def test_appends_after_span(self, active_session):
+        _, tmp_path = active_session
+        with metrics.span("phase_a"):
+            pass
+        metrics.record_span("agent.Z", 999.0)
+
+        lines = (tmp_path / "timings.jsonl").read_text().strip().splitlines()
+        assert len(lines) == 2
+        phases = [json.loads(line)["phase"] for line in lines]
+        assert phases == ["phase_a", "agent.Z"]
+
+    def test_io_error_handled_silently(self, active_session, monkeypatch):
+        _, tmp_path = active_session
+
+        def bad_outputs_dir(sid):
+            return tmp_path / "nonexistent" / "subdir"
+
+        monkeypatch.setattr("core.metrics.get_outputs_dir", bad_outputs_dir)
+        metrics.record_span("agent.W", 1.0)  # must not raise

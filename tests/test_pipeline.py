@@ -85,7 +85,7 @@ class TestFormatTimings:
         result = _format_timings(p)
         assert "Phase Timings" in result
 
-    def test_all_phases_listed(self, tmp_path):
+    def test_pipeline_phases_listed(self, tmp_path):
         from pipeline import _format_timings  # noqa: PLC0415
 
         records = [
@@ -98,6 +98,50 @@ class TestFormatTimings:
         assert "file_load" in result
         assert "initiate_chat" in result
         assert "cost_summary" in result
+
+    def test_agent_breakdown_section_appears_when_agent_spans_present(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        records = [
+            {"phase": "agent.DataPrepAgent", "duration_ms": 12340.0},
+            {"phase": "agent.EDAAnalysisAgent", "duration_ms": 45210.0},
+            {"phase": "initiate_chat", "duration_ms": 372115.9},
+            {"phase": "cost_summary", "duration_ms": 0.8},
+        ]
+        p = self._write_timings(tmp_path, records)
+        result = _format_timings(p)
+        assert "Agent Breakdown" in result
+        # Labels must appear without the "agent." prefix
+        assert "DataPrepAgent" in result
+        assert "EDAAnalysisAgent" in result
+
+    def test_agent_breakdown_absent_when_no_agent_spans(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        records = [
+            {"phase": "initiate_chat", "duration_ms": 84210.5},
+            {"phase": "cost_summary", "duration_ms": 18.3},
+        ]
+        p = self._write_timings(tmp_path, records)
+        result = _format_timings(p)
+        assert "Agent Breakdown" not in result
+
+    def test_total_excludes_agent_spans(self, tmp_path):
+        from pipeline import _format_timings  # noqa: PLC0415
+
+        # Pipeline total should be initiate_chat + cost_summary = 300 ms
+        # Agent spans (500 ms each) must NOT be added to it.
+        records = [
+            {"phase": "agent.DataPrepAgent", "duration_ms": 500.0},
+            {"phase": "initiate_chat", "duration_ms": 200.0},
+            {"phase": "cost_summary", "duration_ms": 100.0},
+        ]
+        p = self._write_timings(tmp_path, records)
+        result = _format_timings(p)
+        # total = 300 ms → 0.3 s
+        assert "0.3 s" in result
+        # Must NOT contain the double-counted sum (1100 ms / 1.1 s)
+        assert "1.1 s" not in result
 
     def test_total_line_present_and_correct(self, tmp_path):
         from pipeline import _format_timings  # noqa: PLC0415
