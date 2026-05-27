@@ -32,6 +32,7 @@ AG2 Version: 0.10.3
 from __future__ import annotations
 
 import logging
+import time
 
 from autogen import AssistantAgent, GroupChat, GroupChatManager, UserProxyAgent
 
@@ -54,6 +55,7 @@ from agents.visualization_agent import (
     register_visualization_tools,
 )
 from config import MAX_ROUNDS
+from core import metrics
 from eda_state import get_critic_status
 
 logger = logging.getLogger(__name__)
@@ -149,6 +151,24 @@ def _make_state_flow_transition(
             return True
         return bool(message.get("function_call"))
 
+    # Per-agent wall-clock timers.
+    # Maps agent name → perf_counter() value recorded when the agent was
+    # first routed to.  Cleared when the agent's span is written.
+    # Closure-local — one dict per build_group_chat() call, thread-safe
+    # for single-threaded AG2 groupchat execution.
+    _agent_timers: dict[str, float] = {}
+
+    def _start_agent(name: str) -> None:
+        _agent_timers[name] = time.perf_counter()
+
+    def _finish_agent(name: str) -> None:
+        start = _agent_timers.pop(name, None)
+        if start is not None:
+            metrics.record_span(
+                f"agent.{name}",
+                (time.perf_counter() - start) * 1000,
+            )
+
     def state_flow_transition(last_speaker, groupchat):
         """Deterministic speaker selection using (agent, executor) pairs."""
         messages = groupchat.messages
@@ -156,12 +176,15 @@ def _make_state_flow_transition(
 
         # ── Initializer: start pipeline ────────────────────────────
         if name == "user_proxy":
+            _start_agent("DataPrepAgent")
             return data_prep_agent
 
         # ── DataPrepAgent ⇄ DataPrepExecutor ───────────────────────
         if name == "DataPrepAgent":
             if messages and _has_tool_call(messages[-1]):
                 return data_prep_executor
+            _finish_agent("DataPrepAgent")
+            _start_agent("EDAAnalysisAgent")
             return eda_analysis_agent
 
         if name == "DataPrepExecutor":
@@ -171,6 +194,8 @@ def _make_state_flow_transition(
         if name == "EDAAnalysisAgent":
             if messages and _has_tool_call(messages[-1]):
                 return eda_executor
+            _finish_agent("EDAAnalysisAgent")
+            _start_agent("VisualizationAgent")
             return visualization_agent
 
         if name == "EDAAnalysisExecutor":
@@ -180,6 +205,8 @@ def _make_state_flow_transition(
         if name == "VisualizationAgent":
             if messages and _has_tool_call(messages[-1]):
                 return viz_executor
+            _finish_agent("VisualizationAgent")
+            _start_agent("CriticAgent")
             return critic_agent
 
         if name == "VisualizationExecutor":
@@ -189,6 +216,8 @@ def _make_state_flow_transition(
         if name == "CriticAgent":
             if messages and _has_tool_call(messages[-1]):
                 return critic_executor
+            _finish_agent("CriticAgent")
+            _start_agent("FindingsGeneratorAgent")
             return findings_generator_agent
 
         if name == "CriticExecutor":
@@ -207,6 +236,8 @@ def _make_state_flow_transition(
                     "routing back to CriticAgent",
                     iteration,
                 )
+                _finish_agent("FindingsGeneratorAgent")
+                _start_agent("CriticAgent")
                 return critic_agent  # loop back
 
             if status == "REVISION_NEEDED" and iteration >= 2:
@@ -216,6 +247,8 @@ def _make_state_flow_transition(
                     iteration,
                 )
 
+            _finish_agent("FindingsGeneratorAgent")
+            _start_agent("ReportExporterAgent")
             return report_exporter_agent  # approved or forced termination
 
         if name == "FindingsGeneratorExecutor":
@@ -225,6 +258,7 @@ def _make_state_flow_transition(
         if name == "ReportExporterAgent":
             if messages and _has_tool_call(messages[-1]):
                 return report_executor
+            _finish_agent("ReportExporterAgent")
             return None  # end of conversation
 
         if name == "ReportExporterExecutor":

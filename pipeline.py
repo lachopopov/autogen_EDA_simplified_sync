@@ -148,7 +148,12 @@ def _format_cost_summary(
 
 
 def _format_timings(timings_path: Path) -> str:
-    """Read timings.jsonl for the session and return a formatted Phase Timings block.
+    """Read timings.jsonl for the session and return a formatted timing block.
+
+    Produces two sections:
+      * Phase Timings  — pipeline-level phases (initiate_chat, cost_summary, …)
+      * Agent Breakdown — per-agent spans written by the router via
+        ``metrics.record_span("agent.<AgentName>", duration_ms)``
 
     Returns an empty string if the file does not exist or has no records.
     """
@@ -168,25 +173,36 @@ def _format_timings(timings_path: Path) -> str:
     if not records:
         return ""
 
+    pipeline_recs = [r for r in records if not r.get("phase", "").startswith("agent.")]
+    agent_recs = [r for r in records if r.get("phase", "").startswith("agent.")]
+
+    def _fmt_ms(ms: float) -> str:
+        return f"{ms:>12,.1f} ms"
+
     lines: list[str] = []
+
+    # ── Pipeline phases ──────────────────────────────────────────────
     lines.append("Phase Timings")
     lines.append("-" * 40)
-
     total_ms = 0.0
-    for rec in records:
+    for rec in pipeline_recs:
         phase = rec.get("phase", "unknown")
         duration_ms = rec.get("duration_ms", 0.0)
         total_ms += duration_ms
-        if duration_ms >= 1_000:
-            formatted = f"{duration_ms:>12,.1f} ms"
-        else:
-            formatted = f"{duration_ms:>12.1f} ms"
-        lines.append(f"  {phase:<32}  {formatted}")
-
+        lines.append(f"  {phase:<32}  {_fmt_ms(duration_ms)}")
     lines.append("  " + "─" * 50)
-    total_s = total_ms / 1000
-    lines.append(f"  {'total':<32}  {total_ms:>12,.1f} ms  ({total_s:.1f} s)")
+    lines.append(f"  {'total':<32}  {_fmt_ms(total_ms)}  ({total_ms / 1000:.1f} s)")
     lines.append("")
+
+    # ── Agent breakdown ──────────────────────────────────────────────
+    if agent_recs:
+        lines.append("Agent Breakdown  (within initiate_chat)")
+        lines.append("-" * 40)
+        for rec in agent_recs:
+            label = rec.get("phase", "unknown").removeprefix("agent.")
+            duration_ms = rec.get("duration_ms", 0.0)
+            lines.append(f"  {label:<32}  {_fmt_ms(duration_ms)}")
+        lines.append("")
 
     return "\n".join(lines) + "\n"
 
@@ -459,7 +475,17 @@ def run_pipeline(
         _main._init_openlit()  # through main so test patches on main._init_openlit work
 
     # ------------------------------------------------------------------
-    # Pre-pipeline (cheap, no session needed — spans are no-ops here)
+    # Pre-pipeline — spans here are intentional no-ops
+    #
+    # file_load / target_resolve / encoded_categorical_resolve must run
+    # BEFORE init_session() because their outputs (file hash, target
+    # column) determine the cache key.  Moving them inside the session
+    # would break cache-first logic.  These phases are also cheap
+    # (<100 ms) so the timing loss is not significant.
+    #
+    # Per-agent timing is captured inside initiate_chat by the router
+    # in orchestrator.py via metrics.record_span() — see core/metrics.py
+    # module docstring for the full design rationale.
     # ------------------------------------------------------------------
     from tools.data_loader import _get_loader
 
