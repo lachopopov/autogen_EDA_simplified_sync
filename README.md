@@ -1,10 +1,307 @@
-# EDA Multi-Agent AG2 Report Generator For Classification Tasks
+> [!WARNING]
+> ## ⛔ ARCHIVED — FAILED EXPERIMENT BRANCH
+>
+> **This branch is a preserved historical record of a failed latency-optimisation attempt.**
+> It was never merged into `main` and will never be. The code here exists solely so future
+> engineers can read exactly what was tried, inspect the actual implementation, and understand
+> precisely why it failed — without repeating the same experiment.
+>
+> **Do not build on this branch. Do not rebase it. Do not open PRs from it.**
+> Switch to `main` for the production codebase.
 
-**A production-ready exploratory data analysis system powered by autonomous LLM agents.**
+---
 
-Automated end-to-end statistical analysis, visualization, quality assessment, and report generation using AI agents coordinated through AG2 StateFlow. Engineered for small-to-medium datasets (100–100K rows) with expert-validated Metadata-First Hybrid architecture.
+# `feat/findings-dag` — DAG Parallelisation Experiment Post-Mortem
 
-> **Branch scope:** This README documents the `main` branch — the CLI-first, general-purpose codebase for local development and custom integrations. A Streamlit-deployable version lives on the `streamlit-deploy` branch, which has its own standalone README tailored for that deployment.
+**Experiment period:** May 2026
+**Hypothesis:** Parallelise gpt-5 LLM calls in `FindingsGeneratorAgent` by splitting the fact
+sheet into 20 sections and running them concurrently via an async DAG. Total LLM time would
+collapse from T_gpt5 × sequential_sections to T_gpt5 for the slowest section only.
+**Result:** 377 s on iris.csv vs 390 s baseline. ~13 s improvement. Not a meaningful gain.
+**Verdict:** Archived. Wrong axis parallelised.
+
+---
+
+## The Governing Principle — Quality Trumps Latency
+
+> **Report quality is the non-negotiable constraint of this project.**
+> Any latency-reduction proposal that degrades the quality of the generated report is
+> rejected automatically, regardless of how much time it saves.
+
+This principle was established explicitly during the architectural debate that produced this
+experiment, and it is the single most important decision rule for evaluating any future
+optimisation attempt. It is stated here — at the top, before any technical detail — because
+it is the reason every significant latency lever was ultimately blocked.
+
+**What "quality" means concretely:**
+- The PART1 action plan (numbered items with ACTION / EXPECTED OUTCOME / RISK IF SKIPPED) must be coherent across all dataset features simultaneously
+- The PART2 business problem catalogue (10–20 problems with quantified impact) must draw on the full picture — not a truncated or section-local view
+- Every number the LLM cites in its commentary must come from deterministic data the tool provided — not from inference over a partial fact sheet
+- Any missing figure the LLM does not see, it will fabricate (proven empirically)
+
+**Consequence:** If an optimisation forces the LLM to reason over less data, fewer sections,
+or section-local context — it is a quality regression, not an optimisation. It is rejected.
+
+---
+
+## Table of Contents
+
+- [1. Why This Was Attempted — The Latency Problem](#1-why-this-was-attempted--the-latency-problem)
+- [2. What Was Tried — The DAG Design](#2-what-was-tried--the-dag-design)
+- [3. Why It Failed — Four Root Causes](#3-why-it-failed--four-root-causes)
+- [4. Three Alternative Proposals Also Rejected](#4-three-alternative-proposals-also-rejected)
+- [5. The Constraint Table](#5-the-constraint-table)
+- [6. The Architectural Principle Established](#6-the-architectural-principle-established)
+- [7. What to Do Instead](#7-what-to-do-instead)
+
+---
+
+## 1. Why This Was Attempted — The Latency Problem
+
+The production pipeline (`main` branch) was functionally correct at Phase 6 (1 227 tests
+passing). Attention turned to a core operational scaling problem: total pipeline latency grows
+with dataset width with no clean ceiling.
+
+### Measured timings — iris.csv baseline (150 rows × 5 columns)
+
+| Stage | Time | % of total |
+|---|---|---|
+| DataPrepAgent (load, validate, infer dtypes) | ~12.5 s | 3% |
+| EDAAnalysisAgent (describe, missing, correlation) | ~29 s | 7% |
+| VisualizationAgent (histograms, heatmaps, plots) | ~14.3 s | 4% |
+| CriticAgent (rules + critique) | ~11.5 s | 3% |
+| **FindingsGeneratorAgent** (`prepare_interpretation_context()` + gpt-5 call) | **~304 s** | **78%** |
+| ReportExporterAgent (render PDF + IPYNB) | ~18 s | 5% |
+| **Total** | **~390 s** | **100%** |
+
+### The scaling formula
+
+`prepare_interpretation_context()` builds a fact sheet that grows:
+- **O(cols)** for histogram metadata — ~150 tokens per column
+- **O(cols²)** for the full N×N correlation matrix
+
+At 5 columns (iris): ~6.5 K tokens → ~304 s gpt-5 call.
+At 50 columns: ~70 K tokens → projected ~900 s for `FindingsGeneratorAgent` alone, ~1 000 s total.
+
+**The pipeline becomes unusable at moderate dataset widths.** This is what motivated the
+search for a latency fix — subject to the quality constraint stated above.
+
+---
+
+## 2. What Was Tried — The DAG Design
+
+**Branch:** `feat/findings-dag` (this branch)
+
+### Hypothesis
+
+Split the ~6.5 K-token fact sheet into 20 sections (one per plot / correlation cluster /
+target variable section). Run each section as an independent gpt-5 call concurrently via an
+async DAG with four waves:
+
+- **Wave 1:** Independent sections (histograms, missing analysis) — fully parallel
+- **Wave 2:** Sections that depend on Wave 1 outputs (distribution comparisons)
+- **Wave 3:** Cross-section synthesis (correlation + target)
+- **Wave 4:** Final integration — assemble PART1 action plan + PART2 business problems
+
+**Expected wall-clock time:** T_slowest_section ≈ 30 s (one gpt-5 call).
+**Expected saving:** ~304 s → ~30 s for FindingsGeneratorAgent. Total: ~390 s → ~120 s.
+
+### Key additions in this branch
+
+- `tools/findings_dag.py` — async DAG executor, wave scheduling, `_call_with_retry()`
+- `DagSectionOutput` — Pydantic schema for per-section structured output
+- `build_section_prompt()` — injects JSON schema into each section prompt
+- Modified `agents/findings_generator_agent.py` — replaced single LLM call with DAG orchestration
+
+---
+
+## 3. Why It Failed — Four Root Causes
+
+### Root Cause 1 — Wave 4 Bug (+120 s wasted)
+
+The DAG's final wave (wave 4) called `_call_with_retry()` directly with a raw `wave4_context`
+dict, bypassing `build_section_prompt()`. This meant no JSON schema was injected into the
+prompt. gpt-5 returned free text instead of structured JSON → `ValidationError` → 4 failed
+serial retry calls × ~30 s each = **+120 s added, not saved**.
+
+The DAG's nominal latency improvement (parallel LLM calls in waves 1–3) was entirely consumed
+by the Wave 4 bug overhead. Without the bug, the DAG might have measured ~257 s — but that
+brings the next root causes into force.
+
+### Root Cause 2 — `DagSectionOutput` Schema Prevents the Quality Contract
+
+`FindingsGeneratorAgent` delivers two mandatory output sections on `main`:
+
+- **PART1:** Numbered action plan — each item has ACTION / EXPECTED OUTCOME / RISK IF SKIPPED
+- **PART2:** 10–20 business problems with quantified impact and confidence scores
+
+This PART1/PART2 contract requires a **single LLM call that sees ALL sections simultaneously**.
+The overall recommendations must be coherent across correlation analysis, distribution analysis,
+target variable analysis, and critic findings.
+
+The `DagSectionOutput` Pydantic schema forces each parallel call to produce section-local
+output only. It structurally cannot produce cross-section recommendations — the schema does not
+allow it, and the section-local context window does not contain sibling section data.
+
+Fixing the schema would require giving every parallel call the entire fact sheet, which removes
+the latency benefit entirely. **This is a quality regression — rejected per the governing
+principle.**
+
+### Root Cause 3 — Cross-Section Incoherence Is Structural, Not a Prompt Problem
+
+Even if the Wave 4 bug were fixed and the schema relaxed:
+
+A 20-call DAG where call #7 (correlation section) does not see the output of call #3
+(distribution section) cannot produce coherent cross-feature recommendations. The LLM for each
+section lacks context from sibling sections. This is not fixable by prompt engineering — it is
+a fundamental constraint of parallelising reasoning across independent LLM calls. The calls are
+stateless. There is no shared scratchpad.
+
+The only fix is to give every call the full context — which collapses all 20 calls into 1 call
+with the same token cost and the same latency as the baseline. **Any partial-context shortcut
+is a quality regression — rejected per the governing principle.**
+
+### Root Cause 4 — LLM Provider Rate Limiting Negates Parallel Wall-Clock Gain *(Unexpected Finding)*
+
+**What was expected:** 20 parallel gpt-5 calls → wall-clock time ≈ T_slowest_call ≈ 30 s.
+
+**What actually happens:** OpenAI's API enforces rate limits per minute (tokens-per-minute and
+requests-per-minute). Firing 20 concurrent gpt-5 calls simultaneously triggers
+`429 Too Many Requests` throttling. `_call_with_retry()` backs off and retries — adding
+latency, not removing it. In the limit, 20 "parallel" calls that are all throttled and
+serialised by the API end up taking **longer** than a single sequential call, because each
+retry cycle burns backoff time on top of the original call duration.
+
+**Why this is unexpected:** Theoretical reasoning assumes the bottleneck is compute (the GPU
+doing inference). For an API-accessed LLM, the bottleneck is the API quota — a shared,
+rate-limited resource across all callers. Parallelism at the client side does not create
+parallelism at the provider side; it creates quota contention.
+
+The iris DAG measured 377 s vs. 390 s baseline — a 13 s "improvement" that was noise, not
+signal, and would have been negative if the Wave 4 bug had not masked the throttling overhead.
+
+**Generalizable rule for future application building:** When an LLM is accessed via a
+rate-limited API (not self-hosted), client-side LLM call parallelism does not reliably improve
+wall-clock latency and may worsen it through backoff overhead. The only reliable parallel axis
+is **data computation** (numpy, pandas, scikit-learn) — never LLM API calls.
+
+---
+
+## 4. Three Alternative Proposals Also Rejected
+
+After archiving the DAG, three remaining latency levers were evaluated against the `main`
+branch (not implemented on this branch). The quality constraint was applied to each.
+
+### Proposal A — ProcessPoolExecutor on EDA Compute Phase
+
+Add `ProcessPoolExecutor` inside `prepare_interpretation_context()` to run the 5 EDA
+computations concurrently instead of serially.
+
+**Estimated benefit:** EDA compute ~29 s → ~8 s for iris. Saves ~20 s from 390 s total = **5%**.
+
+**Why not pursued now:** Compute is not the bottleneck. `FindingsGeneratorAgent` is 78% of
+total time and is unchanged by ProcessPoolExecutor on the compute phase. The improvement is
+marginal. Crucially, this proposal does **not** touch report quality — it is not rejected on
+quality grounds, only on impact grounds. It remains viable for future implementation,
+especially for the clustering branch where compute is the genuine bottleneck.
+
+### Proposal B — Adaptive Fact Sheet Cap
+
+Rank features by signal (mutual information × 0.5 + max absolute correlation × 0.3 +
+(1 − missing_rate) × 0.2) and give top-N features full histogram metadata; remaining features
+receive only a 1-line summary. Cap the correlation matrix to top-25 pairs by |r|.
+
+**Why rejected — quality grounds:** Every number the LLM does not see, it fabricates. The
+Metadata-First Hybrid architecture was specifically designed to give the LLM 100% data
+coverage — full histograms, full N×N correlation, full missing percentages — because any
+truncation recreates the blind-spot hallucination problem the architecture was built to solve.
+Truncating columns to summary rows is a quality regression. **Rejected per the governing
+principle.**
+
+### Proposal C — Faster Model for FindingsGeneratorAgent
+
+Switch `FindingsGeneratorAgent` from gpt-5 to gpt-5-mini. T_per_call drops from ~30 s to ~5 s.
+For iris (6.5 K tokens): `FindingsGeneratorAgent` ~304 s → ~50 s. Total: ~390 s → ~136 s.
+
+**Status — quality concern, not yet measured:** gpt-5 is hardcoded for `FindingsGeneratorAgent`
+because PART1/PART2 commentary quality is the pipeline's primary differentiating output.
+gpt-5-mini has been observed to produce shallower, less coherent PART2 sections. However,
+this has not been measured objectively. This is the only lever not rejected outright — it
+requires a PART1/PART2 quality regression test framework before a decision can be made. If
+measurement shows no quality degradation, the 75% latency saving is worth taking.
+
+---
+
+## 5. The Constraint Table
+
+| Lever | Latency impact | Quality impact | Status |
+|---|---|---|---|
+| Parallelise LLM calls (this DAG branch) | Theoretically large — negated by rate limiting | Cross-section incoherence — quality regression | **Rejected** — both quality and latency fail |
+| Reduce fact sheet tokens (adaptive cap) | Proportional to reduction | Hallucination on truncated columns — quality regression | **Rejected** — quality regression |
+| ProcessPoolExecutor on EDA compute | ~5% of total | None — does not touch LLM input | **Not rejected** — marginal impact, viable for clustering branch |
+| Faster model for FindingsGenerator | ~75% reduction | Unknown — not yet measured objectively | **Deferred** — measure quality degradation first |
+| Accept latency as-is | 0% | None | **Default** — current state of `main` |
+
+**The honest conclusion:** The two levers with meaningful latency impact both cause quality
+regressions and are blocked by the governing principle. The one lever with no quality impact
+(ProcessPoolExecutor on compute) saves only 5%. **Classification pipeline latency scales
+linearly with dataset width with no clean fix that preserves quality.**
+
+For iris (5 cols): 390 s is acceptable for a development tool.
+For 50-col datasets: ~1 000 s. This is a known, documented limitation — not a bug.
+
+---
+
+## 6. The Architectural Principle Established
+
+> **N parallel DATA computations → 1 monolithic LLM call.**
+
+This is the correct axis of parallelism for this pipeline architecture:
+
+- The **tool** is the sensor — deterministic, parallelisable, testable, zero hallucination risk
+- The **LLM** is the brain — sequential, coherence-requiring, cannot be split without quality loss
+
+**Correct application:** ProcessPoolExecutor *inside* a single tool function, invisible to AG2.
+The GroupChat still sees one tool call → one tool result. The parallelism is infrastructure,
+not orchestration. Quality is unaffected.
+
+**Incorrect application (this branch):** Multiple tool calls → multiple LLM agent turns →
+multiple gpt-5 API calls → rate limit contention + cross-section incoherence = quality
+regression + no latency gain.
+
+---
+
+## 7. What to Do Instead
+
+Switch to `main`. The production pipeline is on `main`. It is functionally correct, fully
+tested (1 227 tests), and produces high-quality PART1/PART2 findings.
+
+If latency becomes unacceptable at large dataset widths, the levers to revisit (in order of
+expected impact, filtered by the quality constraint):
+
+1. **Measure faster model first** — Build a PART1/PART2 quality regression test framework.
+   Measure gpt-5 vs. gpt-5-mini objectively on PART1 coherence and PART2 depth. If no
+   measurable degradation, the 75% latency saving is the only clean win available.
+2. **ProcessPoolExecutor on EDA compute** — Low-risk, ~5% saving for classification, genuine
+   benefit for the future clustering branch. Safe to implement anytime without quality risk.
+3. **Self-hosted LLM** — Removes the rate-limiting constraint (Root Cause 4). Makes
+   client-side parallelism viable in principle — but Root Causes 2 and 3 (schema + incoherence)
+   remain architectural blockers regardless of hosting.
+
+**Do not reopen the DAG approach** without a solution to Root Causes 2 and 3. Rate limiting
+can be mitigated. Cross-section incoherence and the schema conflict cannot be patched — they
+require a fundamentally different output contract that does not violate the quality constraint.
+
+---
+
+*Branch created: May 2026. Archived: May 2026.*
+*Test count at time of experiment: 1 227 — unchanged by this branch. No tests were added or modified here.*
+
+---
+
+> **Branch scope note:** The README below this line on `main` documents the production CLI
+> pipeline. That content has been replaced on this branch by the post-mortem above, since this
+> branch has no production use. See `main` for the full production README.
 
 ---
 
