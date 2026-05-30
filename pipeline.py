@@ -535,6 +535,35 @@ def run_pipeline(
             with metrics.span("cache_hit", extra={"key": key[:16]}):
                 pass
             logger.info("Cache hit: returning cached run key=%s...", key[:8])
+            logger.info("Cache hit — outputs at: %s", hit)
+            for fname in ("report.pdf", "report.md"):
+                fpath = hit / fname
+                if fpath.exists():
+                    logger.info("  \u2713 %s", fpath)
+                else:
+                    logger.warning("  \u2717 %s not found in cache entry", fname)
+            # Print a zero-cost summary so operators are not confused by the
+            # absence of a Cost & Timing block in stdout.
+            hit_summary = (
+                "EDA Pipeline \u2014 Cost & Timing Summary\n"
+                "========================================\n"
+                f"Date: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                "\n"
+                "CACHE HIT \u2014 served from app cache (no LLM calls made).\n"
+                f"  Cache key : {key}\n"
+                f"  Outputs   : {hit}\n"
+                "\n"
+                "Per-Agent Breakdown\n"
+                "----------------------------------------\n"
+                "  (no agents run \u2014 result served from cache)\n"
+                "\n"
+                "Grand Totals\n"
+                "----------------------------------------\n"
+                "  Pipeline total:               $0.0000\n"
+                "\n"
+                "Original run cost stored in: cost_summary.txt (inside cache dir above)\n"
+            )
+            print(hit_summary)
             return key
 
     # ------------------------------------------------------------------
