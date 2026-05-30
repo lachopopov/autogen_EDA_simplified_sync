@@ -146,14 +146,37 @@ class TestEDAModeSwitch:
         importlib.reload(config)
         assert config.LLM_CONFIG["config_list"][0]["cache_seed"] is None
 
-    def test_final_mode_cache_seed_42(self, monkeypatch):
+    def test_final_mode_cache_seed_none_without_ag2_cache_seed(self, monkeypatch):
+        """EDA_MODE=final alone does NOT activate AG2 LLM cache in true production."""
         monkeypatch.setenv("EDA_MODE", "final")
+        monkeypatch.delenv("AG2_CACHE_SEED", raising=False)
+        import importlib
+
+        import config
+
+        importlib.reload(config)
+        assert config.LLM_CONFIG["config_list"][0]["cache_seed"] is None
+
+    def test_ag2_cache_seed_env_var_sets_seed(self, monkeypatch):
+        """AG2_CACHE_SEED=42 activates AG2 LLM cache regardless of EDA_MODE."""
+        monkeypatch.setenv("AG2_CACHE_SEED", "42")
         import importlib
 
         import config
 
         importlib.reload(config)
         assert config.LLM_CONFIG["config_list"][0]["cache_seed"] == 42
+
+    def test_ag2_cache_seed_absent_gives_none(self, monkeypatch):
+        """No AG2_CACHE_SEED → cache_seed is None (dev and production default)."""
+        monkeypatch.delenv("EDA_MODE", raising=False)
+        monkeypatch.delenv("AG2_CACHE_SEED", raising=False)
+        import importlib
+
+        import config
+
+        importlib.reload(config)
+        assert config.LLM_CONFIG["config_list"][0]["cache_seed"] is None
 
 
 class TestProjectPaths:
