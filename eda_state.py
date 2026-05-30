@@ -236,24 +236,26 @@ class Interpretations(BaseModel):
 # Router helper — minimal extraction for state_flow_transition
 # ---------------------------------------------------------------------------
 #
-# AG2-native approach: the router inspects agent names and keyword
-# markers in message content — exactly like the reference example
-# (ag2_groupchat_state_flow_transition.py) checks for "Growth"/"Value".
+# Primary path (session active): read CriticReport.status from the artifact
+# store written deterministically by run_critic_rules(). This eliminates
+# dependence on LLM message text for the routing signal.
 #
-# CriticAgent's system_message instructs it to include APPROVED or
-# REVISION_NEEDED as a keyword. The iteration count is simply how
-# many times CriticAgent has spoken in the chat history.
+# Fallback path (no session / unit tests): scan GroupChat message history for
+# APPROVED / REVISION_NEEDED keywords — the original AG2-native pattern,
+# kept so unit tests that run outside a pipeline continue to work.
+#
+# Iteration is always derived from message history count regardless of path.
+# The artifact store CriticReport.iteration is always 0 and is not used.
 # ---------------------------------------------------------------------------
 
 def get_critic_status(messages: list[dict[str, Any]]) -> tuple[str, int]:
     """
-    Determine the CriticAgent's latest status and iteration count
-    from the GroupChat message history.
+    Determine the CriticAgent's latest status and iteration count.
 
-    Uses the AG2-native pattern:
-      - Filter messages by agent name (standard AG2 message field)
-      - Check for status keywords in the last CriticAgent message
-      - Count CriticAgent turns for iteration
+    When a pipeline session is active, reads CriticReport.status from the
+    artifact store (written deterministically by run_critic_rules). Falls back
+    to keyword scanning of GroupChat message history when no session is active
+    (unit tests, CLI without session context).
 
     Used exclusively by state_flow_transition() to decide:
       - REVISION_NEEDED + iteration < 2 → loop back to CriticAgent
@@ -263,9 +265,32 @@ def get_critic_status(messages: list[dict[str, Any]]) -> tuple[str, int]:
         (status, iteration) — defaults to ("PENDING", 0) if CriticAgent
         has not spoken yet.
     """
+    from tools._pipeline_state import is_active, load_state
+
     critic_messages = [m for m in messages if m.get("name") == "CriticAgent"]
     iteration = len(critic_messages)
 
+    # Primary path: deterministic artifact store read.
+    if is_active():
+        raw = load_state("critic_report")
+        if raw:
+            try:
+                report = CriticReport.model_validate_json(raw)
+                logger.debug(
+                    "get_critic_status: artifact store → status=%s iteration=%d",
+                    report.status,
+                    iteration,
+                )
+                return report.status, iteration
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "get_critic_status: failed to parse critic_report artifact; "
+                    "falling back to keyword scan"
+                )
+        # Session active but no artifact yet (CriticAgent hasn't run).
+        return "PENDING", iteration
+
+    # Fallback path: keyword scan (no active session — unit tests / degraded).
     if not critic_messages:
         return "PENDING", 0
 

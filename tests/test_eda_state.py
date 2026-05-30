@@ -505,3 +505,111 @@ class TestDataProfileEncodedCategoricalCols:
         )
         dp2 = DataProfile.model_validate_json(dp.model_dump_json())
         assert dp2.encoded_categorical_cols == ["SEX"]
+
+
+# ===================================================================
+# get_critic_status — artifact store (primary) path
+# ===================================================================
+
+
+class TestGetCriticStatusArtifactStore:
+    """
+    Test the PRIMARY path of get_critic_status: reading CriticReport.status
+    from the artifact store when a pipeline session is active.
+
+    Uses unittest.mock to simulate is_active() and load_state() without
+    requiring a real filesystem session.
+    """
+
+    def _make_report_json(self, status: str) -> str:
+        from eda_state import CriticReport
+        return CriticReport(flags=[], status=status).model_dump_json()
+
+    def test_approved_from_artifact_store(self):
+        """When session active + store has APPROVED, returns APPROVED regardless of message text."""
+        from unittest.mock import patch
+
+        messages = [{"name": "CriticAgent", "content": "Some narration without keyword."}]
+        with (
+            patch("tools._pipeline_state.is_active", return_value=True),
+            patch("tools._pipeline_state.load_state", return_value=self._make_report_json("APPROVED")),
+        ):
+            status, iteration = get_critic_status(messages)
+        assert status == "APPROVED"
+        assert iteration == 1  # one CriticAgent message
+
+    def test_revision_needed_from_artifact_store(self):
+        """When session active + store has REVISION_NEEDED, returns it even if message says APPROVED."""
+        from unittest.mock import patch
+
+        # Message says APPROVED but store says REVISION_NEEDED — store wins.
+        messages = [{"name": "CriticAgent", "content": "APPROVED"}]
+        with (
+            patch("tools._pipeline_state.is_active", return_value=True),
+            patch("tools._pipeline_state.load_state", return_value=self._make_report_json("REVISION_NEEDED")),
+        ):
+            status, iteration = get_critic_status(messages)
+        assert status == "REVISION_NEEDED"
+        assert iteration == 1
+
+    def test_pending_when_session_active_but_no_artifact(self):
+        """Session active but critic_report not yet written → PENDING, not a scan fallback."""
+        from unittest.mock import patch
+
+        # Message has a keyword — but session is active with no artifact, so
+        # the fallback keyword scan must NOT run.
+        messages = [{"name": "CriticAgent", "content": "APPROVED"}]
+        with (
+            patch("tools._pipeline_state.is_active", return_value=True),
+            patch("tools._pipeline_state.load_state", return_value=None),
+        ):
+            status, iteration = get_critic_status(messages)
+        assert status == "PENDING"
+        assert iteration == 1
+
+    def test_iteration_always_from_message_count(self):
+        """Iteration is message-history count, not artifact store field (which is always 0)."""
+        from unittest.mock import patch
+
+        messages = [
+            {"name": "CriticAgent", "content": "First run."},
+            {"name": "FindingsGeneratorAgent", "content": "Revised."},
+            {"name": "CriticAgent", "content": "Second run."},
+        ]
+        with (
+            patch("tools._pipeline_state.is_active", return_value=True),
+            patch("tools._pipeline_state.load_state", return_value=self._make_report_json("APPROVED")),
+        ):
+            status, iteration = get_critic_status(messages)
+        assert status == "APPROVED"
+        assert iteration == 2  # two CriticAgent messages
+
+    def test_corrupt_artifact_returns_pending(self):
+        """If artifact store returns malformed JSON, returns PENDING (not keyword scan).
+
+        When a session is active, the LLM is no longer instructed to emit routing
+        keywords (Step 1.3), so keyword scan is unreliable. PENDING is the safe
+        default; the router's iteration >= 2 guard prevents an infinite loop.
+        """
+        from unittest.mock import patch
+
+        messages = [{"name": "CriticAgent", "content": "Looks good. APPROVED"}]
+        with (
+            patch("tools._pipeline_state.is_active", return_value=True),
+            patch("tools._pipeline_state.load_state", return_value="not-valid-json{{"),
+        ):
+            status, iteration = get_critic_status(messages)
+        # Corrupt artifact → warning logged → PENDING (keyword scan does NOT run
+        # when session is active — LLM no longer emits routing keywords).
+        assert status == "PENDING"
+        assert iteration == 1
+
+    def test_no_session_uses_keyword_scan(self):
+        """When is_active() is False, the original keyword scan path is used unchanged."""
+        from unittest.mock import patch
+
+        messages = [{"name": "CriticAgent", "content": "Issues found. REVISION_NEEDED"}]
+        with patch("tools._pipeline_state.is_active", return_value=False):
+            status, iteration = get_critic_status(messages)
+        assert status == "REVISION_NEEDED"
+        assert iteration == 1
