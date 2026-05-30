@@ -564,6 +564,11 @@ def run_pipeline(
                 "Original run cost stored in: cost_summary.txt (inside cache dir above)\n"
             )
             print(hit_summary)
+            # Persist so Streamlit UI (and other consumers) can read it without
+            # re-running the pipeline.
+            hit_summary_path = hit / "hit_summary.txt"
+            hit_summary_path.write_text(hit_summary, encoding="utf-8")
+            logger.info("Cache hit summary written to: %s", hit_summary_path)
             return key
 
     # ------------------------------------------------------------------
