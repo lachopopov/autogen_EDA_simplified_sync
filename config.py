@@ -9,8 +9,9 @@ Models:
   - gpt-5-mini  ($0.25 / $2.00 per 1M tokens) and gpt-5  ($1.25 / $10.00 per 1M tokens) for FindingsGeneratorAgent only — final validation only
 
 Usage:
-  EDA_MODE=dev   → gpt-5-mini  (default)
-  EDA_MODE=final → gpt-5-mini + gpt-5 for FindingsGeneratorAgent
+  EDA_MODE=dev                          → dev mode: gpt-5-mini, app cache off, AG2 cache off
+  EDA_MODE=final                        → production: gpt-5-mini + gpt-5, app cache on, AG2 cache off
+  EDA_MODE=final AG2_CACHE_SEED=42      → validation: both caches on (cost-saving reproduction)
 """
 
 import datetime
@@ -29,10 +30,12 @@ load_dotenv(_ENV_PATH)
 # --- Base configuration shared across all models ---
 # Note: temperature is NOT set here. gpt-5-nano and gpt-5-mini only support
 # the default temperature (1). Setting temperature=0.0 causes a 400 error.
-# Cache: dev → None (ephemeral, no stale outputs); final → 42 (reproducible).
+# AG2 LLM cache: opt-in via AG2_CACHE_SEED env var (e.g. AG2_CACHE_SEED=42).
+# Decoupled from EDA_MODE: true production uses EDA_MODE=final but no AG2 cache.
+# Validation runs use EDA_MODE=final AG2_CACHE_SEED=42 (both caches on).
 _BASE: dict = {
     "api_key": os.environ["OPENAI_API_KEY"],
-    "cache_seed": None if os.getenv("EDA_MODE") != "final" else 42,
+    "cache_seed": int(os.getenv("AG2_CACHE_SEED")) if os.getenv("AG2_CACHE_SEED") else None,
 }
 
 # --- Model-specific configurations ---

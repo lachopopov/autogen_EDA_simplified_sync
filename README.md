@@ -102,6 +102,12 @@ OPENAI_API_KEY=sk-your-actual-key-here
 # dev = gpt-5-mini (fast, ~$0.05–0.15/run)  |  final = gpt-5 (quality, ~$0.25–0.75/run)
 # EDA_MODE=dev or EDA_MODE=final
 
+# --- AG2 LLM cache (optional) ---
+# Decoupled from EDA_MODE so true production (EDA_MODE=final) gets fresh LLM responses.
+# Set to any integer to enable AG2's prompt-level cache (cost-saving validation runs).
+# Omit entirely (default) to disable — recommended for production.
+# AG2_CACHE_SEED=42
+
 # --- CSV / Excel missing-value sentinels (optional) ---
 # Comma-separated list overrides the built-in default set (which includes "?").
 # Set to a custom list if your data uses non-standard sentinels.
@@ -204,12 +210,25 @@ By default, the pipeline uses `gpt-5-mini` (fast, cost-effective for testing).
 In final mode, `FindingsGeneratorAgent` switches to `gpt-5` (higher quality); all other agents remain on `gpt-5-mini` to control cost (~5× cost for the findings step only):
 
 ```bash
-# Development (default, gpt-5-mini)
+# Development (default, gpt-5-mini) — no caches
 python main.py test_data/iris.csv
 
-# Production-ready reporting (gpt-5)
+# True production (gpt-5 findings, app cache on, AG2 LLM cache off → fresh responses)
 EDA_MODE=final python main.py test_data/iris.csv
+
+# Validation / cost-saving re-run (both caches on — AG2 replays cached LLM responses)
+EDA_MODE=final AG2_CACHE_SEED=42 python main.py test_data/iris.csv
 ```
+
+**Cache matrix:**
+
+| Mode | App cache (`outputs/.cache/`) | AG2 LLM cache (`~/.cache/autogen/`) |
+|---|---|---|
+| dev (default) | off | off |
+| `EDA_MODE=final` | **on** | off |
+| `EDA_MODE=final AG2_CACHE_SEED=42` | **on** | **on** |
+
+`AG2_CACHE_SEED` is intentionally decoupled from `EDA_MODE`: production always gets fresh LLM responses; validation runs opt in explicitly.
 
 **Cost & timing reference:**
 - Dev mode: ~30–60 seconds, ~$0.05–0.15 per run
