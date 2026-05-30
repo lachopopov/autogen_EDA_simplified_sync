@@ -59,8 +59,11 @@ class TestCreateCriticAgent:
 
     def test_system_message(self, critic_agent):
         assert "run_critic_rules()" in critic_agent.system_message
-        assert "APPROVED" in critic_agent.system_message
-        assert "REVISION_NEEDED" in critic_agent.system_message
+        assert "Summarise the quality flags" in critic_agent.system_message
+        assert "pipeline handles routing automatically" in critic_agent.system_message
+        # Routing keyword instructions must be absent — routing is now deterministic.
+        assert "If flags exist, output: REVISION_NEEDED" not in critic_agent.system_message
+        assert "If no flags above MEDIUM severity, output: APPROVED" not in critic_agent.system_message
 
     def test_system_message_exact(self, critic_agent):
         assert critic_agent.system_message == CRITIC_SYSTEM_MESSAGE

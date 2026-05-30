@@ -33,8 +33,7 @@ Use run_critic_rules() with the data reference from load_data().
 Do NOT invent additional rules beyond what run_critic_rules() returns.
 When a tool returns a confirmation message with "Reference: STATE_REF:...", the tool has SUCCEEDED.
 Do NOT re-call the same tool. Move on to emit your status summary.
-If flags exist, output: REVISION_NEEDED + summary.
-If no flags above MEDIUM severity, output: APPROVED + summary.
+Summarise the quality flags returned by run_critic_rules(). Do not determine approval status — the pipeline handles routing automatically.
 Do NOT copy large JSON.
 Keep your text summary under 3 sentences. Do not offer options or next-step suggestions — the pipeline advances automatically.
 Ground your answers only on data returned by your tools. If you do not have the facts, state "No info available at this stage." Do NOT invent or fabricate any statistics, numbers, or findings.
