@@ -2157,7 +2157,6 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
         or None if the eval was skipped or failed.
     """
     from config import OPENLIT_EVAL_MODEL
-
     from tools._pipeline_state import is_active, load_state, save_state
     if not is_active():
         return None

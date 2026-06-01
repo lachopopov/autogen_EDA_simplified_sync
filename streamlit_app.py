@@ -18,17 +18,23 @@ import os
 
 os.environ["IPYNB_EXPORT"] = "true"
 
+import datetime
+import json
 import tempfile
 from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 
 from config import get_outputs_dir, get_plots_dir
 from eda_state import EncodedCategoricalSuspect, TargetInfo
-from main import run_pipeline
-from tools.data_loader import _get_loader, detect_encoded_categoricals, detect_target
-
+from ui_backend_adapter import (
+    COOLDOWN_SECONDS,
+    SystemBusy,
+    _get_loader,
+    detect_encoded_categoricals,
+    detect_target,
+    submit_eda_job,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -88,31 +94,37 @@ if uploaded is None:
     st.info("Upload a dataset to get started.")
     st.stop()
 
-# Persist uploaded file to a temp path (Streamlit doesn't expose a real path)
+# Persist uploaded file in a session-scoped temp directory
+if "tmpdir" not in st.session_state:
+    st.session_state["tmpdir"] = tempfile.TemporaryDirectory()
+
+tmpdir_path = Path(st.session_state["tmpdir"].name)
+
 if "file_path" not in st.session_state or st.session_state.get("file_name") != uploaded.name:
-    suffix = Path(uploaded.name).suffix
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(uploaded.getvalue())
-    tmp.flush()
-    tmp.close()
-    st.session_state["file_path"] = Path(tmp.name)
+    # Clear previous uploaded files from this session temp dir
+    for p in tmpdir_path.iterdir():
+        if p.is_file():
+            p.unlink(missing_ok=True)
+    upload_path = tmpdir_path / uploaded.name
+    upload_path.write_bytes(uploaded.getvalue())
+    st.session_state["file_path"] = upload_path
     st.session_state["file_name"] = uploaded.name
     # Clear stale results when a new file is uploaded
     st.session_state.pop("session_id", None)
 
-file_path: Path = st.session_state["file_path"]
+file_path = st.session_state["file_path"]
 
 # ---------------------------------------------------------------------------
 # Load DataFrame for configuration widgets
 # ---------------------------------------------------------------------------
 if "df" not in st.session_state or st.session_state.get("file_name_loaded") != uploaded.name:
     loader = _get_loader(str(file_path))
-    df = loader.load(str(file_path))
-    df = df.drop_duplicates().reset_index(drop=True)
-    st.session_state["df"] = df
+    loaded_df = loader.load(str(file_path))
+    loaded_df = loaded_df.drop_duplicates().reset_index(drop=True)
+    st.session_state["df"] = loaded_df
     st.session_state["file_name_loaded"] = uploaded.name
 
-df: pd.DataFrame = st.session_state["df"]
+df = st.session_state["df"]
 
 st.success(f"**{uploaded.name}** — {df.shape[0]:,} rows × {df.shape[1]} columns")
 
@@ -214,6 +226,9 @@ subtypes_flag: dict[str, str] | None = confirmed_subtypes if confirmed_subtypes 
 # ---------------------------------------------------------------------------
 st.header("3. Run Pipeline")
 
+if "running" not in st.session_state:
+    st.session_state["running"] = False
+
 # Show a summary of configuration before running
 with st.expander("Configuration summary", expanded=True):
     col1, col2 = st.columns(2)
@@ -228,19 +243,52 @@ with st.expander("Configuration summary", expanded=True):
         else:
             st.markdown("**Categoricals**: (none confirmed)")
 
-if st.button("▶ Run Pipeline", type="primary", use_container_width=True):
-    with st.spinner("Running EDA pipeline — this may take a few minutes..."):
-        session_id = run_pipeline(
-            file_path=file_path,
-            target_flag=target_flag,
-            no_target_flag=no_target_flag,
-            enable_openlit=False,
-            categoricals_flag=categoricals_flag,
-            subtypes_flag=subtypes_flag,
-            no_reclassify_flag=(categoricals_flag is None and not suspects),
-        )
+# Per-session cooldown: prevent accidental double-submissions in the same tab.
+_now = datetime.datetime.now()
+_last_run: datetime.datetime | None = st.session_state.get("last_run_at")
+_cooldown_remaining: int = (
+    max(0, int(COOLDOWN_SECONDS - (_now - _last_run).total_seconds()))
+    if _last_run is not None
+    else 0
+)
+_in_cooldown: bool = _cooldown_remaining > 0
+
+run_clicked = st.button(
+    "▶ Run Pipeline",
+    type="primary",
+    use_container_width=True,
+    disabled=st.session_state["running"] or _in_cooldown,
+)
+if _in_cooldown:
+    st.caption(
+        f"Per-session cooldown active — {_cooldown_remaining}s remaining before next submission."
+    )
+
+if run_clicked:
+    st.session_state["running"] = True
+    run_succeeded = False
+    try:
+        with st.spinner(
+            "Running EDA pipeline — typically 4–6 minutes for small datasets; larger datasets may take longer."
+        ):
+            session_id = submit_eda_job(
+                file_path=file_path,
+                target_flag=target_flag,
+                no_target_flag=no_target_flag,
+                enable_openlit=False,
+                categoricals_flag=categoricals_flag,
+                no_reclassify_flag=(categoricals_flag is None and not suspects),
+            )
         st.session_state["session_id"] = session_id
-    st.rerun()
+        st.session_state["last_run_at"] = datetime.datetime.now()
+        run_succeeded = True
+    except SystemBusy:
+        st.warning("Another user is currently running the pipeline. Please retry in a minute.")
+    finally:
+        st.session_state["running"] = False
+
+    if run_succeeded:
+        st.rerun()
 
 # ---------------------------------------------------------------------------
 # Phase D — Display Results
@@ -248,7 +296,7 @@ if st.button("▶ Run Pipeline", type="primary", use_container_width=True):
 if "session_id" not in st.session_state:
     st.stop()
 
-session_id: str = st.session_state["session_id"]
+session_id = st.session_state["session_id"]
 out_dir = get_outputs_dir(session_id)
 plots_dir = get_plots_dir(session_id)
 
@@ -258,14 +306,30 @@ if not out_dir.exists():
 
 st.header("4. Results")
 
+hit_summary_path = out_dir / "hit_summary.txt"
+if hit_summary_path.exists():
+    st.info(hit_summary_path.read_text(encoding="utf-8"))
+
 report_md = out_dir / "report.md"
 report_pdf = out_dir / "report.pdf"
 report_ipynb = out_dir / "report.ipynb"
 cost_path = out_dir / "cost_summary.txt"
+timings_path = out_dir / "timings.jsonl"
 
-tab_plots, tab_md, tab_pdf, tab_ipynb, tab_cost = st.tabs(
-    ["📊 Plots", "📄 Markdown Report", "📕 PDF Report", "📓 Notebook", "💰 Cost Summary"]
-)
+debug = st.query_params.get("debug") == "1"
+
+tabs_labels = [
+    "📊 Plots",
+    "📄 Markdown Report",
+    "📕 PDF Report",
+    "📓 Notebook",
+    "💰 Cost Summary",
+]
+if debug:
+    tabs_labels.append("⏱ Timings")
+
+tabs = st.tabs(tabs_labels)
+tab_plots, tab_md, tab_pdf, tab_ipynb, tab_cost = tabs[:5]
 
 with tab_plots:
     plot_files = sorted(plots_dir.glob("*.png"))
@@ -310,6 +374,23 @@ with tab_cost:
         st.code(cost_path.read_text(encoding="utf-8"))
     else:
         st.info("Cost summary not found.")
+
+    if hit_summary_path.exists():
+        st.markdown("---")
+        st.caption("Most recent cache hit summary")
+        st.code(hit_summary_path.read_text(encoding="utf-8"))
+
+if debug:
+    with tabs[-1]:
+        if timings_path.exists():
+            records = [
+                json.loads(line)
+                for line in timings_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            st.dataframe(records, use_container_width=True)
+        else:
+            st.info("No timings recorded.")
 
 # ---------------------------------------------------------------------------
 # Download buttons
