@@ -12,6 +12,7 @@ import hashlib
 import importlib
 import json
 import logging
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -529,7 +530,14 @@ def run_pipeline(
     )
 
     # Cache fast-path (outside the concurrency guard — hits are free)
-    if cache.is_enabled():
+    cache_enabled = cache.is_enabled()
+    if not cache_enabled:
+        logger.info(
+            "Cache disabled (EDA_MODE=%r). Set EDA_MODE=final to enable cache.",
+            os.getenv("EDA_MODE"),
+        )
+
+    if cache_enabled:
         hit = cache.lookup(key)
         if hit is not None:
             with metrics.span("cache_hit", extra={"key": key[:16]}):
@@ -570,6 +578,11 @@ def run_pipeline(
             hit_summary_path.write_text(hit_summary, encoding="utf-8")
             logger.info("Cache hit summary written to: %s", hit_summary_path)
             return key
+        logger.info(
+            "Cache miss for key=%s... (PROMPT_VERSION=%s...)",
+            key[:8],
+            PROMPT_VERSION[:8],
+        )
 
     # ------------------------------------------------------------------
     # Heavy work — serialised by the concurrency guard

@@ -80,6 +80,14 @@ class TestIsEnabled:
         monkeypatch.setenv("EDA_MODE", "final")
         assert cache_mod.is_enabled() is True
 
+    def test_enabled_in_final_mode_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("EDA_MODE", "FINAL")
+        assert cache_mod.is_enabled() is True
+
+    def test_enabled_in_final_mode_with_whitespace(self, monkeypatch):
+        monkeypatch.setenv("EDA_MODE", "  final  ")
+        assert cache_mod.is_enabled() is True
+
     def test_disabled_for_unknown_mode(self, monkeypatch):
         monkeypatch.setenv("EDA_MODE", "staging")
         assert cache_mod.is_enabled() is False

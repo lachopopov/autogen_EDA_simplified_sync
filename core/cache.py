@@ -36,13 +36,19 @@ def _get_model_name() -> str:
     return LLM_CONFIG["config_list"][0]["model"]
 
 
+def _get_eda_mode() -> str:
+    """Return normalised EDA_MODE value (lowercased + trimmed)."""
+    raw = os.getenv("EDA_MODE", "dev")
+    return (raw or "dev").strip().lower()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def is_enabled() -> bool:
     """True iff EDA_MODE == 'final'.  The cache is dormant in dev mode."""
-    return os.getenv("EDA_MODE") == "final"
+    return _get_eda_mode() == "final"
 
 
 def compute_key(
@@ -59,8 +65,10 @@ def compute_key(
     NOT sensitive to: file path, file mtime, enable_openlit.
     """
     file_bytes = file_path.read_bytes()
-    eda_mode = os.getenv("EDA_MODE", "dev")
     model_name = _get_model_name()
+    # Read EDA_MODE after model resolution to avoid first-call drift caused by
+    # config import side effects (dotenv loading) in _get_model_name().
+    eda_mode = _get_eda_mode()
     suffix = f"|{eda_mode}|{model_name}|{pipeline_version}|{prompt_version}".encode()
 
     h = hashlib.sha256()
@@ -103,7 +111,7 @@ def store(key: str, run_dir: Path) -> None:
         "key": key,
         "pipeline_version": _pipeline.PIPELINE_VERSION,
         "prompt_version": _pipeline.PROMPT_VERSION,
-        "eda_mode": os.getenv("EDA_MODE", "dev"),
+        "eda_mode": _get_eda_mode(),
         "model": _get_model_name(),
         "stored_at_iso": datetime.now(UTC).isoformat(),
     }

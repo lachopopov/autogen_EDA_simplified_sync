@@ -34,6 +34,12 @@ from main import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _disable_cache_for_main_tests(monkeypatch):
+    """Keep run_pipeline behavior tests deterministic by disabling app cache."""
+    monkeypatch.setenv("EDA_MODE", "dev")
+
+
 @pytest.fixture()
 def csv_file(tmp_path):
     """Create a minimal CSV file in a temp directory."""
