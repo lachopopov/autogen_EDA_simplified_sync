@@ -18,6 +18,28 @@ import os
 
 os.environ["IPYNB_EXPORT"] = "true"
 
+# ---------------------------------------------------------------------------
+# Streamlit Cloud secret injection — MUST run before any project imports.
+#
+# On Streamlit Cloud the .env file is absent (it is gitignored).
+# Environment variables must be configured via App Settings → Secrets:
+#   EDA_MODE = "final"
+#   OPENAI_API_KEY = "sk-..."
+#   (etc.)
+#
+# We inject each secret into os.environ here, before config.py is imported,
+# so that load_dotenv() in config.py is a no-op and the secrets take effect.
+# Secrets that are already present (e.g. from a local .env) are NOT
+# overwritten, preserving local developer workflow.
+# ---------------------------------------------------------------------------
+try:
+    import streamlit as _st_early
+    for _key, _val in _st_early.secrets.items():
+        if isinstance(_val, str) and _key not in os.environ:
+            os.environ[_key] = _val
+except Exception:
+    pass  # running locally without secrets — .env covers it
+
 import datetime
 import json
 import tempfile
@@ -74,6 +96,21 @@ st.set_page_config(
 
 st.title("📊 EDA Multi-Agent AG2 Report Generator For Classification Tasks")
 st.caption("Upload a dataset, configure target & categoricals, then run the pipeline.")
+
+# ---------------------------------------------------------------------------
+# Sidebar — cache status indicator
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    from core import cache as _cache
+    _cache_on = _cache.is_enabled()
+    _eda_mode = os.getenv("EDA_MODE", "dev")
+    if _cache_on:
+        st.success(f"Cache **ON** (`EDA_MODE={_eda_mode}`)\n\n`{_cache.CACHE_DIR}`")
+    else:
+        st.warning(
+            f"Cache **OFF** (`EDA_MODE={_eda_mode}`)\n\n"
+            "Set `EDA_MODE = \"final\"` in Streamlit Cloud Secrets to enable the cache."
+        )
 
 
 # ---------------------------------------------------------------------------

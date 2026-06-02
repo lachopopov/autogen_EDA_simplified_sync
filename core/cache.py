@@ -22,7 +22,26 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_DAYS: int = 7
-CACHE_DIR: Path = Path(__file__).resolve().parent.parent / "outputs" / ".cache"
+
+def _resolve_cache_dir() -> Path:
+    """Return the effective cache directory.
+
+    On Streamlit Cloud the repository is cloned fresh on every cold start, so
+    ``outputs/.cache`` inside the repo is wiped between deployments.  We
+    redirect to ``/tmp/eda_pipeline_cache`` which survives warm reruns within
+    the same container session (the only window where a cache hit is possible
+    on Cloud).
+
+    Detection heuristic: Streamlit Cloud sets the env var
+    ``IS_STREAMLIT_CLOUD`` (set by us in Secrets) OR the repo is mounted at
+    ``/mount/src``.  Either condition redirects to /tmp.
+    """
+    if os.getenv("IS_STREAMLIT_CLOUD") or Path("/mount/src").is_dir():
+        return Path("/tmp/eda_pipeline_cache")
+    return Path(__file__).resolve().parent.parent / "outputs" / ".cache"
+
+
+CACHE_DIR: Path = _resolve_cache_dir()
 
 
 # ---------------------------------------------------------------------------
