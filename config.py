@@ -92,10 +92,18 @@ def get_outputs_dir(session_id: str | None = None) -> Path:
         run_dir = RUNS_DIR / session_id
         if run_dir.exists():
             return run_dir
-        # Fall back to cache dir for cached session_ids (Step 3 contract).
-        cache_dir = GLOBAL_OUTPUTS_DIR / ".cache" / session_id
-        if cache_dir.exists():
-            return cache_dir
+        # Fall back to the active cache dir for cached session_ids.
+        # This must use core.cache.CACHE_DIR rather than assuming
+        # GLOBAL_OUTPUTS_DIR/.cache, because Streamlit Cloud redirects cache
+        # storage to /tmp/eda_pipeline_cache.
+        try:
+            from core import cache as _cache  # lazy — avoids import cycle
+
+            cache_dir = _cache.CACHE_DIR / session_id
+            if cache_dir.exists():
+                return cache_dir
+        except Exception:  # noqa: BLE001
+            pass
         return run_dir  # caller will mkdir
     return GLOBAL_OUTPUTS_DIR
 

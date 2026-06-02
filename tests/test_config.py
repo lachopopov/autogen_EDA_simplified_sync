@@ -293,10 +293,12 @@ class TestGetOutputsDir:
 
     def test_missing_run_dir_falls_back_to_cache(self, tmp_path, monkeypatch):
         import config
+        from core import cache as cache_mod
 
         monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
         monkeypatch.setattr(config, "GLOBAL_OUTPUTS_DIR", tmp_path)
-        cache_dir = tmp_path / ".cache" / "mysession"
+        monkeypatch.setattr(cache_mod, "CACHE_DIR", tmp_path / "cloud-cache")
+        cache_dir = tmp_path / "cloud-cache" / "mysession"
         cache_dir.mkdir(parents=True)
         result = config.get_outputs_dir("mysession")
         assert result == cache_dir

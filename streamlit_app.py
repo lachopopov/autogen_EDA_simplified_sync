@@ -41,6 +41,7 @@ except Exception:
     pass  # running locally without secrets — .env covers it
 
 import datetime
+import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -55,6 +56,9 @@ from ui_backend_adapter import (
     _get_loader,
     detect_encoded_categoricals,
     detect_target,
+    get_cache_status,
+    get_submission_key,
+    has_cached_result,
     submit_eda_job,
 )
 
@@ -85,6 +89,35 @@ def _resolve_md_images(md_text: str, base_dir: Path) -> str:
     return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _replace, md_text)
 
 
+def _reset_uploaded_workflow() -> None:
+    """Clear upload/results state so the user can start a fresh run."""
+    tmpdir = st.session_state.pop("tmpdir", None)
+    if tmpdir is not None:
+        try:
+            tmpdir.cleanup()
+        except Exception:  # noqa: BLE001
+            pass
+
+    for key in (
+        "file_path",
+        "file_name",
+        "file_sig",
+        "df",
+        "file_sig_loaded",
+        "target_candidate",
+        "file_sig_target",
+        "suspects",
+        "file_sig_suspects",
+        "session_id",
+        "last_run_at",
+        "last_submission_key",
+        "running",
+    ):
+        st.session_state.pop(key, None)
+
+    st.session_state["uploader_nonce"] = st.session_state.get("uploader_nonce", 0) + 1
+
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -101,11 +134,9 @@ st.caption("Upload a dataset, configure target & categoricals, then run the pipe
 # Sidebar — cache status indicator
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    from core import cache as _cache
-    _cache_on = _cache.is_enabled()
-    _eda_mode = os.getenv("EDA_MODE", "dev")
+    _cache_on, _eda_mode, _cache_dir = get_cache_status()
     if _cache_on:
-        st.success(f"Cache **ON** (`EDA_MODE={_eda_mode}`)\n\n`{_cache.CACHE_DIR}`")
+        st.success(f"Cache **ON** (`EDA_MODE={_eda_mode}`)\n\n`{_cache_dir}`")
     else:
         st.warning(
             f"Cache **OFF** (`EDA_MODE={_eda_mode}`)\n\n"
@@ -116,10 +147,14 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Phase A — Upload
 # ---------------------------------------------------------------------------
+if "uploader_nonce" not in st.session_state:
+    st.session_state["uploader_nonce"] = 0
+
 uploaded = st.file_uploader(
     "Upload dataset",
     type=["csv", "parquet", "xlsx"],
     help="Max 50 MB. Supported formats: CSV, Parquet, XLSX.",
+    key=f"dataset_uploader_{st.session_state['uploader_nonce']}",
 )
 
 st.caption(
@@ -131,21 +166,28 @@ if uploaded is None:
     st.info("Upload a dataset to get started.")
     st.stop()
 
+if st.button("Upload a different dataset", use_container_width=False):
+    _reset_uploaded_workflow()
+    st.rerun()
+
 # Persist uploaded file in a session-scoped temp directory
 if "tmpdir" not in st.session_state:
     st.session_state["tmpdir"] = tempfile.TemporaryDirectory()
 
 tmpdir_path = Path(st.session_state["tmpdir"].name)
+uploaded_bytes = uploaded.getvalue()
+uploaded_sig = hashlib.sha256(uploaded_bytes).hexdigest()
 
-if "file_path" not in st.session_state or st.session_state.get("file_name") != uploaded.name:
+if "file_path" not in st.session_state or st.session_state.get("file_sig") != uploaded_sig:
     # Clear previous uploaded files from this session temp dir
     for p in tmpdir_path.iterdir():
         if p.is_file():
             p.unlink(missing_ok=True)
     upload_path = tmpdir_path / uploaded.name
-    upload_path.write_bytes(uploaded.getvalue())
+    upload_path.write_bytes(uploaded_bytes)
     st.session_state["file_path"] = upload_path
     st.session_state["file_name"] = uploaded.name
+    st.session_state["file_sig"] = uploaded_sig
     # Clear stale results when a new file is uploaded
     st.session_state.pop("session_id", None)
 
@@ -154,12 +196,12 @@ file_path = st.session_state["file_path"]
 # ---------------------------------------------------------------------------
 # Load DataFrame for configuration widgets
 # ---------------------------------------------------------------------------
-if "df" not in st.session_state or st.session_state.get("file_name_loaded") != uploaded.name:
+if "df" not in st.session_state or st.session_state.get("file_sig_loaded") != uploaded_sig:
     loader = _get_loader(str(file_path))
     loaded_df = loader.load(str(file_path))
     loaded_df = loaded_df.drop_duplicates().reset_index(drop=True)
     st.session_state["df"] = loaded_df
-    st.session_state["file_name_loaded"] = uploaded.name
+    st.session_state["file_sig_loaded"] = uploaded_sig
 
 df = st.session_state["df"]
 
@@ -171,10 +213,10 @@ st.success(f"**{uploaded.name}** — {df.shape[0]:,} rows × {df.shape[1]} colum
 st.header("1. Target Variable")
 
 # Run heuristic detection (cached per file)
-if "target_candidate" not in st.session_state or st.session_state.get("file_name_target") != uploaded.name:
+if "target_candidate" not in st.session_state or st.session_state.get("file_sig_target") != uploaded_sig:
     candidate_json = detect_target(df.to_json(orient="records"))
     st.session_state["target_candidate"] = TargetInfo.model_validate_json(candidate_json)
-    st.session_state["file_name_target"] = uploaded.name
+    st.session_state["file_sig_target"] = uploaded_sig
 
 candidate: TargetInfo = st.session_state["target_candidate"]
 
@@ -213,11 +255,11 @@ else:
 # ---------------------------------------------------------------------------
 st.header("2. Encoded Categorical Columns")
 
-if "suspects" not in st.session_state or st.session_state.get("file_name_suspects") != uploaded.name:
+if "suspects" not in st.session_state or st.session_state.get("file_sig_suspects") != uploaded_sig:
     st.session_state["suspects"] = detect_encoded_categoricals(
         df, target_column=target_flag
     )
-    st.session_state["file_name_suspects"] = uploaded.name
+    st.session_state["file_sig_suspects"] = uploaded_sig
 
 suspects: list[EncodedCategoricalSuspect] = st.session_state["suspects"]
 
@@ -288,7 +330,26 @@ _cooldown_remaining: int = (
     if _last_run is not None
     else 0
 )
-_in_cooldown: bool = _cooldown_remaining > 0
+_current_submission_key = get_submission_key(
+    file_path=file_path,
+    target_flag=target_flag,
+    no_target_flag=no_target_flag,
+    categoricals_flag=categoricals_flag,
+    no_reclassify_flag=(categoricals_flag is None and not suspects),
+)
+_same_submission_as_last = st.session_state.get("last_submission_key") == _current_submission_key
+_cached_result_available = has_cached_result(
+    file_path=file_path,
+    target_flag=target_flag,
+    no_target_flag=no_target_flag,
+    categoricals_flag=categoricals_flag,
+    no_reclassify_flag=(categoricals_flag is None and not suspects),
+)
+_in_cooldown: bool = (
+    _cooldown_remaining > 0
+    and _same_submission_as_last
+    and not _cached_result_available
+)
 
 run_clicked = st.button(
     "▶ Run Pipeline",
@@ -300,6 +361,8 @@ if _in_cooldown:
     st.caption(
         f"Per-session cooldown active — {_cooldown_remaining}s remaining before next submission."
     )
+elif _cooldown_remaining > 0 and _same_submission_as_last and _cached_result_available:
+    st.caption("Cached result available — cooldown bypassed for identical inputs.")
 
 if run_clicked:
     st.session_state["running"] = True
@@ -318,6 +381,7 @@ if run_clicked:
             )
         st.session_state["session_id"] = session_id
         st.session_state["last_run_at"] = datetime.datetime.now()
+        st.session_state["last_submission_key"] = _current_submission_key
         run_succeeded = True
     except SystemBusy:
         st.warning("Another user is currently running the pipeline. Please retry in a minute.")
@@ -338,7 +402,10 @@ out_dir = get_outputs_dir(session_id)
 plots_dir = get_plots_dir(session_id)
 
 if not out_dir.exists():
-    st.warning("Output directory not found — the run may have been cleaned up.")
+    st.warning(
+        f"Output directory not found for session `{session_id}` — the app may have cold-started, "
+        "the cached path may be stale, or the artifacts may have been cleaned up."
+    )
     st.stop()
 
 st.header("4. Results")
