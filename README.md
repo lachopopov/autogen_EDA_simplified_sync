@@ -51,12 +51,22 @@ Access the app directly from your browser (no installation needed):
 1. **Upload your dataset** — CSV, Parquet, or Excel format (first row = feature names)
 2. **Confirm target variable** — AI agents suggest a target; you confirm, reassign, or skip
 3. **Validate encoded categoricals** — AI detects numeric columns that might be encoded categories; you confirm each and label it as nominal or ordinal
-4. **Run the analysis** — AI agents generate a complete report (~2 minutes)
+4. **Run the analysis** — first run performs full analysis (typically ~4–6 minutes for small datasets)
 5. **View results in UI** — See the plots, Markdown version, and cost analysis by clicking Results section
 6. **Download results** — PDF report, Markdown version, Jupyter Notebook, and cost summary
 7. **Check trustworthiness** — See the hallucination score in the report.
 
 **Why Streamlit Cloud?** No software installation, instant access, intuitive interface, results viewable in UI and ready to download immediately.
+
+**Warm cache behavior (current `streamlit-deploy` branch):**
+- If you upload the **same dataset with the same pipeline-relevant settings** in the same warm app instance, the app serves a cached result immediately.
+- The UI shows cache-hit information and a zero incremental-cost hit summary.
+- If you upload a different dataset (or change cache-key-relevant settings), the app runs a fresh analysis.
+- This is a **warm-instance cache**, not durable persistence.
+- Persistence is **not guaranteed** across:
+  - cold restart
+  - app redeploy
+  - container replacement/eviction
 
 #### Option 2: Command Line (CLI) — For Local Development
 
@@ -133,6 +143,20 @@ OPENAI_API_KEY=sk-your-actual-key-here
 # MAX_CRITIC_ITERATIONS=2     # max critic↔revision loops before forcing report export
 # MAX_ROUNDS=70               # absolute ceiling on GroupChat rounds
 ```
+
+### Streamlit Cloud Secrets (for deployed app)
+
+On Streamlit Cloud, `.env` is not present. Configure secrets in **App Settings → Secrets**:
+
+```toml
+OPENAI_API_KEY="sk-your-actual-key-here"
+EDA_MODE="final"            # enables app cache (cache is dormant in dev)
+IS_STREAMLIT_CLOUD="1"      # forces cache dir to /tmp/eda_pipeline_cache
+```
+
+Notes:
+- Do not commit `.env`.
+- Cache behavior on Streamlit Cloud is warm-instance only; no durability guarantee across cold starts.
 
 
 
@@ -394,30 +418,24 @@ python main.py path/to/your_dataset.csv
 
 A Streamlit implementation is included (`streamlit_app.py`). See [Quick Start → Option 1](#option-1-web-ui-streamlit-cloud--recommended-for-business-users) for usage instructions.
 
-For reference, the underlying architecture:
+Current branch (`streamlit-deploy`) architecture:
 
 ```
-Client (Streamlit/Gradio UI)
-    │
-    ├─→ File upload widget
-    ├─→ Model selection (dev/final)
-    ├─→ Progress bar (agent activity)
-    └─→ Report viewer (PDF/HTML)
-         │
-         ▼
-    Backend (FastAPI/Flask)
-         │
-         ├─→ Session management (UUID-based)
-         ├─→ Call main.run_pipeline()
-         ├─→ Cleanup on completion
-         └─→ Serve output files (PDF, plots)
+Streamlit UI
+  └─→ ui_backend_adapter.py
+    └─→ run_pipeline(...) (in-process)
+      ├─→ BoundedSemaphore(1) busy protection
+      ├─→ per-session cooldown (same browser tab)
+      └─→ warm cache lookup/store
 ```
 
-**Key considerations:**
-- Use `contextvars.ContextVar` for session isolation (multi-worker)
-- Implement cleanup task (delete `.pipeline_state/<uuid>` after download)
-- Add timeout guards (max 5 min per analysis)
-- Rate limiting on API endpoint
+**Key considerations (current branch):**
+- Busy protection is enforced by the in-process semaphore (`SystemBusy`).
+- Cooldown is per browser session/tab.
+- Warm cache can return immediate cached outputs for identical inputs in the same warm instance.
+- Persistence is **not guaranteed** across cold restart, app redeploy, or container replacement/eviction.
+
+**Phase 3 target:** FastAPI backend separation. Streamlit remains UI-only and calls HTTP endpoints via adapter.
 
 ### Cloud / API Deployment
 
