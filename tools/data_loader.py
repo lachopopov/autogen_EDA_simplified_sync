@@ -539,6 +539,16 @@ def detect_encoded_categoricals(
             ],
             response_format={"type": "json_object"},
         )
+        # Log OpenAI prompt cache savings when available
+        if hasattr(resp, "usage") and resp.usage:
+            _details = getattr(resp.usage, "prompt_tokens_details", None)
+            _cached = (getattr(_details, "cached_tokens", 0) or 0) if _details else 0
+            if _cached:
+                logger.info(
+                    "detect_encoded_categoricals: %d cached prompt tokens "
+                    "(OpenAI prompt cache hit)",
+                    _cached,
+                )
         raw = resp.choices[0].message.content or "{}"
         result = json.loads(raw)
     except Exception:

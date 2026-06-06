@@ -2198,6 +2198,11 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
                 captured_usage["prompt_tokens"] = resp.usage.prompt_tokens
                 captured_usage["completion_tokens"] = resp.usage.completion_tokens
                 captured_usage["model"] = resp.model
+                # Capture OpenAI prompt cache savings (prompt_tokens_details may be None)
+                _details = getattr(resp.usage, "prompt_tokens_details", None)
+                captured_usage["cached_tokens"] = (
+                    getattr(_details, "cached_tokens", 0) or 0
+                ) if _details else 0
             return resp.choices[0].message.content
 
         _evals_utils.llm_response_openai = _capturing_openai
@@ -2240,6 +2245,7 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
                 "model": captured_usage.get("model", OPENLIT_EVAL_MODEL),
                 "prompt_tokens": pt,
                 "completion_tokens": ct,
+                "cached_tokens": captured_usage.get("cached_tokens", 0),
                 "cost": cost,
             })
             logger.info(

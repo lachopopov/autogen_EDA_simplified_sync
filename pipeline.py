@@ -83,7 +83,7 @@ def _format_cost_summary(
     lines.append("-" * 40)
 
     max_name = max((len(a.name) for a in agents_list), default=20)
-    col_fmt = f"{{:<{max_name}}}  {{:<28}}  ${{:<10.4f}}  {{:>7,}} prompt / {{:>7,}} completion"
+    col_fmt = f"{{:<{max_name}}}  {{:<28}}  ${{:<10.4f}}  {{:>7,}} prompt / {{:>7,}} completion  ({{:>7,}} cached)"
 
     for agent in agents_list:
         usage = agent.get_total_usage()
@@ -95,10 +95,11 @@ def _format_cost_summary(
             cost = stats.get("cost", 0.0)
             prompt = stats.get("prompt_tokens", 0)
             completion = stats.get("completion_tokens", 0)
+            cached = stats.get("cached_tokens", 0)
             if cost == 0 and prompt == 0 and completion == 0:
                 continue
             lines.append(col_fmt.format(
-                agent.name, model, cost, prompt, completion,
+                agent.name, model, cost, prompt, completion, cached,
             ))
 
     if eval_cost and eval_cost.get("cost", 0) > 0:
@@ -108,6 +109,7 @@ def _format_cost_summary(
             eval_cost["cost"],
             eval_cost.get("prompt_tokens", 0),
             eval_cost.get("completion_tokens", 0),
+            eval_cost.get("cached_tokens", 0),
         ))
 
     lines.append("")
@@ -117,6 +119,7 @@ def _format_cost_summary(
     lines.append("-" * 40)
 
     grand_total = 0.0
+    grand_cached = 0
     for model, stats in totals.items():
         if model == "total_cost":
             grand_total = stats if isinstance(stats, (int, float)) else 0.0
@@ -125,9 +128,11 @@ def _format_cost_summary(
         prompt = stats.get("prompt_tokens", 0)
         completion = stats.get("completion_tokens", 0)
         total_tok = stats.get("total_tokens", prompt + completion)
+        cached = stats.get("cached_tokens", 0)
+        grand_cached += cached
         lines.append(
             f"  {model:<28}  ${cost:<10.4f}  {prompt:>7,} prompt / "
-            f"{completion:>7,} completion ({total_tok:>7,} total)"
+            f"{completion:>7,} completion ({total_tok:>7,} total, {cached:>7,} cached)"
         )
 
     eval_total = eval_cost.get("cost", 0.0) if eval_cost else 0.0
@@ -143,6 +148,11 @@ def _format_cost_summary(
 
     lines.append(f"  {'':28}  ----------")
     lines.append(f"  {'Pipeline total:':<28}  ${grand_total:<10.4f}")
+    if grand_cached > 0:
+        lines.append(
+            f"  {'Cached prompt tokens:':<28}  {grand_cached:>7,} tokens "
+            f"(billed at 50% input price by OpenAI — see invoice for exact saving)"
+        )
     lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -621,7 +631,7 @@ def run_pipeline(
 
             initial_message = (
                 f"Please run the full EDA pipeline on the following data file:\n"
-                f"{resolved}"
+                f"{resolved.name}"
                 f"{target_ctx}"
             )
 

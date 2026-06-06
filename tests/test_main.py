@@ -291,7 +291,11 @@ class TestRunPipelineExecution:
 
         _, kwargs = proxy.initiate_chat.call_args
         message = kwargs.get("message", "")
-        assert str(csv_file.resolve()) in message
+        # P2.1: initial_message now uses filename only (not absolute path) to
+        # preserve a stable OpenAI prompt-cache prefix across uploads from
+        # different /tmp paths.
+        assert csv_file.name in message
+        assert str(csv_file.resolve()) not in message
 
     @patch("orchestrator.build_group_chat")
     def test_message_contains_eda_instruction(self, mock_build, csv_file, monkeypatch, tmp_path):
@@ -343,8 +347,9 @@ class TestRunPipelineExecution:
 
         _, kwargs = proxy.initiate_chat.call_args
         message = kwargs.get("message", "")
-        # The message should contain the resolved (absolute) path
-        assert str(csv_file.resolve()) in message
+        # P2.1: message uses filename only (stable prefix for OpenAI prompt
+        # caching) — full absolute path is stored in pipeline state, not here.
+        assert csv_file.name in message
 
 
 # ===================================================================
@@ -738,6 +743,42 @@ class TestCostTracking:
         text = _format_cost_summary([agent_a], usage_dict)
         assert "HallucinationEval" not in text
         assert "$0.0200" in text
+
+    def test_format_cost_summary_shows_cached_tokens(self):
+        """cached_tokens from stats appear in per-agent column and Grand Totals."""
+        from main import _format_cost_summary
+
+        agent_a = MagicMock()
+        agent_a.name = "FindingsGeneratorAgent"
+        agent_a.get_total_usage.return_value = {
+            "gpt-5": {
+                "cost": 0.05,
+                "prompt_tokens": 10000,
+                "completion_tokens": 3000,
+                "cached_tokens": 4096,
+            },
+        }
+        usage_dict = {
+            "usage_including_cached_inference": {
+                "total_cost": 0.05,
+                "gpt-5": {
+                    "cost": 0.05,
+                    "prompt_tokens": 10000,
+                    "completion_tokens": 3000,
+                    "total_tokens": 13000,
+                    "cached_tokens": 4096,
+                },
+            },
+        }
+
+        text = _format_cost_summary([agent_a], usage_dict)
+        # Per-agent row must show cached count
+        assert "4,096 cached" in text
+        # Grand Totals must show cached count
+        assert "4,096" in text
+        # Discount note must appear when cached > 0
+        assert "Cached prompt tokens:" in text
+        assert "50% input price" in text
 
 
 # ===================================================================
