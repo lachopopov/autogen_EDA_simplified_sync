@@ -63,6 +63,7 @@ Thumbs.db
 .claude/
 
 # Generated Outputs (regenerated on each run)
+.cache/
 outputs/
 !outputs/.gitkeep
 !outputs/plots/
