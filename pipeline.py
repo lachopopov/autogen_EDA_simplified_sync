@@ -605,6 +605,18 @@ def run_pipeline(
             _main.ensure_output_dirs(session_id)
             logger.info("Pipeline session: %s", session_id)
 
+            # Make the pre-loaded DataFrame available to downstream tools that
+            # may be invoked by agents (e.g. DataPrepAgent.load_data()).
+            # Pre-pipeline logic (file_load / target_resolve) runs before the
+            # session is created so we re-expose the deduped dataframe here
+            # in the session artifact store so agent-run tools can resolve it
+            # by filename (fallback when the agent passes only the filename).
+            try:
+                save_state("data_json", df.to_json(orient="records"))
+                save_state("duplicate_count", str(dup_count))
+            except Exception:  # noqa: BLE001
+                logger.debug("Could not pre-save data_json to session artifact store; continuing")
+
             save_state("target_info", target_info.model_dump_json())
             if reclassified_cols:
                 save_state("reclassified_categoricals", json.dumps(reclassified_cols))

@@ -122,6 +122,46 @@ def load_data(
     file_path = file_path.replace("\\/", "/")
     path = Path(file_path)
     if not path.exists():
+        # Fallback for deployed Streamlit sessions: when the agent passes only
+        # the filename (e.g. "iris.csv"), the upload lives in a session-scoped
+        # temp dir and the bare filename may not resolve relative to the
+        # process CWD. If a pipeline session is active, try to resolve the
+        # already-loaded dataframe from the artifact store instead of failing.
+        try:
+            from tools._pipeline_state import is_active, load_state, STATE_REF_PREFIX
+
+            if is_active():
+                data_json = load_state("data_json")
+                if data_json is not None:
+                    # Compute simple shape info for the return message
+                    try:
+                        import json as _json
+
+                        records = _json.loads(data_json)
+                        rows = len(records)
+                        cols = len(records[0]) if rows > 0 else 0
+                    except Exception:
+                        rows = 0
+                        cols = 0
+
+                    dup_raw = load_state("duplicate_count")
+                    dup_count = 0
+                    if dup_raw is not None:
+                        try:
+                            dup_count = int(dup_raw)
+                        except Exception:
+                            dup_count = 0
+
+                    # The artifact already lives in the session store; return the
+                    # same human-friendly message that the normal path would.
+                    return (
+                        f"Loaded {rows} rows × {cols} columns from {Path(file_path).name} "
+                        f"({dup_count} duplicate row(s) removed). "
+                        f"Reference: {STATE_REF_PREFIX}data_json"
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+
         raise FileNotFoundError(f"Data file not found: {file_path}")
 
     logger.info("Loading data from %s", file_path)
