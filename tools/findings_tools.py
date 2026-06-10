@@ -47,12 +47,6 @@ from eda_state import (
 
 logger = logging.getLogger(__name__)
 
-# Token usage captured from the comprehensive evaluation LLM call.
-# Populated by _run_comprehensive_eval(); read by main._format_cost_summary().
-# Survives clear_session() because it lives at module level, not in the
-# artifact store.
-_eval_cost_info: dict[str, Any] = {}
-
 # Peak detection constants used in _build_histogram_metadata().
 # Named constants make the algorithm self-documenting and unit-testable.
 #
@@ -2148,9 +2142,10 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
     Non-blocking: logs warnings but never raises. Skipped when no
     pipeline session is active or the fact sheet is unavailable.
 
-    Side effect: populates module-level ``_eval_cost_info`` with token counts
-    and cost so that ``main._format_cost_summary()`` can include the evaluator
-    in the pipeline cost report.
+    Cost tracking is delegated to ``tools._eval_telemetry.EvalCostCapture``
+    (not in PROMPT_VERSION hash).  The eval verdict itself is persisted via
+    ``save_state("comprehensive_eval", ...)`` and feeds the Trustworthiness
+    Assessment report section — changes here correctly invalidate the cache.
 
     Returns:
         Dict with keys {verdict, score, evaluation, classification, explanation}
@@ -2168,45 +2163,10 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
 
     try:
         import openlit  # noqa: F811
-        import openlit.evals.utils as _evals_utils
 
-        # --- Capture token usage ---
-        # openlit.evals.utils.llm_response_openai() returns only the content
-        # string and discards response.usage.  We temporarily replace it with
-        # an identical function that also records the token counts.
-        _orig_llm_fn = _evals_utils.llm_response_openai
-        captured_usage: dict[str, Any] = {}
+        from tools._eval_telemetry import EvalCostCapture
 
-        def _capturing_openai(prompt, model, base_url):
-            """Drop-in for llm_response_openai that also captures usage.
-
-            Mirrors the SDK helper to intercept ``resp.usage`` token counts
-            for pipeline cost tracking.  The original SDK function returns
-            only the content string and discards usage metadata.
-            """
-            from openai import OpenAI as _OAI
-
-            client = _OAI(base_url=base_url)
-            if model is None:
-                model = "gpt-4o-mini"
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-            )
-            if hasattr(resp, "usage") and resp.usage:
-                captured_usage["prompt_tokens"] = resp.usage.prompt_tokens
-                captured_usage["completion_tokens"] = resp.usage.completion_tokens
-                captured_usage["model"] = resp.model
-                # Capture OpenAI prompt cache savings (prompt_tokens_details may be None)
-                _details = getattr(resp.usage, "prompt_tokens_details", None)
-                captured_usage["cached_tokens"] = (
-                    getattr(_details, "cached_tokens", 0) or 0
-                ) if _details else 0
-            return resp.choices[0].message.content
-
-        _evals_utils.llm_response_openai = _capturing_openai
-        try:
+        with EvalCostCapture() as capture:
             evals = openlit.evals.All(
                 provider="openai",
                 model=OPENLIT_EVAL_MODEL,
@@ -2216,8 +2176,8 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
                 contexts=[fact_sheet],
                 text=interpretations_json,
             )
-        finally:
-            _evals_utils.llm_response_openai = _orig_llm_fn
+
+        capture.finalize(OPENLIT_EVAL_MODEL)
 
         logger.info(
             "Comprehensive eval: verdict=%s, score=%.2f, evaluation=%s, "
@@ -2235,24 +2195,6 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
                 result.explanation,
             )
 
-        # --- Compute eval cost and store in module-level dict ---
-        if captured_usage:
-            pt = captured_usage.get("prompt_tokens", 0)
-            ct = captured_usage.get("completion_tokens", 0)
-            cost = _compute_eval_cost(OPENLIT_EVAL_MODEL, pt, ct)
-            _eval_cost_info.clear()
-            _eval_cost_info.update({
-                "model": captured_usage.get("model", OPENLIT_EVAL_MODEL),
-                "prompt_tokens": pt,
-                "completion_tokens": ct,
-                "cached_tokens": captured_usage.get("cached_tokens", 0),
-                "cost": cost,
-            })
-            logger.info(
-                "Eval cost captured: model=%s, prompt=%d, completion=%d, cost=$%.4f",
-                _eval_cost_info["model"], pt, ct, cost,
-            )
-
         eval_dict: dict[str, Any] = {
             "verdict": result.verdict,
             "score": result.score,
@@ -2265,25 +2207,6 @@ def _run_comprehensive_eval(interpretations_json: str) -> dict[str, Any] | None:
     except Exception:
         logger.warning("Comprehensive eval failed — skipping", exc_info=True)
         return None
-
-
-def _compute_eval_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """Look up pricing from openlit_pricing.json and compute cost.
-
-    Falls back to 0.0 if the pricing file is missing or the model
-    is not listed.
-    """
-    from pathlib import Path
-
-    pricing_path = Path(__file__).resolve().parent.parent / "openlit_pricing.json"
-    try:
-        with open(pricing_path, encoding="utf-8") as f:
-            pricing = json.load(f)
-        p = pricing["chat"][model]
-        return (prompt_tokens / 1000) * p["promptPrice"] + \
-               (completion_tokens / 1000) * p["completionPrice"]
-    except Exception:
-        return 0.0
 
 
 def save_interpretations(

@@ -681,8 +681,8 @@ class TestCostTracking:
         }
 
         # Populate eval cost info before running
-        import tools.findings_tools as ft
-        ft._eval_cost_info.update({
+        import tools._eval_telemetry as et
+        et._eval_cost_info.update({
             "model": "gpt-5-2025-08-07",
             "prompt_tokens": 3000,
             "completion_tokens": 200,
@@ -692,7 +692,7 @@ class TestCostTracking:
         try:
             run_pipeline(csv_file, no_target_flag=True)
         finally:
-            ft._eval_cost_info.clear()
+            et._eval_cost_info.clear()
 
         content = (out / "cost_summary.txt").read_text(encoding="utf-8")
         assert "HallucinationEval" in content

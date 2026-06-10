@@ -502,6 +502,7 @@ def run_pipeline(
 
     with metrics.span("file_load"):
         df = _get_loader(str(resolved)).load(str(resolved))
+        dup_count = int(df.duplicated().sum())
         df = df.drop_duplicates().reset_index(drop=True)
 
     with metrics.span("target_resolve"):
@@ -659,7 +660,7 @@ def run_pipeline(
             # Cost tracking
             from autogen import gather_usage_summary
 
-            from tools.findings_tools import _eval_cost_info
+            from tools._eval_telemetry import _eval_cost_info
 
             with metrics.span("cost_summary"):
                 usage_dict = gather_usage_summary(agents_list)

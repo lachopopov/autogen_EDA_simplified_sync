@@ -128,7 +128,11 @@ def load_data(
         # process CWD. If a pipeline session is active, try to resolve the
         # already-loaded dataframe from the artifact store instead of failing.
         try:
-            from tools._pipeline_state import is_active, load_state, STATE_REF_PREFIX
+            from tools._pipeline_state import (
+                STATE_REF_PREFIX,
+                is_active,
+                load_state,
+            )
 
             if is_active():
                 data_json = load_state("data_json")

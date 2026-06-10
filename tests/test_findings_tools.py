@@ -1591,7 +1591,8 @@ class TestRunComprehensiveEval:
 
         monkeypatch.setattr("openai.OpenAI", lambda **kw: FakeClient())
 
-        from tools.findings_tools import _eval_cost_info, _run_comprehensive_eval
+        from tools._eval_telemetry import _eval_cost_info
+        from tools.findings_tools import _run_comprehensive_eval
 
         try:
             init_session()
@@ -1612,19 +1613,19 @@ class TestComputeEvalCost:
     """Tests for _compute_eval_cost pricing lookup."""
 
     def test_computes_cost_from_pricing_json(self):
-        from tools.findings_tools import _compute_eval_cost
+        from tools._eval_telemetry import _compute_eval_cost
         # gpt-5 pricing: prompt=0.00125/1K, completion=0.01/1K
         cost = _compute_eval_cost("gpt-5", 1000, 500)
         expected = (1000 / 1000) * 0.00125 + (500 / 1000) * 0.01
         assert abs(cost - expected) < 1e-9
 
     def test_returns_zero_for_unknown_model(self):
-        from tools.findings_tools import _compute_eval_cost
+        from tools._eval_telemetry import _compute_eval_cost
         cost = _compute_eval_cost("nonexistent-model-xyz", 1000, 500)
         assert cost == 0.0
 
     def test_returns_zero_for_zero_tokens(self):
-        from tools.findings_tools import _compute_eval_cost
+        from tools._eval_telemetry import _compute_eval_cost
         cost = _compute_eval_cost("gpt-5", 0, 0)
         assert cost == 0.0
 

@@ -14,6 +14,7 @@ Phases:
 from __future__ import annotations
 
 # Enable all 3 report formats BEFORE any project imports read the env var.
+import contextlib
 import os
 
 os.environ["IPYNB_EXPORT"] = "true"
@@ -93,10 +94,8 @@ def _reset_uploaded_workflow() -> None:
     """Clear upload/results state so the user can start a fresh run."""
     tmpdir = st.session_state.pop("tmpdir", None)
     if tmpdir is not None:
-        try:
+        with contextlib.suppress(Exception):
             tmpdir.cleanup()
-        except Exception:  # noqa: BLE001
-            pass
 
     for key in (
         "file_path",
